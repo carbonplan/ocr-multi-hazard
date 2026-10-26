@@ -7,7 +7,7 @@ import pytest
 import shapely
 from upath import UPath
 
-from ocr.lod import COMPLETE_ZOOM, EVERY_FROM_ZOOM, write_buildings_lod
+from ocr.lod import COMPLETE_ZOOM, EVERY_FROM_ZOOM, POLYGONS_FROM_ZOOM, write_buildings_lod
 
 GEO = {
     'version': '1.1.0',
@@ -63,7 +63,7 @@ def test_buildings_lod_keeps_every_building(buildings, tmp_path):
 
     lod = json.loads(out.schema_arrow.metadata[b'geo'])['lod_columns']
     assert max(lod['zooms']) == COMPLETE_ZOOM
-    # coarse zooms draw only risky buildings; every building from EVERY_FROM_ZOOM. At z0 one
+    # the coarsest zooms draw only risky buildings. At z0 one
     # tile covers everything, so a row is non-null only where it is drawn.
     t = pq.read_table(dest.path, columns=['rps_2011', 'rps_2047', 'lod'])
     coarse = next(name for name, c in lod['lods'].items() if c['zooms'] == [0])
@@ -71,7 +71,13 @@ def test_buildings_lod_keeps_every_building(buildings, tmp_path):
     risky = (t['rps_2011'].to_numpy() > 0) & (t['rps_2047'].to_numpy() > 0)
     assert shown.any()
     assert not (shown & ~risky).any()
-    # zero-risk buildings are drawn from EVERY_FROM_ZOOM
-    every = next(n for n, c in lod['lods'].items() if c['zooms'][0] == EVERY_FROM_ZOOM)
-    drawn = t['lod'].combine_chunks().field(every).is_valid().to_numpy(zero_copy_only=False)
-    assert (drawn & ~risky).any()
+    # zero-risk buildings join from POLYGONS_FROM_ZOOM, and all are drawn from EVERY_FROM_ZOOM
+    lods = t['lod'].combine_chunks()
+
+    def drawn(zoom):
+        name = next(n for n, c in lod['lods'].items() if zoom in c['zooms'])
+        return lods.field(name).is_valid().to_numpy(zero_copy_only=False)
+
+    assert not any((drawn(z) & ~risky).any() for z in range(POLYGONS_FROM_ZOOM))
+    assert any((drawn(z) & ~risky).any() for z in range(POLYGONS_FROM_ZOOM, EVERY_FROM_ZOOM))
+    assert drawn(EVERY_FROM_ZOOM).all()

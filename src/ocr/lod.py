@@ -22,8 +22,14 @@ DEFAULT_TILE_BUDGETS: Mapping[int, int] = {
     12: 80_000,
     13: 120_000,
 }
-# Every building is drawn from this zoom, zero-risk ones included; coarser
-# zooms draw only the buildings a `shown` predicate selects.
+# Below this zoom the map draws only a uniform sample of the buildings a `shown`
+# predicate selects, as a dot layer would; from it, every building is also
+# thinned the way tippecanoe thins polygons (smallest dropped first, tiny ones
+# folded into squares), so the biggest show first as the map zooms in.
+POLYGONS_FROM_ZOOM = 6
+# Estimated bytes of that polygon thinning in the busiest tile at each zoom.
+POLYGON_TILE_BYTES = 850_000
+# Every building is drawn from this zoom.
 EVERY_FROM_ZOOM = 13
 # Full detail from this zoom; the map overzooms it past.
 COMPLETE_ZOOM = 14
@@ -34,23 +40,27 @@ PLACEHOLDER_PIXELS = 0.25
 def display_thinning(
     shown: str,
     tile_budgets: Mapping[int, int] = DEFAULT_TILE_BUDGETS,
+    polygons_from: int = POLYGONS_FROM_ZOOM,
     every_from: int = EVERY_FROM_ZOOM,
 ):
-    """Rows each zoom draws, sampled uniformly so the busiest tile at the zoom
-    holds its budget: below `every_from` only rows matching the SQL predicate
-    `shown`, from it every row."""
-    from geoparquet_lod import density_budget, only
+    """Rows each zoom draws: a uniform sample of rows matching the SQL predicate
+    `shown`, sized so the busiest tile at the zoom holds its budget; from
+    `polygons_from` also every row thinned smallest first; from `every_from`
+    every row."""
+    from geoparquet_lod import chain, combine, density_budget, drop_smallest, only, tiny_polygons
 
     limits = sorted(tile_budgets.items())
 
     def budget(zoom: int) -> int:
         return next((n for top, n in limits if zoom <= top), limits[-1][1])
 
-    every = density_budget(budget)
-    selected = only(shown, every)
+    sample = only(shown, density_budget(budget))
+    with_polygons = combine(sample, chain(drop_smallest(POLYGON_TILE_BYTES), tiny_polygons()))
 
     def thin(rows, zoom, ctx):
-        return (every if zoom >= every_from else selected)(rows, zoom, ctx)
+        if zoom >= every_from:
+            return rows
+        return (with_polygons if zoom >= polygons_from else sample)(rows, zoom, ctx)
 
     return thin
 

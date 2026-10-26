@@ -3,7 +3,7 @@ from ocr.risks.fire.config import OCRConfig
 from ocr.risks.fire.console import console
 from ocr.risks.fire.utils import get_temp_dir
 
-# Buildings the zooms below EVERY_FROM_ZOOM draw; zero-risk ones join from it.
+# Buildings the coarsest zooms sample; zero-risk ones join, biggest first, from z6.
 SHOWN = 'rps_2011 > 0 AND rps_2047 > 0'
 # Columns map tiles carry for styling; others are read by row on demand.
 TILE_COLUMNS = ['rps_2011', 'rps_2047']
