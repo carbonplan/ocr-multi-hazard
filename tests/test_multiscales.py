@@ -29,9 +29,18 @@ def test_write_multiscales() -> None:
     assert len(root.attrs['multiscales']['layout']) == 3
 
 
-def test_write_multiscales_rerun() -> None:
+def test_write_multiscales_rerun_same_levels() -> None:
     repo = _repo_with_base(1024)
     write_multiscales(repo, 'EPSG:4326', levels=3)
+    snap = write_multiscales(repo, 'EPSG:4326', levels=3)
+    assert snap == repo.lookup_branch('main')
+    root = zarr.open_group(repo.readonly_session('main').store, mode='r')
+    assert root['2/risk'].shape == (256, 256)
+    assert len(root.attrs['multiscales']['layout']) == 3
+
+
+def test_write_multiscales_rerun_different_levels() -> None:
+    repo = _repo_with_base(1024)
     write_multiscales(repo, 'EPSG:4326', levels=3)
     head = repo.lookup_branch('main')
     with pytest.raises(ValueError, match='does not match this pyramid'):
