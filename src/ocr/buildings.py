@@ -53,16 +53,23 @@ def _validate_dataset(ds: xr.Dataset) -> tuple[Axis, Axis]:
     if not_2d := [v for v, da in ds.data_vars.items() if set(da.dims) != {ydim, xdim}]:
         raise ValueError(f'variables {not_2d} are not 2D over {(ydim, xdim)}')
     # Start and spacing of each axis, so SQL can turn lon/lat into row/column.
-    return _axis()(ds[ydim].values), _axis()(ds[xdim].values)
+    return _axis(ds[ydim].values), _axis(ds[xdim].values)
 
 
 def _cell_index_sql(coord: str, axis: Axis) -> str:
-    """SQL for the nearest cell index of `coord`: (coord - start) / step, rounded."""
+    """Same cell as .sel(method='nearest') on an evenly spaced grid (coords are cell centres)."""
     return f'round(({coord} - {axis.start}) / {axis.step})::BIGINT'
 
 
 def _sample(ds: xr.Dataset, iy: np.ndarray, ix: np.ndarray) -> dict[str, pa.Array]:
-    """Value of every var at each (row iy, column ix). Cells off the raster get null, keeping dtype."""
+    """Sample a raster at every Overture building in CONUS.
+
+    The ds.sel(lat=..., lon=..., method='nearest') approach was slow at
+    CONUS scale b/c for each point it searches the coordinate array for the closest
+    value. B/c our grids are evenly spaced, the cell can be computed directly instead.
+    DuckDB does that arithmetic while it reads the buildings, and Xarray then fetches
+    every building's value in one pointwise ds.isel() call."""
+
     ydim, xdim = ds.odc.spatial_dims
     inside = (iy >= 0) & (iy < ds.sizes[ydim]) & (ix >= 0) & (ix < ds.sizes[xdim])
     pts = ds.isel(

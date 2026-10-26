@@ -12,6 +12,7 @@ from ocr.buildings import (
     _axis,
     _cell_index_sql,
     _sample,
+    _validate_dataset,
     sample_buildings,
     write_geoparquet,
 )
@@ -46,6 +47,10 @@ def test_axis() -> None:
     _axis(np.float32(22.43) + step * np.arange(100_000, dtype='float32'))  # 30m float32
     with pytest.raises(ValueError, match='evenly spaced'):
         _axis(np.array([0.0, 1.0, 3.0]))
+
+
+def test_validate_dataset_returns_axes() -> None:
+    assert _validate_dataset(_ds()) == ((30.5, 1.0), (-99.5, 1.0))
 
 
 def test_rejects_bad_inputs_before_s3() -> None:
