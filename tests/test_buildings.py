@@ -76,6 +76,7 @@ def test_write_geoparquet_metadata(tmp_path: Path) -> None:
     )
     assert meta.items() <= rows.items()
     assert 'geo' in rows
+    con.close()
 
 
 def test_sample_matches_sel_nearest() -> None:
@@ -96,6 +97,7 @@ def test_sample_matches_sel_nearest() -> None:
     idx = con.sql(
         f'SELECT {_cell_index_sql("y", _axis(lat))} AS iy, {_cell_index_sql("x", _axis(lon))} AS ix FROM pts'
     ).fetchnumpy()
+    con.close()
     iy, ix = idx['iy'], idx['ix']
     got = _sample(ds, iy, ix)['risk'].to_numpy()
     expected = ds['risk'].sel(

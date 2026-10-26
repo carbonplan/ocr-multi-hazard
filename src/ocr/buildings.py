@@ -7,10 +7,12 @@ import numpy as np
 import odc.geo.xr  # noqa: F401
 import pyarrow as pa
 import xarray as xr
+from odc.geo.geom import BoundingBox
 from upath import UPath
 
 from ocr.duck import duckdb_connect
-from ocr.extent import CONUS
+
+CONUS = BoundingBox(-125.0, 24.0, -66.0, 50.0, crs='EPSG:4326')
 
 OVERTURE_RELEASE = '2026-09-23.1'
 OVERTURE_LICENSE = 'ODbL-1.0'  # Buildings dataset; includes OpenStreetMap data
@@ -76,12 +78,12 @@ def write_geoparquet(tbl: pa.Table, out: str | Path) -> None:
     """Save `tbl` as GeoParquet (local path or s3://), keeping its metadata."""
     meta = {k.decode(): v.decode() for k, v in (tbl.schema.metadata or {}).items()}
     to_s3 = UPath(out).protocol == 's3'
-    con = duckdb_connect(s3_write=to_s3)
-    con.register('tbl', tbl)
-    con.execute(
-        "COPY tbl TO $out (FORMAT parquet, GEOPARQUET_VERSION 'V2', KV_METADATA $meta)",
-        {'out': str(out), 'meta': meta},
-    )
+    with duckdb_connect(s3_write=to_s3) as con:
+        con.register('tbl', tbl)
+        con.execute(
+            "COPY tbl TO $out (FORMAT parquet, GEOPARQUET_VERSION 'V2', KV_METADATA $meta)",
+            {'out': str(out), 'meta': meta},
+        )
 
 
 def sample_buildings(
@@ -108,26 +110,26 @@ def sample_buildings(
     point_strategy = PointSamplingStrategy(point_strategy)
     y, x = _validate_dataset(ds)
 
-    con = duckdb_connect()
     url = f's3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*.parquet'
-    tbl = con.sql(
-        f"""
-        SELECT id, geometry, bbox,
-               {_cell_index_sql('ST_Y(c)', y)} AS iy,
-               {_cell_index_sql('ST_X(c)', x)} AS ix
-        FROM (SELECT id, geometry, bbox, {point_strategy}(geometry) AS c
-              FROM read_parquet($url)
-              WHERE bbox.xmin >= $left AND bbox.ymin >= $bottom
-                AND bbox.xmax <= $right AND bbox.ymax <= $top)
-        """,
-        params={
-            'url': url,
-            'left': CONUS.left,
-            'bottom': CONUS.bottom,
-            'right': CONUS.right,
-            'top': CONUS.top,
-        },
-    ).to_arrow_table()
+    with duckdb_connect() as con:
+        tbl = con.sql(
+            f"""
+            SELECT id, geometry, bbox,
+                   {_cell_index_sql('ST_Y(c)', y)} AS iy,
+                   {_cell_index_sql('ST_X(c)', x)} AS ix
+            FROM (SELECT id, geometry, bbox, {point_strategy}(geometry) AS c
+                  FROM read_parquet($url)
+                  WHERE bbox.xmin >= $left AND bbox.ymin >= $bottom
+                    AND bbox.xmax <= $right AND bbox.ymax <= $top)
+            """,
+            params={
+                'url': url,
+                'left': CONUS.left,
+                'bottom': CONUS.bottom,
+                'right': CONUS.right,
+                'top': CONUS.top,
+            },
+        ).to_arrow_table()
     return _assemble(tbl, ds, release)
 
 
