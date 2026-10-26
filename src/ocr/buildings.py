@@ -72,7 +72,7 @@ def _sample(ds: xr.Dataset, iy: np.ndarray, ix: np.ndarray) -> dict[str, pa.Arra
     return {str(v): pa.array(da.values, mask=~inside) for v, da in pts.data_vars.items()}
 
 
-def write_patable_to_gpq(tbl: pa.Table, out: str | Path) -> None:
+def write_geoparquet(tbl: pa.Table, out: str | Path) -> None:
     """Save `tbl` as GeoParquet (local path or s3://), keeping its metadata."""
     meta = {k.decode(): v.decode() for k, v in (tbl.schema.metadata or {}).items()}
     to_s3 = UPath(out).protocol == 's3'
