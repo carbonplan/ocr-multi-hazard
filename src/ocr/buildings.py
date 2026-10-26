@@ -34,7 +34,7 @@ class Axis(NamedTuple):
     step: float
 
 
-def _grid(coord: np.ndarray) -> Axis:
+def _axis(coord: np.ndarray) -> Axis:
     """Axis of an evenly spaced coordinate. Errors if spacing is uneven."""
     step = float(coord[-1] - coord[0]) / (len(coord) - 1)
     expected = coord[0] + step * np.arange(len(coord))
@@ -51,10 +51,10 @@ def _validate_dataset(ds: xr.Dataset) -> tuple[Axis, Axis]:
     if not_2d := [v for v, da in ds.data_vars.items() if set(da.dims) != {ydim, xdim}]:
         raise ValueError(f'variables {not_2d} are not 2D over {(ydim, xdim)}')
     # Start and spacing of each axis, so SQL can turn lon/lat into row/column.
-    return _grid(ds[ydim].values), _grid(ds[xdim].values)
+    return _axis()(ds[ydim].values), _axis()(ds[xdim].values)
 
 
-def _cell(coord: str, axis: Axis) -> str:
+def _cell_index_sql(coord: str, axis: Axis) -> str:
     """SQL for the nearest cell index of `coord`: (coord - start) / step, rounded."""
     return f'round(({coord} - {axis.start}) / {axis.step})::BIGINT'
 
@@ -102,7 +102,7 @@ def sample_buildings(
 
     >>> ds = xr.open_zarr(icechunk_store, chunks=None, consolidated=False)
     >>> tbl = sample_buildings(ds[['rps_2011']])
-    >>> write_patable_to_gpq(tbl, 's3://bucket/buildings.parquet')
+    >>> write_geoparquet(tbl, 's3://bucket/buildings.parquet')
     """
 
     point_strategy = PointSamplingStrategy(point_strategy)
@@ -113,8 +113,8 @@ def sample_buildings(
     tbl = con.sql(
         f"""
         SELECT id, geometry, bbox,
-               {_cell('ST_Y(c)', y)} AS iy,
-               {_cell('ST_X(c)', x)} AS ix
+               {_cell_index_sql('ST_Y(c)', y)} AS iy,
+               {_cell_index_sql('ST_X(c)', x)} AS ix
         FROM (SELECT id, geometry, bbox, {point_strategy}(geometry) AS c
               FROM read_parquet($url)
               WHERE bbox.xmin >= $left AND bbox.ymin >= $bottom

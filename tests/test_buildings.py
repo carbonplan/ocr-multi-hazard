@@ -9,11 +9,11 @@ import xarray as xr
 from ocr.buildings import (
     OVERTURE_RELEASE,
     _assemble,
-    _cell,
-    _grid,
+    _axis,
+    _cell_index_sql,
     _sample,
     sample_buildings,
-    write_patable_to_gpq,
+    write_geoparquet,
 )
 from ocr.duck import duckdb_connect
 
@@ -40,12 +40,12 @@ def test_sample_inside_and_out_of_bounds() -> None:
     assert got['cls'].type == pa.int8()  # off-raster is null, not a cast to float
 
 
-def test_grid() -> None:
-    assert _grid(np.array([22.0, 22.5, 23.0])) == (22.0, 0.5)
+def test_axis() -> None:
+    assert _axis(np.array([22.0, 22.5, 23.0])) == (22.0, 0.5)
     step = np.float32(0.00030799387843481654)
-    _grid(np.float32(22.43) + step * np.arange(100_000, dtype='float32'))  # 30m float32
+    _axis(np.float32(22.43) + step * np.arange(100_000, dtype='float32'))  # 30m float32
     with pytest.raises(ValueError, match='evenly spaced'):
-        _grid(np.array([0.0, 1.0, 3.0]))
+        _axis(np.array([0.0, 1.0, 3.0]))
 
 
 def test_rejects_bad_inputs_before_s3() -> None:
@@ -67,7 +67,7 @@ def test_write_geoparquet_metadata(tmp_path: Path) -> None:
     ).to_arrow_table()
     tbl = tbl.append_column('cls', pa.array([3, None], type=pa.int8()))
     out = tmp_path / 'out.parquet'
-    write_patable_to_gpq(tbl.replace_schema_metadata(meta), out)
+    write_geoparquet(tbl.replace_schema_metadata(meta), out)
     # Off-raster null in an int var survives the write as a null int, not a float NaN.
     assert con.sql(f"SELECT cls FROM '{out}' ORDER BY id").fetchall() == [(3,), (None,)]
     assert con.sql(f"SELECT typeof(cls) FROM '{out}' LIMIT 1").fetchall() == [('TINYINT',)]
@@ -94,7 +94,7 @@ def test_sample_matches_sel_nearest() -> None:
     con = duckdb.connect()
     con.register('pts', pa.table({'y': y, 'x': x}))
     idx = con.sql(
-        f'SELECT {_cell("y", _grid(lat))} AS iy, {_cell("x", _grid(lon))} AS ix FROM pts'
+        f'SELECT {_cell_index_sql("y", _axis(lat))} AS iy, {_cell_index_sql("x", _axis(lon))} AS ix FROM pts'
     ).fetchnumpy()
     iy, ix = idx['iy'], idx['ix']
     got = _sample(ds, iy, ix)['risk'].to_numpy()
