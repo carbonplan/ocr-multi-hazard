@@ -197,16 +197,29 @@ Vector datasets contain the same risk variables as raster datasets, sampled at e
 | `bp_2011_riley` | float32 | Annual burn probability ~2011 (Riley et al, 2025) at building location             |
 | `bp_2047_riley` | float32 | Annual burn probability ~2047 (Riley et al, 2025) at building location             |
 
+#### Map columns
+
+The file also carries the columns the web map draws tiles from. Analysis tools can ignore them;
+`SELECT * EXCLUDE (bbox, hilbert, lod)` drops them.
+
+| Column    | Type   | Description                                                                          |
+| --------- | ------ | ------------------------------------------------------------------------------------ |
+| `bbox`    | struct | Bounding box covering (float32, rounded outward), with page statistics               |
+| `hilbert` | int64  | Hilbert index of each building's tile, the file's sort order                         |
+| `lod`     | struct | Simplified geometry for each overview zoom, in the [geoparquet-lod][lod] packed form |
+
+[lod]: https://github.com/Shane98c/geoparquet-lod
+
 ### Storage characteristics
 
-| Property              | Value                                            |
-| --------------------- | ------------------------------------------------ |
-| **Format**            | GeoParquet (schema version 1.1.0)                |
-| **Compression**       | zstd                                             |
-| **Geometry Encoding** | WKB                                              |
-| **Spatial Index**     | Covering bounding box (bbox)                     |
-| **Coverage**          | CONUS-wide, single consolidated file             |
-| **Aggregation**       | Consolidated from regional processing via DuckDB |
+| Property              | Value                                                                          |
+| --------------------- | ------------------------------------------------------------------------------ |
+| **Format**            | GeoParquet (schema version 1.1.0)                                              |
+| **Compression**       | zstd                                                                           |
+| **Geometry Encoding** | WKB                                                                            |
+| **Spatial Index**     | Covering bounding box (bbox), Hilbert order and a geoparquet-lod spatial index |
+| **Coverage**          | CONUS-wide, single consolidated file                                           |
+| **Aggregation**       | Consolidated from regional processing via DuckDB and geoparquet-lod            |
 
 ### Data quality
 
@@ -266,7 +279,7 @@ All datasets include descriptive metadata attributes:
 ### Vector data
 
 - **Full dataset**: Query the consolidated CONUS-wide building dataset
-- **Spatial query**: Use bounding box attributes for efficient spatial filtering
+- **Spatial query**: Use bounding box attributes for efficient spatial filtering; the file is in Hilbert order, so a bounding box filter skips most of it
 - **Attribute query**: Filter by risk threshold using Parquet predicate pushdown with DuckDB or similar tools
 - **Regional subset**: Extract specific areas using spatial predicates on latitude/longitude
 

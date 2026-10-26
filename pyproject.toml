@@ -10,6 +10,7 @@
     dependencies = [
         "duckdb>=2.0.0,<3",
         "fsspec>=2026.9.0",
+        "geoparquet-lod @ git+https://github.com/Shane98c/geoparquet-lod.git@ec683c90066b1bf1828e56a58911a26e5d7965d9",
         "icechunk>=2.3.0,<3",
         "obstore>=0.12.0,<0.13",
         "odc-geo>=0.5.3,<0.6",

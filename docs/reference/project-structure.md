@@ -26,10 +26,10 @@ graph TB
 
             OCR --> PIPELINE[pipeline/]
             PIPELINE --> PROCESS[process_region.py]
-            PIPELINE --> PARTITION[partition.py]
+            PIPELINE --> BUILDINGS[create_building_geoparquet.py]
             PIPELINE --> STATS[fire_wind_risk_regional_aggregator.py]
             PIPELINE --> PYRAMID[create_pyramid.py]
-            PIPELINE --> PMTILES[create_building_pmtiles.py<br/>create_building_centroid_pmtiles.py<br/>create_regional_pmtiles.py]
+            PIPELINE --> REGIONS[create_region_geoparquet.py]
             PIPELINE --> WRITERS[write_aggregated_region_analysis_files.py]
 
             OCR --> INPUTDS[input_datasets/]
@@ -122,12 +122,10 @@ Orchestration layer for local and cloud execution:
 Internal processing modules coordinated by the CLI. These implement the data processing workflow:
 
 - **`process_region.py`** - Sample risk values to building locations
-- **`partition.py`** - Partition GeoParquet by geographic regions
+- **`create_building_geoparquet.py`** - Write all buildings to one GeoParquet file with web map overviews
 - **`fire_wind_risk_regional_aggregator.py`** - Compute regional statistics with DuckDB
 - **`create_pyramid.py`** - Generate ndpyramid multiscale Zarr for web visualization
-- **`create_building_pmtiles.py`** - Generate PMTiles for building footprint visualization
-- **`create_building_centroid_pmtiles.py`** - Generate PMTiles for building centroid visualization
-- **`create_regional_pmtiles.py`** - Generate PMTiles for regional aggregated statistics
+- **`create_region_geoparquet.py`** - Write region statistics as GeoParquet laid out for web map lookups
 - **`write_aggregated_region_analysis_files.py`** - Write regional summary tables for all regions
 
 ### Risk models (`risks/`)

@@ -1,0 +1,27 @@
+from ocr.lod import write_buildings_lod
+from ocr.risks.fire.config import OCRConfig
+from ocr.risks.fire.console import console
+from ocr.risks.fire.utils import get_temp_dir
+
+# Buildings the coarse zooms draw; the rest fade into the background anyway.
+SHOWN = 'rps_2011 > 0 AND rps_2047 > 0'
+# Columns map tiles carry for styling; others are read by row on demand.
+TILE_COLUMNS = ['rps_2011', 'rps_2047']
+
+
+def create_building_geoparquet(config: OCRConfig) -> None:
+    """Write every processed building to one GeoParquet file with map overviews,
+    for analysis and for the web map."""
+    src = f'{config.vector.region_geoparquet_uri}/*.parquet'
+    dest = config.vector.building_geoparquet_uri
+    write_buildings_lod(
+        src,
+        dest,
+        shown=SHOWN,
+        carry=TILE_COLUMNS,
+        metadata=config.vector.metadata_dict,
+        temp_dir=get_temp_dir(),
+        log=console.log if config.debug else (lambda *_: None),
+    )
+    if config.debug:
+        console.log(f'buildings written to {dest}')
