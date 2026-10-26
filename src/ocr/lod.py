@@ -22,15 +22,23 @@ DEFAULT_TILE_BUDGETS: Mapping[int, int] = {
     12: 80_000,
     13: 120_000,
 }
-# Every building is drawn from this zoom; the map overzooms it past.
+# Every building is drawn from this zoom, zero-risk ones included; coarser
+# zooms draw only the buildings a `shown` predicate selects.
+EVERY_FROM_ZOOM = 13
+# Full detail from this zoom; the map overzooms it past.
 COMPLETE_ZOOM = 14
 # A building under a pixel draws as a square this many pixels wide.
 PLACEHOLDER_PIXELS = 0.25
 
 
-def display_thinning(shown: str, tile_budgets: Mapping[int, int] = DEFAULT_TILE_BUDGETS):
-    """Rows the coarse zooms draw: those matching the SQL predicate `shown`,
-    sampled uniformly so the busiest tile at each zoom holds its budget."""
+def display_thinning(
+    shown: str,
+    tile_budgets: Mapping[int, int] = DEFAULT_TILE_BUDGETS,
+    every_from: int = EVERY_FROM_ZOOM,
+):
+    """Rows each zoom draws, sampled uniformly so the busiest tile at the zoom
+    holds its budget: below `every_from` only rows matching the SQL predicate
+    `shown`, from it every row."""
     from geoparquet_lod import density_budget, only
 
     limits = sorted(tile_budgets.items())
@@ -38,7 +46,13 @@ def display_thinning(shown: str, tile_budgets: Mapping[int, int] = DEFAULT_TILE_
     def budget(zoom: int) -> int:
         return next((n for top, n in limits if zoom <= top), limits[-1][1])
 
-    return only(shown, density_budget(budget))
+    every = density_budget(budget)
+    selected = only(shown, every)
+
+    def thin(rows, zoom, ctx):
+        return (every if zoom >= every_from else selected)(rows, zoom, ctx)
+
+    return thin
 
 
 def write_buildings_lod(
@@ -57,7 +71,7 @@ def write_buildings_lod(
     """Write the buildings in `src` (a GeoParquet path or glob, local or S3) to
     `dest` with overviews. `shown` is a SQL predicate on the source columns for
     the buildings coarse zooms draw; every building is drawn from
-    COMPLETE_ZOOM. `carry` names the columns tiles carry for styling;
+    EVERY_FROM_ZOOM. `carry` names the columns tiles carry for styling;
     `metadata` is added to the file's key-value metadata."""
     from geoparquet_lod import write
 
