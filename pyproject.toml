@@ -100,12 +100,8 @@
         "E501", # Conflicts with ruff format
         "E721", # Comparing types instead of isinstance
         "E741", # Ambiguous variable names
-        "B008", # typer.Option() defaults are idiomatic
-        "RUF001", "RUF002", "RUF003", # intentional unicode (degree signs, etc.)
     ]
-    # B/C4/RUF off for fire code until the fire refactor lands.
-    per-file-ignores = { "*.ipynb" = ["B", "C4", "RUF"], "src/ocr/risks/fire/**" = ["B", "C4", "RUF"], "tests/fire/**" = ["B", "C4", "RUF"], "input-data/**" = ["B", "C4", "RUF"] }
-    select           = ["B", "C4", "E", "F", "I", "RUF", "UP", "W"]
+    select = ["E", "F", "I", "UP", "W"]
 
 [tool.ruff.lint.isort]
     combine-as-imports = true
@@ -136,8 +132,7 @@
     # rasterio macOS wheels target 15.0; lower makes pixi build it from sdist against system GDAL.
     platforms = ["linux-64", "linux-aarch64", { name = "osx-arm64-15", platform = "osx-arm64", macos = "15.0" }]
 
-# Only keep local package as an editable PyPI dep (and rare stragglers).
-# Wheels only for C-lib-backed packages; an sdist build would link against system GDAL/PROJ/HDF5.
+# Wheels only: building these from source would link against system GDAL/PROJ/HDF5.
 [tool.pixi.pypi-options]
     no-build = ["cartopy", "h5py", "netcdf4", "opencv-python-headless", "pyogrio", "pyproj", "rasterio", "shapely"]
 
