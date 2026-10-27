@@ -240,6 +240,56 @@ This single-file format enables:
 - Direct access for analysis tools and workflows
 - Simplified data distribution and versioning
 
+## Regional statistics datasets
+
+Regional statistics are published as GeoParquet, one dataset per region level, with each region's full
+geometry and the same values as the CSV and GeoJSON downloads (see
+[Regional statistics downloads](../access-data.md#regional-statistics-downloads) for the variables).
+The web map reads its region statistics from these files.
+
+### Layout
+
+```text
+{regions_uri}/
+  nation.parquet
+  states.parquet
+  counties/state_fips=SS/data.parquet
+  tracts/state_fips=SS/county_fips=CCC/data.parquet
+  blocks/state_fips=SS/county_fips=CCC/data.parquet
+```
+
+Partitions are Hive-style, so a query over a level's glob can filter on `state_fips` and `county_fips` and read
+only the matching files:
+
+```sql
+SELECT GEOID, building_count, rps_2011_median
+FROM read_parquet('{regions_uri}/blocks/*/*/data.parquet', hive_partitioning = true)
+WHERE state_fips = '08' AND county_fips = '013';
+```
+
+### Columns that differ from the CSV and GeoJSON
+
+| Column                                         | Type                          | Description                                      |
+| ---------------------------------------------- | ----------------------------- | ------------------------------------------------ |
+| `GEOID`                                        | string                        | Census GEOID, with leading zeros                 |
+| `STUSPS`                                       | string                        | State abbreviation (states only)                 |
+| `NAME`                                         | string                        | Region name (nation, states and counties)        |
+| `risk_score_2011_hist`, `risk_score_2047_hist` | list&lt;double&gt;            | Building count for each risk score, as a list    |
+| `bbox`                                         | struct                        | Bounding box covering, with page statistics      |
+| `geometry`                                     | WKB (Polygon or MultiPolygon) | Full region geometry in WGS84 longitude/latitude |
+
+There are no `longitude` and `latitude` columns; the centroid follows from the geometry.
+
+### Storage characteristics
+
+| Property        | Value                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------- |
+| **Format**      | GeoParquet (schema version 1.1.0)                                                      |
+| **Compression** | zstd                                                                                   |
+| **Row order**   | GEOID                                                                                  |
+| **Indexes**     | Statistics and page indexes on `GEOID` and `bbox`                                      |
+| **Pages**       | At most 1 row per page for nation, states and counties, 8 for tracts and 32 for blocks |
+
 ## Data validation
 
 ### Expected value ranges
