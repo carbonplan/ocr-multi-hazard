@@ -133,13 +133,10 @@
 [tool.pixi.workspace]
     channels  = ["conda-forge"]
     name      = "ocr"
-    platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+    # rasterio macOS wheels target 15.0; lower makes pixi build it from sdist against system GDAL.
+    platforms = ["linux-64", "linux-aarch64", { name = "osx-arm64-15", platform = "osx-arm64", macos = "15.0" }]
 
 # Only keep local package as an editable PyPI dep (and rare stragglers).
-# rasterio/pyogrio macOS wheels target 15.0; lower lets pixi build from sdist against system GDAL.
-[tool.pixi.system-requirements]
-    macos = "15.0"
-
 # Wheels only for C-lib-backed packages; an sdist build would link against system GDAL/PROJ/HDF5.
 [tool.pixi.pypi-options]
     no-build = ["cartopy", "h5py", "netcdf4", "opencv-python-headless", "pyogrio", "pyproj", "rasterio", "shapely"]

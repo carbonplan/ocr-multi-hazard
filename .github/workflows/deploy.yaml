@@ -108,6 +108,10 @@ jobs:
                   DASK_COILED__TOKEN: ${{ secrets.DASK_COILED__TOKEN }}
                   COILED_ENV_NAME: ${{ steps.compute.outputs.name }}
               run: |
+                  if [[ -z "$DASK_COILED__TOKEN" ]]; then
+                    echo "::warning::DASK_COILED__TOKEN not set (e.g. on a fork); skipping Coiled env build"
+                    exit 0
+                  fi
                   echo "Creating Coiled software environment: $COILED_ENV_NAME"
                   pixi run export-and-create-coiled
 
