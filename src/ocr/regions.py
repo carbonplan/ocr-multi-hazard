@@ -3,15 +3,16 @@
 Each region level keeps every source column and the original geometry; the
 rewrite adds a bbox covering and lays rows out for range-request lookups:
 
-    nation.parquet, states.parquet, counties.parquet
+    nation.parquet, states.parquet
+    counties/state_fips=SS/data.parquet
     tracts/state_fips=SS/county_fips=CCC/data.parquet
     blocks/state_fips=SS/county_fips=CCC/data.parquet
 
 Rows are in GEOID order with a row cap per page, so every column breaks pages
 at the same rows, and GEOID and the bbox carry statistics and page indexes. A
 reader finds a region by GEOID from the page statistics, or by point from the
-bbox ones, and reads one page. Counties have a row group per state and one
-county per page, so a lookup reads one state's page index.
+bbox ones, and reads one page. Partitions keep each file's footer and page
+indexes small, so opening a file costs one small read.
 """
 
 import json
@@ -131,7 +132,10 @@ def write_region_files(
             if level in PARTITIONED:
                 _write_counties_of(t, root, level, source_geo, metadata)
             elif level == 'counties':
-                _write(_split(t, 2), root / 'counties.parquet', 1, source_geo, metadata)
+                for state in _split(t, 2):
+                    s = state['GEOID'][0].as_py()[:2]
+                    path = root / level / f'state_fips={s}' / 'data.parquet'
+                    _write([state], path, PAGE_ROWS[level], source_geo, metadata)
             else:
                 _write([t], root / f'{level}.parquet', PAGE_ROWS[level], source_geo, metadata)
             log(f'{level}: {t.num_rows:,} rows')

@@ -65,23 +65,25 @@ def test_region_files_keep_every_row_and_column(sources, tmp_path):
         log=lambda *_: None,
     )
 
-    for level in ('nation', 'states', 'counties'):
+    for level in ('nation', 'states'):
         out = pq.read_table(tmp_path / 'regions' / f'{level}.parquet')
         src = pq.read_table(sources[level].path)
         assert sorted(out['GEOID'].to_pylist()) == sorted(src['GEOID'].to_pylist())
         assert set(src.column_names) <= set(out.column_names)
         assert out['GEOID'].to_pylist() == sorted(out['GEOID'].to_pylist())
 
-    for level in ('tracts', 'blocks'):
+    for level in ('counties', 'tracts', 'blocks'):
         files = sorted((tmp_path / 'regions' / level).rglob('data.parquet'))
         out = pa.concat_tables(pq.read_table(f) for f in files)
         src = pq.read_table(sources[level].path)
         assert sorted(out['GEOID'].to_pylist()) == sorted(src['GEOID'].to_pylist())
+        assert set(src.column_names) <= set(out.column_names)
         for f in files:
-            county = f.parent.name.removeprefix('county_fips=')
-            state = f.parent.parent.name.removeprefix('state_fips=')
+            parts = {p.split('=')[0]: p.split('=')[1] for p in f.parent.parts if '=' in p}
+            prefix = parts['state_fips'] + parts.get('county_fips', '')
             geoids = pq.read_table(f, columns=['GEOID'])['GEOID'].to_pylist()
-            assert all(g.startswith(state + county) for g in geoids)
+            assert all(g.startswith(prefix) for g in geoids)
+            assert geoids == sorted(geoids)
 
 
 def test_region_files_are_laid_out_for_lookups(sources, tmp_path):
@@ -89,9 +91,9 @@ def test_region_files_are_laid_out_for_lookups(sources, tmp_path):
         sources, UPath(tmp_path / 'regions'), shown=['rps_2011_median'], log=lambda *_: None
     )
 
-    counties = pq.ParquetFile(tmp_path / 'regions' / 'counties.parquet')
-    # a row group per state, one county per page
-    assert counties.metadata.num_row_groups == 2
+    counties = pq.ParquetFile(tmp_path / 'regions' / 'counties' / 'state_fips=06' / 'data.parquet')
+    # a file per state, one county per page
+    assert counties.metadata.num_rows == 2
     names = counties.schema_arrow.names
     assert names[:3] == ['GEOID', 'building_count', 'rps_2011_median']
     assert names[-2:] == ['bbox', 'geometry']
