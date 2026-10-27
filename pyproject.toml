@@ -121,6 +121,7 @@
     deploy   = ["coiled-deploy"]
     dev      = ["coiled-deploy", "data-mgmt", "dev"]
     docs     = ["coiled-deploy", "docs"]
+    flood    = ["coiled-deploy", "data-mgmt", "dev", "flood"]
 
 # Tasks grouped by features
 [tool.pixi.feature.dev.tasks]
@@ -133,6 +134,12 @@
 [tool.pixi.feature.docs.tasks]
     docs-build = { cmd = "sphinx-build -T -b html docs _build/html" }
     docs-serve = { cmd = "sphinx-autobuild docs _build/html" }
+
+[tool.pixi.feature.flood.tasks]
+    flood-etl = { cmd = "python -m ocr.risks.flood.etl.flood" }
+
+[tool.pixi.feature.flood.pypi-dependencies]
+    xproj = ">=0.2.1,<0.3"
 
 [tool.pixi.feature.data-mgmt.tasks]
     jupyter = { cmd = "jupyter lab" }
@@ -182,7 +189,7 @@
     fsspec                = ">=2025.9.0,<2026"
     gdal                  = ">=3.10.3,<4"
     geopandas             = ">=1.1.1,<2"
-    icechunk              = ">=1.1.5,<2"
+    icechunk              = ">=2,<3"
     libgdal-arrow-parquet = ">=3.10.3,<4"
     lonboard              = ">=0.11.1,<0.14"
     morecantile           = ">=6.2.0,<7"
