@@ -199,8 +199,10 @@ Vector datasets contain the same risk variables as raster datasets, sampled at e
 
 #### Map columns
 
-The file also carries the columns the web map draws tiles from. Analysis tools can ignore them;
-`SELECT * EXCLUDE (bbox, hilbert, lod)` drops them.
+The file also carries the columns the web map draws tiles from. `lod` is about a third of the file,
+and `SELECT *` or a read without a column list downloads it, so leave these columns out of analysis
+reads: `SELECT * EXCLUDE (bbox, hilbert, lod)` in DuckDB, or `columns=[...]` in GeoPandas. A query can
+still filter on `bbox` without selecting it.
 
 | Column    | Type   | Description                                                                          |
 | --------- | ------ | ------------------------------------------------------------------------------------ |
