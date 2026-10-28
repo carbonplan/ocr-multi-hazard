@@ -211,7 +211,7 @@ ocr create-region-geoparquet --env-file .env
 
 #### `ocr write-aggregated-region-analysis-files` - write analysis files
 
-Write aggregated region analysis files (csv, geoparquet and geojson).
+Write the region statistics as CSV and GeoJSON downloads.
 You can add the flag `--write-region-files` to `ocr run` to add this optional step in the pipeline.
 
 ```bash
