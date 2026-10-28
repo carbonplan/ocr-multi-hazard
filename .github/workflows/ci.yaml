@@ -17,6 +17,15 @@ permissions:
     contents: read # This is required for actions/checkout
 
 jobs:
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: prefix-dev/setup-pixi@v0.10.2
+              with:
+                  environments: dev
+            - run: pixi run --environment dev lint
+
     unit-tests:
         runs-on: ubuntu-latest
         steps:
@@ -84,8 +93,6 @@ jobs:
 
             - uses: prefix-dev/setup-pixi@v0.10.2
               with:
-                  cache: false # no pixi.lock
-                  locked: false
                   activate-environment: true
 
             - run: pixi info

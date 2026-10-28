@@ -23,9 +23,9 @@ def create_pyramid(config: OCRConfig):
     logging.getLogger('botocore').setLevel(logging.WARNING)
     logging.getLogger('boto3').setLevel(logging.WARNING)
 
-    INPUT_RASTER_BUCKET = config.icechunk.storage_root.strip('s3://')
+    INPUT_RASTER_BUCKET = config.icechunk.storage_root.removeprefix('s3://')
     INPUT_RASTER_PREFIX = config.icechunk.prefix
-    PYRAMID_BUCKET = config.pyramid.storage_root.strip('s3://')
+    PYRAMID_BUCKET = config.pyramid.storage_root.removeprefix('s3://')
     PYRAMID_PREFIX = config.pyramid.output_prefix
     VAR_LIST = ['rps_2011', 'rps_2047']
 
