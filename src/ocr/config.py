@@ -43,6 +43,8 @@ class Hazard(StrEnum):
 class OutputPaths:
     """Bucket-relative output keys for one hazard version. Resolve with StorageConfig.uri / icechunk_storage.
 
+    v2+ layout only; fire v1.x stays at fire's legacy prefixes (output/fire-risk/...).
+
     >>> cfg, out = StorageConfig(), OutputPaths(Hazard.FLOOD, 'v2.0.0')
     >>> repo = icechunk.Repository.open(cfg.icechunk_storage(out.tensor))
     >>> write_geoparquet(tbl, cfg.uri(out.buildings))
@@ -66,12 +68,9 @@ class OutputPaths:
 
     @property
     def buildings(self) -> str:
-        return f'{self.root}/vector/buildings.geoparquet'
+        return f'{self.root}/buildings.parquet'
 
     @property
-    def tracts(self) -> str:
-        return f'{self.root}/vector/tracts.geoparquet'
-
-    @property
-    def blocks(self) -> str:
-        return f'{self.root}/vector/blocks.geoparquet'
+    def regions(self) -> str:
+        """Prefix for `ocr.regions.layout` (nation/states files, per-state counties/tracts/blocks)."""
+        return f'{self.root}/regions'
