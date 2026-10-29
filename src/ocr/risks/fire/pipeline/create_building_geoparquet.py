@@ -1,7 +1,6 @@
 from ocr.lod import write_buildings_lod
 from ocr.risks.fire.config import OCRConfig
 from ocr.risks.fire.console import console
-from ocr.risks.fire.utils import get_temp_dir
 
 # Buildings the coarsest zooms sample; zero-risk ones join, biggest first, from z6.
 SHOWN = 'rps_2011 > 0 AND rps_2047 > 0'
@@ -21,7 +20,6 @@ def create_building_geoparquet(config: OCRConfig) -> None:
         shown=SHOWN,
         carry=TILE_COLUMNS,
         metadata=config.vector.metadata_dict,
-        temp_dir=get_temp_dir(),
         log=console.log if config.debug else (lambda *_: None),
     )
     if config.debug:

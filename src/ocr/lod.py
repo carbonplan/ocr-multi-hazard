@@ -11,7 +11,7 @@ from pathlib import Path
 
 from upath import UPath
 
-from ocr.risks.fire.utils import copy_or_upload
+from ocr.risks.fire.utils import copy_or_upload, get_temp_dir
 
 # Buildings kept in the busiest tile at each zoom, up to and including the
 # key's zoom. One fraction is kept everywhere at a zoom, so relative density
@@ -89,7 +89,7 @@ def write_buildings_lod(
     from geoparquet_lod import write
 
     # the writer reads `src` where it is; only its output is local
-    with tempfile.TemporaryDirectory(dir=temp_dir) as tmp:
+    with tempfile.TemporaryDirectory(dir=get_temp_dir() if temp_dir is None else temp_dir) as tmp:
         out = Path(tmp) / 'buildings.parquet'
         write(
             str(src),
