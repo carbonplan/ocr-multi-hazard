@@ -48,7 +48,7 @@ def test_buildings_lod_keeps_every_building(buildings, tmp_path):
         str(buildings.parent / '*.parquet'),
         dest,
         shown='rps_2011 > 0 AND rps_2047 > 0',
-        carry=['rps_2011', 'rps_2047'],
+        carry=[('rps_2011', 'halffloat'), ('rps_2047', 'halffloat')],
         metadata={'license_name': 'ODBL'},
         workers=1,
         log=lambda *_: None,
@@ -63,6 +63,12 @@ def test_buildings_lod_keeps_every_building(buildings, tmp_path):
 
     lod = json.loads(out.schema_arrow.metadata[b'geo'])['lod_columns']
     assert max(lod['zooms']) == COMPLETE_ZOOM
+    assert lod['attributes'] == [
+        {'name': 'rps_2011', 'type': 'halffloat'},
+        {'name': 'rps_2047', 'type': 'halffloat'},
+    ]
+    # tiles carry half precision; the source columns keep theirs
+    assert out.schema_arrow.field('rps_2011').type == pa.float32()
     # the coarsest zooms draw only risky buildings. At z0 one
     # tile covers everything, so a row is non-null only where it is drawn.
     t = pq.read_table(dest.path, columns=['rps_2011', 'rps_2047', 'lod'])

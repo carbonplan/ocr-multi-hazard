@@ -204,11 +204,11 @@ and `SELECT *` or a read without a column list downloads it, so leave these colu
 reads: `SELECT * EXCLUDE (bbox, hilbert, lod)` in DuckDB, or `columns=[...]` in GeoPandas. A query can
 still filter on `bbox` without selecting it.
 
-| Column    | Type   | Description                                                                          |
-| --------- | ------ | ------------------------------------------------------------------------------------ |
-| `bbox`    | struct | Bounding box covering (float32, rounded outward), with page statistics               |
-| `hilbert` | int64  | Hilbert index of each building's tile, the file's sort order                         |
-| `lod`     | struct | Simplified geometry for each overview zoom, in the [geoparquet-lod][lod] packed form |
+| Column    | Type   | Description                                                                                                                            |
+| --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `bbox`    | struct | Bounding box covering (float32, rounded outward), with page statistics                                                                 |
+| `hilbert` | int64  | Hilbert index of each building's tile, the file's sort order                                                                           |
+| `lod`     | struct | Simplified geometry for each overview zoom, with `rps_2011` and `rps_2047` at half precision, in the [geoparquet-lod][lod] packed form |
 
 [lod]: https://github.com/Shane98c/geoparquet-lod
 

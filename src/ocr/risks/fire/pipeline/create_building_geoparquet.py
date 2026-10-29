@@ -5,8 +5,9 @@ from ocr.risks.fire.utils import get_temp_dir
 
 # Buildings the coarsest zooms sample; zero-risk ones join, biggest first, from z6.
 SHOWN = 'rps_2011 > 0 AND rps_2047 > 0'
-# Columns map tiles carry for styling; others are read by row on demand.
-TILE_COLUMNS = ['rps_2011', 'rps_2047']
+# Columns map tiles carry for styling, at half precision: the map colours by
+# bins, and selecting a building reads its full-precision values by row.
+TILE_COLUMNS = [('rps_2011', 'halffloat'), ('rps_2047', 'halffloat')]
 
 
 def create_building_geoparquet(config: OCRConfig) -> None:

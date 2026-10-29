@@ -70,7 +70,7 @@ def write_buildings_lod(
     dest: UPath,
     *,
     shown: str,
-    carry: list[str],
+    carry: list[str | tuple[str, str]],
     metadata: Mapping[str, str] | None = None,
     tile_budgets: Mapping[int, int] = DEFAULT_TILE_BUDGETS,
     temp_dir: Path | None = None,
@@ -81,8 +81,9 @@ def write_buildings_lod(
     """Write the buildings in `src` (a GeoParquet path or glob, local or S3) to
     `dest` with overviews. `shown` is a SQL predicate on the source columns for
     the buildings coarse zooms draw; every building is drawn from
-    EVERY_FROM_ZOOM. `carry` names the columns tiles carry for styling;
-    `metadata` is added to the file's key-value metadata."""
+    EVERY_FROM_ZOOM. `carry` names the columns tiles carry for styling, each a
+    name or a (name, Arrow type) pair such as ('rps_2011', 'halffloat') to carry
+    it at that precision; `metadata` is added to the file's key-value metadata."""
     from geoparquet_lod import write
 
     # the writer reads `src` where it is; only its output is local
