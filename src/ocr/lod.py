@@ -11,6 +11,8 @@ from pathlib import Path
 
 from upath import UPath
 
+from ocr.risks.fire.utils import copy_or_upload
+
 # Buildings kept in the busiest tile at each zoom, up to and including the
 # key's zoom. One fraction is kept everywhere at a zoom, so relative density
 # reads the same at every scale.
@@ -103,10 +105,5 @@ def write_buildings_lod(
             temp_dir=tmp,
             log=log,
         )
-        dest = UPath(dest)
         log(f'uploading {out} to {dest}')
-        if dest.protocol in ('', 'file'):
-            Path(dest).parent.mkdir(parents=True, exist_ok=True)
-            out.replace(Path(dest))
-        else:
-            dest.fs.put_file(str(out), dest.path)
+        copy_or_upload(UPath(out), UPath(dest))
