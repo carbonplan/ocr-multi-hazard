@@ -1,4 +1,4 @@
-"""Hazard-agnostic storage config. Fire still uses its own config! TODO: refactor onto this later"""
+"""Risk-agnostic storage config. Fire still uses its own config! TODO: refactor onto this later"""
 
 import re
 from dataclasses import dataclass
@@ -33,7 +33,7 @@ class StorageConfig(pydantic_settings.BaseSettings):
         return icechunk.s3_storage(bucket=self.bucket, prefix=prefix, region=self.region)
 
 
-class Hazard(StrEnum):
+class Risk(StrEnum):
     FIRE = 'fire'
     FLOOD = 'flood'
     HURRICANE = 'hurricane'
@@ -41,26 +41,26 @@ class Hazard(StrEnum):
 
 @dataclass(frozen=True)
 class OutputPaths:
-    """Bucket-relative output keys for one hazard version. Resolve with StorageConfig.uri / icechunk_storage.
+    """Bucket-relative output keys for one risk version. Resolve with StorageConfig.uri / icechunk_storage.
 
     v2+ layout only; fire v1.x stays at fire's legacy prefixes (output/fire-risk/...).
 
-    >>> cfg, out = StorageConfig(), OutputPaths(Hazard.FLOOD, 'v2.0.0')
+    >>> cfg, out = StorageConfig(), OutputPaths(Risk.FLOOD, 'v2.0.0')
     >>> repo = icechunk.Repository.open(cfg.icechunk_storage(out.tensor))
     >>> write_geoparquet(tbl, cfg.uri(out.buildings))
     """
 
-    hazard: Hazard
+    risk: Risk
     version: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, 'hazard', Hazard(self.hazard))
+        object.__setattr__(self, 'risk', Risk(self.risk))
         if not re.fullmatch(r'v\d+\.\d+\.\d+', self.version):
             raise ValueError(f'version must look like v2.0.0, got {self.version!r}')
 
     @property
     def root(self) -> str:
-        return f'output/{self.hazard}/{self.version}'
+        return f'output/{self.risk}/{self.version}'
 
     @property
     def tensor(self) -> str:
