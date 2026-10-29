@@ -6,7 +6,8 @@ integrates them into an expected annual damage that extrapolates past the
 for CONUS in CLIMADA so the damage–frequency curve is exact per cell, and
 the extrapolation convention can be scored where it is applied, re-scored at
 the scenario stores' sample size, and stressed under warming-like shifts.
-Part 5 of the walkthrough reads the results below.
+Part 5 of the walkthrough reads the results below. Section 5 reproduces the
+NA2 impact function the damage stores apply and refits it on corrected winds.
 
 The hazard is built the way the published maps were (Meiler et al. 2026,
 [CHAZ-hazard-maps](https://github.com/simonameiler/CHAZ-hazard-maps)):
@@ -265,3 +266,123 @@ direction. The verdict of section 3 stands on the served data: a flat tail
 past rp_1000 is 2–6% low on the ERA5 store and unbiased at the scenario
 stores' sample size, while the slope extension is 2% high on ERA5 and
 9–14% high at the scenario sample size.
+
+## 5. The NA2 impact function (`eberenz_na2.py`)
+
+The damage stores apply the NA2 `v_half` of Eberenz et al. (2021), 89.2 m/s
+(TDR), fit on CLIMADA 1.4.1 winds. Winds rebuilt on CLIMADA 4.1.0 or later
+need a refit, so `eberenz_na2.py` reproduces the published fit and repeats it
+under other CLIMADA versions and track conventions.
+
+```bash
+E="pixi run -e climada python input-data/tensor/chaz/climada/eberenz_na2.py"
+$E prep                                # events, paper damages, exposure, IBTrACS
+$E wind --radius est --records 6h      # winds on CLIMADA 6.1
+uv run --no-project --python 3.10 --with climada==4.0.1 --with 'numpy<2' --with 'pandas<2.2' \
+  --with 'xarray<2024.3' --with 'scipy<1.13' --with 'shapely<2.1' --with 'geopandas<1' \
+  --with 'pyproj<3.7' --with 'dask<2024.3' --with pyarrow \
+  python input-data/tensor/chaz/climada/eberenz_na2.py wind --radius p141 --records 6h
+F="pixi run python input-data/tensor/chaz/climada/eberenz_na2.py"
+$F fit 4.0.1_p141_6h 6.1.0_est_6h      # fits, Table A2 statistics, per-event ratios
+$F ead 80.3 70.2                       # CONUS EAD of the corrected-wind rebuild
+```
+
+Wind files are tagged `<CLIMADA version>_<radius>_<records>[_<pressure>][_penv1010][_dt<hours>]`
+and land in `~/.cache/ocr/eberenz-na2`. The 43 NA2 events (40 USA, 3
+Canada, 1980–2017) and their damages normalized to 2014 come from CLIMADA's
+`tc_impf_cal_v01_EDR.csv`, the paper's simulated damage per event at the
+default `v_half` of 74.7 from climada_papers. Tracks are IBTrACS v04r01, US
+agency, with CLIMADA filling missing values (Iwa 1982 needs it; Luis 1995 was
+renumbered after the paper). Exposure is CLIMADA's LitPop (2018, 150 arcsec)
+summed to 300 arcsec and rescaled to the paper's 2014 produced capital.
+`v_half` is swept from 25.8 to 325.7 m/s in 0.1 steps through the
+piecewise-linear impact function of `chaz_damage._mdr`, and events without
+simulated damage are dropped, as in the paper. CLIMADA 4.0.1, the last
+release before the wind fix, stands in for 1.4.1.
+
+### Reproduction on pre-fix winds
+
+Two conventions of the original setup are in the code, not the paper.
+CLIMADA 1.4.1 overwrote the radius of maximum wind at every record from
+central pressure (15 nm at 950 hPa and below, 25 at 980, 50 at 1020, beside a
+`# TODO: always extrapolate???!!!`); the paper and Geiger et al. (2018)
+describe an observed radius with pressure as the fallback. And the
+calibration read pre-processed tracks (`read_processed_ibtracs_csv`, not
+published) whose time step Geiger et al. give as "usually 6 h". IBTrACS v04
+adds 3-hourly and landfall records: Andrew's put 922 hPa over Homestead,
+where the 6-hourly track interpolates to 944 hPa.
+
+| CLIMADA 4.0.1, radius / records | TDR at 74.7 / 86.0 / 89.2 | `v_half` TDR / RMSF | Andrew ÷ paper |
+| ------------------------------- | ------------------------- | ------------------- | -------------- |
+| paper (Table A2)                | 2.11 / 1.16 / 1.00        | 89.2 / 86.0         |                |
+| observed / all records          | 3.11 / 1.77 / 1.54        | 99.6 / 90.2         | 1.14           |
+| 1.4.1 rule / all records        | 2.24 / 1.28 / 1.11        | 91.7 / 89.4         | 1.55           |
+| 1.4.1 rule / 6-hourly           | 2.10 / 1.19 / 1.03        | 89.9 / 86.6         | 1.04           |
+
+The remaining 0.7 m/s is inside the paper's own spread: the per-event file
+in climada_papers sums to a ratio of 2.03 at 74.7 where Table A2 has 2.11.
+The match holds in the total more than per storm (24 of 43 within 25% of the
+paper's damage, Gloria at 1.8×), and the TDR fit only sees the total. A flat
+1010 hPa environmental pressure moves the fit away (TDR 92.0, RMSF 15
+against 8.7), so the processed tracks kept the agency's outer-isobar pressure.
+
+### Refit and the CHAZ conventions
+
+`v_half` absorbs the biases of the hazard it is fit with, so the refit should
+represent the 43 storms the way the CHAZ hazard represents its own. CLIMADA's
+CHAZ reader hands the wind model 6-hourly records with no radius (CLIMADA
+estimates one from pressure), environmental pressure 1010 hPa, and central
+pressure from `_estimate_pressure`, a regression on wind, latitude and
+longitude. It passes CHAZ's 0–360 longitudes, while the regression was fit on
+IBTrACS's −180–180: over the US agency's 1980–2019 records the regression is
+2.1 hPa too deep in the western hemisphere with −180–180 longitudes and 14.8
+hPa too deep with 0–360. Every Atlantic and East Pacific CHAZ storm reaches
+the wind model 12.7 hPa deeper than the regression intends. The reader does
+this in every version checked (3.0.0, 3.2.0, 4.0.1, 6.1.0), so it is in the
+published maps and in our rebuild.
+
+All with 6-hourly records:
+
+| radius, central pressure, environmental pressure    | 4.0.1 TDR / RMSF | 6.1 TDR / RMSF | 6.1 events |
+| --------------------------------------------------- | ---------------- | -------------- | ---------- |
+| 1.4.1 rule, observed, observed                      | 89.9 / 86.6      | 68.0 / 60.3    | 40         |
+| observed, observed, observed                        | 98.2 / 87.7      | 73.8 / 61.3    | 40         |
+| estimated, observed, observed                       | 92.8 / 88.9      | 70.2 / 62.3    | 40         |
+| estimated, from wind with 0–360, 1010 (CHAZ reader) | 102.0 / 123.3    | 79.1 / 85.9    | 43         |
+| same at 0.5 h steps (ERA5 maps, our rebuild)        | 104.5 / 126.0    | 80.3 / 87.5    | 43         |
+| estimated, from wind with −180–180, 1010            | 83.7 / 82.2      | 64.4 / 56.3    | 40         |
+
+Scaling the published value by the reproduction's version shift (89.2 × 68.0
+/ 89.9 = 67.5) lands within 0.5 m/s of the direct 6.1 fit under Eberenz's
+conventions. Pressure from wind discards each storm's own pressure, and on
+4.0.1 the per-storm fit degrades: 5 of 43 events within 25% of the paper's
+damage (20 with observed pressure), Sandy halving and Irene dropping 40%
+while Alicia, Ike and Katrina more than double, and the TDR and RMSF optima
+21 m/s apart. Both criteria move the same way.
+
+### Damage
+
+`ead` scores the corrected-wind ERA5 rebuild of section 3 (CLIMADA 6.1, 0.5
+h steps) against the served store (published levels × 89.2, 35.0 $bn/yr
+over US cells, LitPop 2020), with the rebuild's per-event frequencies
+rescaled to the published ones.
+
+| `v_half` on the rebuild                    | national | TX–AL | FL   | GA–Carolinas | VA–ME |
+| ------------------------------------------ | -------- | ----- | ---- | ------------ | ----- |
+| 89.2 (shipped)                             | 0.38     | 0.37  | 0.41 | 0.27         | 0.29  |
+| 80.3 (CHAZ reader conventions)             | 0.58     | 0.57  | 0.62 | 0.42         | 0.44  |
+| 70.2 (estimated radius, observed pressure) | 1.01     | 1.00  | 1.09 | 0.74         | 0.78  |
+| 68.0 (Eberenz's conventions)               | 1.15     | 1.14  | 1.24 | 0.85         | 0.90  |
+
+The served store is not a consistent pairing either: its winds come through
+the same reader, and the matching pre-fix fit, 104.5, takes it to 18.9
+$bn/yr (×0.54). Paired consistently on both sides, the corrected rebuild at
+80.3 sits 7% above that. In every pairing Georgia–Carolinas and
+Virginia–Maine fall 25–30% relative to Florida and the Gulf. The two
+catalogues are different storm samples, so cell-level ratios are noisy
+(0.21–1.03, 5–95%, at 80.3 among the cells carrying 90% of the loss).
+
+Not settled: whether a rerun keeps the reader's longitudes and fits with
+them (79–80 m/s) or corrects them and fits with −180–180 (64.4 m/s at 1 h
+steps), and how far the offset moves CHAZ winds directly, which a per-track
+comparison of H08 peak winds with CHAZ's own `Mwspd` would show.
