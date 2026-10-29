@@ -22,7 +22,7 @@ def test_output_paths_resolve(tmp_path: Path):
     assert local.uri(out.regions) == str(tmp_path / 'output/flood/v2.0.0/regions')
 
 
-@pytest.mark.parametrize('version', ['2.0.0', 'v2', 'v2.0', 'v2.0.0-dev'])
+@pytest.mark.parametrize('version', ['2.0.0', 'v2', 'v2.0', 'latest'])
 def test_bad_version(version: str):
     with pytest.raises(ValueError):
         OutputPaths(Risk.FIRE, version)
@@ -30,4 +30,4 @@ def test_bad_version(version: str):
 
 def test_bad_risk():
     with pytest.raises(ValueError):
-        OutputPaths('tornado', 'v2.0.0')
+        OutputPaths('avalanche', 'v2.0.0')
