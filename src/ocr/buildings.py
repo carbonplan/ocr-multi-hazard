@@ -85,6 +85,8 @@ def write_geoparquet(tbl: pa.Table, out: str | Path) -> None:
     """Save `tbl` as GeoParquet (local path or s3://), keeping its metadata."""
     meta = {k.decode(): v.decode() for k, v in (tbl.schema.metadata or {}).items()}
     to_s3 = UPath(out).protocol == 's3'
+    if not to_s3:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)  # DuckDB COPY won't create dirs
     with duckdb_connect(s3_write=to_s3) as con:
         con.register('tbl', tbl)
         con.execute(
