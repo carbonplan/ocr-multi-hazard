@@ -1,4 +1,4 @@
-"""Risk-agnostic storage config. Fire still uses its own config! TODO: refactor onto this later"""
+"""Risk-agnostic storage config. Fire still uses its own config! TODO: refactor fire config to this later"""
 
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +13,7 @@ from pydantic_extra_types.semantic_version import SemanticVersion
 
 
 class StorageConfig(pydantic_settings.BaseSettings):
+    # we can override, just a default
     bucket: str = 'carbonplan-ocr'
     region: str = 'us-west-2'
     local_root: Path | None = None
@@ -63,6 +64,7 @@ class OutputPaths:
     """
 
     risk: Risk
+    # not a standard str, so we can validate as semver
     version: Annotated[SemanticVersion, BeforeValidator(_strip_v)]
 
     @property
