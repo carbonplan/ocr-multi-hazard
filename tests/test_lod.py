@@ -9,8 +9,9 @@ from upath import UPath
 
 from ocr.lod import COMPLETE_ZOOM, EVERY_FROM_ZOOM, POLYGONS_FROM_ZOOM, write_buildings_lod
 
+# the building source declares GeoParquet 1.0.0, as the pipeline's does
 GEO = {
-    'version': '1.1.0',
+    'version': '1.0.0',
     'primary_column': 'geometry',
     'columns': {'geometry': {'encoding': 'WKB', 'geometry_types': ['Polygon']}},
 }
@@ -61,7 +62,10 @@ def test_buildings_lod_keeps_every_building(buildings, tmp_path):
     assert set(src.column_names) <= set(out.schema_arrow.names)
     assert out.schema_arrow.metadata[b'license_name'] == b'ODBL'
 
-    lod = json.loads(out.schema_arrow.metadata[b'geo'])['lod_columns']
+    geo = json.loads(out.schema_arrow.metadata[b'geo'])
+    # the bbox covering needs GeoParquet 1.1
+    assert geo['version'] == '1.1.0'
+    lod = geo['lod_columns']
     assert max(lod['zooms']) == COMPLETE_ZOOM
     assert lod['attributes'] == [
         {'name': 'rps_2011', 'type': 'halffloat'},
