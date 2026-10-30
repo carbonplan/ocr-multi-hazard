@@ -59,7 +59,7 @@ class OutputPaths:
     """Bucket-relative output keys for one risk version. Resolve with StorageConfig.uri / icechunk_storage.
 
     >>> cfg, out = StorageConfig(), OutputPaths(Risk.FLOOD, 'v2.0.0')
-    >>> repo = icechunk.Repository.open(cfg.icechunk_storage(out.tensor))
+    >>> repo = icechunk.Repository.open(cfg.icechunk_storage(out.store))
     >>> write_geoparquet(tbl, cfg.uri(out.buildings))
     """
 
@@ -72,14 +72,14 @@ class OutputPaths:
         return f'output/{self.risk}/v{self.version}'
 
     @property
-    def tensor(self) -> str:
-        return f'{self.root}/tensor.icechunk'
+    def store(self) -> str:
+        return f'{self.root}/store.icechunk'
 
     @property
     def buildings(self) -> str:
-        return f'{self.root}/buildings.parquet'
+        return f'{self.root}/vector/buildings.geoparquet'
 
     @property
     def regions(self) -> str:
-        """Prefix for `ocr.regions.layout` (nation/states files, per-state counties/tracts/blocks)."""
-        return f'{self.root}/regions'
+        """Prefix for region files (nation, states, per-state counties/tracts/blocks)."""
+        return f'{self.root}/vector/regions'

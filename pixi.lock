@@ -5569,7 +5569,9 @@ packages:
   - obstore>=0.12.0,<0.13
   - odc-geo>=0.5.3,<0.6
   - pyarrow>=26.0.0
+  - pydantic-extra-types>=2.11.1,<3
   - pydantic-settings>=2.16.1,<3
+  - semver>=3.1.0,<4
   - s3fs>=2026.9.0
   - topozarr>=0.2.1,<0.3
   - universal-pathlib>=0.3.10,<0.4
@@ -5587,13 +5589,11 @@ packages:
   - pint-xarray>=0.6.1,<0.7 ; extra == 'fire'
   - pooch>=1.9.0,<2 ; extra == 'fire'
   - pydantic>=2.14.1,<3 ; extra == 'fire'
-  - pydantic-extra-types>=2.11.1,<3 ; extra == 'fire'
   - pyproj>=3.8.0,<4 ; extra == 'fire'
   - python-dotenv>=1.2.0,<2 ; extra == 'fire'
   - rasterio>=1.5.2,<2 ; extra == 'fire'
   - rich>=15.0.0 ; extra == 'fire'
   - rioxarray>=0.23.0,<0.24 ; extra == 'fire'
-  - semver>=3.1.0,<4 ; extra == 'fire'
   - tqdm>=4.70.1,<5 ; extra == 'fire'
   - typer>=0.27.3,<0.28 ; extra == 'fire'
   - xclim>=0.62.0,<0.63 ; extra == 'fire'

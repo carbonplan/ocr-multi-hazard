@@ -113,7 +113,7 @@ def sample_buildings(
 
     >>> ds = xr.open_zarr(icechunk_store, chunks=None, consolidated=False)
     >>> tbl = sample_buildings(ds[['rps_2011']])
-    >>> write_geoparquet(tbl, 's3://bucket/buildings.parquet')
+    >>> write_geoparquet(tbl, 's3://bucket/buildings.geoparquet')
     """
 
     point_strategy = PointSamplingStrategy(point_strategy)
