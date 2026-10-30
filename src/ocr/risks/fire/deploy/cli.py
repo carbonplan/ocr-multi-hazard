@@ -116,8 +116,9 @@ def run(
     ),
 ):
     """
-    Run the OCR deployment pipeline. This will process regions, aggregate geoparquet files,
-    and create PMTiles layers for the specified risk type.
+    Run the OCR deployment pipeline. This will process regions, then write the building and
+    region GeoParquet outputs, which serve both analysis and the web map, for the specified
+    risk type.
     """
 
     if dispatch_platform is not None and not _in_batch():
@@ -274,20 +275,21 @@ def run(
                 },
             )
 
-        # ----------- 02 Aggregate -------------
+        # ----------- 02 Buildings -------------
         manager = _get_manager(Platform.COILED, config.debug)
         manager.submit_job(
-            command='ocr partition-buildings',
-            name=f'partition-buildings-{config.environment.value}',
+            command='ocr create-building-geoparquet',
+            name=f'create-building-geoparquet-{config.environment.value}',
             kwargs={
                 **_coiled_kwargs(config, env_file),
-                'vm_type': 'c8g.12xlarge',
-                'scheduler_vm_type': 'c8g.12xlarge',
+                'vm_type': 'r8g.4xlarge',
+                'scheduler_vm_type': 'r8g.4xlarge',
+                'disk_size': 250,
                 'software': COILED_SOFTWARE,
-            },
+            },  # the overview build needs about twice its output in free disk
         )
-        manager.wait_for_completion(exit_on_failure=True)
 
+        # ----------- 03 Regions -------------
         manager = _get_manager(Platform.COILED, config.debug)
         manager.submit_job(
             command='ocr aggregate-region-risk-summary-stats',
@@ -299,10 +301,9 @@ def run(
                 'software': COILED_SOFTWARE,
             },
         )
+        manager.wait_for_completion(exit_on_failure=True)
 
         if write_regional_stats:
-            manager.wait_for_completion(exit_on_failure=True)
-
             manager = _get_manager(Platform.COILED, config.debug)
 
             manager.submit_job(
@@ -315,48 +316,19 @@ def run(
                     'software': COILED_SOFTWARE,
                 },
             )
-        # create summary stats PMTiles layer
+
         manager = _get_manager(Platform.COILED, config.debug)
         manager.submit_job(
-            command='ocr create-regional-pmtiles',
-            name=f'create-aggregated-region-pmtiles-{config.environment.value}',
+            command='ocr create-region-geoparquet',
+            name=f'create-region-geoparquet-{config.environment.value}',
             kwargs={
                 **_coiled_kwargs(config, env_file),
-                'vm_type': 'c8g.12xlarge',
-                'scheduler_vm_type': 'c8g.12xlarge',
-                'disk_size': 250,
+                'vm_type': 'r8g.2xlarge',
+                'scheduler_vm_type': 'r8g.2xlarge',
+                'disk_size': 100,
                 'software': COILED_SOFTWARE,
             },
         )
-
-        # ------------- 03  Tiles ---------------
-
-        manager = _get_manager(Platform.COILED, config.debug)
-        manager.submit_job(
-            command='ocr create-building-centroid-pmtiles',
-            name=f'create-building-centroid-pmtiles-{config.environment.value}',
-            kwargs={
-                **_coiled_kwargs(config, env_file),
-                'vm_type': 'c8g.12xlarge',
-                'scheduler_vm_type': 'c8g.12xlarge',
-                'disk_size': 250,
-                'software': COILED_SOFTWARE,
-            },  # PMTiles creation needs more disk space
-        )
-
-        manager = _get_manager(Platform.COILED, config.debug)
-        manager.submit_job(
-            command='ocr create-building-pmtiles',
-            name=f'create-building-pmtiles-{config.environment.value}',
-            kwargs={
-                **_coiled_kwargs(config, env_file),
-                'vm_type': 'c8g.12xlarge',
-                'scheduler_vm_type': 'c8g.12xlarge',
-                'disk_size': 250,
-                'software': COILED_SOFTWARE,
-            },  # PMTiles creation needs more disk space
-        )
-
         manager.wait_for_completion(exit_on_failure=True)
 
     elif platform == Platform.LOCAL:
@@ -383,11 +355,11 @@ def run(
                     '[yellow]No unprocessed regions to process. Skipping region processing step.[/yellow]'
                 )
 
-        # Partition buildings by geography
+        # Buildings for analysis and the web map
         manager = _get_manager(Platform.LOCAL, config.debug)
         manager.submit_job(
-            command='ocr partition-buildings',
-            name=f'partition-buildings-{config.environment.value}',
+            command='ocr create-building-geoparquet',
+            name=f'create-building-geoparquet-{config.environment.value}',
             kwargs={
                 **_local_kwargs(),
             },
@@ -415,31 +387,11 @@ def run(
                     **_local_kwargs(),
                 },
             )
-        # Create summary stats PMTiles layer
+        # Regions for analysis and the web map
         manager = _get_manager(Platform.LOCAL, config.debug)
         manager.submit_job(
-            command='ocr create-regional-pmtiles',
-            name=f'create-aggregated-region-pmtiles-{config.environment.value}',
-            kwargs={
-                **_local_kwargs(),
-            },
-        )
-        manager.wait_for_completion(exit_on_failure=True)
-
-        # Create building centroid PMTiles from the consolidated geoparquet file
-        manager = _get_manager(Platform.LOCAL, config.debug)
-        manager.submit_job(
-            command='ocr create-building-centroid-pmtiles',
-            name=f'create-building-centroid-pmtiles-{config.environment.value}',
-            kwargs={
-                **_local_kwargs(),
-            },
-        )
-        # Create PMTiles from the consolidated geoparquet file
-        manager = _get_manager(Platform.LOCAL, config.debug)
-        manager.submit_job(
-            command='ocr create-building-pmtiles',
-            name=f'create-building-pmtiles-{config.environment.value}',
+            command='ocr create-region-geoparquet',
+            name=f'create-region-geoparquet-{config.environment.value}',
             kwargs={
                 **_local_kwargs(),
             },
@@ -520,7 +472,7 @@ def process_region(
 
 
 @app.command()
-def partition_buildings(
+def create_building_geoparquet(
     env_file: Path | None = typer.Option(
         None,
         '-e',
@@ -539,19 +491,20 @@ def partition_buildings(
         show_default=True,
     ),
     vm_type: str | None = typer.Option(
-        'c8g.12xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
+        'r8g.4xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
     ),
+    disk_size: int | None = typer.Option(250, '--disk-size', help='Disk size in GB (Coiled only).'),
 ):
     """
-    Partition buildings geoparquet by state and county FIPS codes.
+    Write every processed building to one GeoParquet file with web map overviews.
     """
 
     # Schedule if requested and not already inside a batch task
     if platform is not None and not _in_batch():
         config = load_config(env_file)
         manager = _get_manager(platform, config.debug)
-        command = 'ocr partition-buildings'
-        name = f'partition-buildings-{config.environment.value}'
+        command = 'ocr create-building-geoparquet'
+        name = f'create-building-geoparquet-{config.environment.value}'
 
         if platform == Platform.COILED:
             COILED_SOFTWARE = os.environ.get('COILED_SOFTWARE_ENV_NAME')
@@ -563,6 +516,7 @@ def partition_buildings(
             kwargs = {**_coiled_kwargs(config, env_file)}
             kwargs['vm_type'] = vm_type
             kwargs['scheduler_vm_type'] = vm_type
+            kwargs['disk_size'] = disk_size
             kwargs['software'] = COILED_SOFTWARE
         else:
             kwargs = {**_local_kwargs()}
@@ -571,10 +525,10 @@ def partition_buildings(
         manager.wait_for_completion(exit_on_failure=True)
         return
 
-    from ocr.risks.fire.pipeline.partition import partition_buildings_by_geography
+    from ocr.risks.fire.pipeline.create_building_geoparquet import create_building_geoparquet
 
     config = load_config(env_file)
-    partition_buildings_by_geography(config=config)
+    create_building_geoparquet(config=config)
 
 
 @app.command()
@@ -601,7 +555,7 @@ def aggregate_region_risk_summary_stats(
     ),
 ):
     """
-    Generate time-horizon based statistical summaries for county and tract level PMTiles creation
+    Generate time-horizon based statistical summaries for each region level
     """
 
     # Schedule if requested and not already inside a batch task
@@ -639,7 +593,7 @@ def aggregate_region_risk_summary_stats(
 
 
 @app.command()
-def create_regional_pmtiles(
+def create_region_geoparquet(
     env_file: Path | None = typer.Option(
         None,
         '-e',
@@ -658,20 +612,20 @@ def create_regional_pmtiles(
         show_default=True,
     ),
     vm_type: str | None = typer.Option(
-        'c8g.8xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
+        'r8g.2xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
     ),
-    disk_size: int | None = typer.Option(250, '--disk-size', help='Disk size in GB (Coiled only).'),
+    disk_size: int | None = typer.Option(100, '--disk-size', help='Disk size in GB (Coiled only).'),
 ):
     """
-    Create PMTiles for regional risk statistics (counties and tracts).
+    Write region summary statistics as GeoParquet for analysis and the web map.
     """
 
     # Schedule if requested and not already inside a batch task
     if platform is not None and not _in_batch():
         config = load_config(env_file)
         manager = _get_manager(platform, config.debug)
-        command = 'ocr create-regional-pmtiles'
-        name = f'create-aggregated-region-pmtiles-{config.environment.value}'
+        command = 'ocr create-region-geoparquet'
+        name = f'create-region-geoparquet-{config.environment.value}'
 
         if platform == Platform.COILED:
             COILED_SOFTWARE = os.environ.get('COILED_SOFTWARE_ENV_NAME')
@@ -692,11 +646,11 @@ def create_regional_pmtiles(
         manager.wait_for_completion(exit_on_failure=True)
         return
 
-    from ocr.risks.fire.pipeline.create_regional_pmtiles import create_regional_pmtiles
+    from ocr.risks.fire.pipeline.create_region_geoparquet import create_region_geoparquet
 
     config = load_config(env_file)
 
-    create_regional_pmtiles(config=config)
+    create_region_geoparquet(config=config)
 
 
 @app.command()
@@ -762,130 +716,6 @@ def write_aggregated_region_analysis_files(
     config = load_config(env_file)
 
     write_aggregated_region_analysis_files(config=config)
-
-
-@app.command()
-def create_building_pmtiles(
-    env_file: Path | None = typer.Option(
-        None,
-        '-e',
-        '--env-file',
-        help='Path to the environment variables file. These will be used to set up the OCRConfiguration',
-        show_default=True,
-        exists=True,
-        file_okay=True,
-        resolve_path=True,
-    ),
-    platform: Platform | None = typer.Option(
-        None,
-        '-p',
-        '--platform',
-        help='If set, schedule this command on the specified platform instead of running inline.',
-        show_default=True,
-    ),
-    vm_type: str | None = typer.Option(
-        'c8g.8xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
-    ),
-    disk_size: int | None = typer.Option(250, '--disk-size', help='Disk size in GB (Coiled only).'),
-):
-    """
-    Create PMTiles from the consolidated geoparquet file.
-    """
-
-    # Schedule if requested and not already inside a batch task
-    if platform is not None and not _in_batch():
-        config = load_config(env_file)
-        manager = _get_manager(platform, config.debug)
-        command = 'ocr create-building-pmtiles'
-        name = f'create-building-pmtiles-{config.environment.value}'
-
-        if platform == Platform.COILED:
-            COILED_SOFTWARE = os.environ.get('COILED_SOFTWARE_ENV_NAME')
-            if COILED_SOFTWARE is None or not COILED_SOFTWARE.strip():
-                console.log(
-                    '[red]Error: COILED_SOFTWARE_ENV_NAME environment variable is not set. '
-                    'This must be set to the name of a Coiled software environment with OCR installed. Proceeding with package sync...[/red]'
-                )
-            kwargs = {**_coiled_kwargs(config, env_file)}
-            kwargs['vm_type'] = vm_type
-            kwargs['scheduler_vm_type'] = vm_type
-            kwargs['disk_size'] = disk_size
-            kwargs['software'] = COILED_SOFTWARE
-        else:
-            kwargs = {**_local_kwargs()}
-
-        manager.submit_job(command=command, name=name, kwargs=kwargs)
-        manager.wait_for_completion(exit_on_failure=True)
-        return
-
-    from ocr.risks.fire.pipeline.create_building_pmtiles import create_building_pmtiles
-
-    config = load_config(env_file)
-
-    create_building_pmtiles(config=config)
-
-
-@app.command()
-def create_building_centroid_pmtiles(
-    env_file: Path | None = typer.Option(
-        None,
-        '-e',
-        '--env-file',
-        help='Path to the environment variables file. These will be used to set up the OCRConfiguration',
-        show_default=True,
-        exists=True,
-        file_okay=True,
-        resolve_path=True,
-    ),
-    platform: Platform | None = typer.Option(
-        None,
-        '-p',
-        '--platform',
-        help='If set, schedule this command on the specified platform instead of running inline.',
-        show_default=True,
-    ),
-    vm_type: str | None = typer.Option(
-        'c8g.8xlarge', '--vm-type', help='Coiled VM type override (Coiled only).'
-    ),
-    disk_size: int | None = typer.Option(250, '--disk-size', help='Disk size in GB (Coiled only).'),
-):
-    """
-    Create building centroid PMTiles from the consolidated geoparquet file.
-    """
-
-    # Schedule if requested and not already inside a batch task
-    if platform is not None and not _in_batch():
-        config = load_config(env_file)
-        manager = _get_manager(platform, config.debug)
-        command = 'ocr create-building-pmtiles'
-        name = f'create-building-pmtiles-{config.environment.value}'
-
-        if platform == Platform.COILED:
-            COILED_SOFTWARE = os.environ.get('COILED_SOFTWARE_ENV_NAME')
-            if COILED_SOFTWARE is None or not COILED_SOFTWARE.strip():
-                console.log(
-                    '[red]Error: COILED_SOFTWARE_ENV_NAME environment variable is not set. '
-                    'This must be set to the name of a Coiled software environment with OCR installed. Proceeding with package sync...[/red]'
-                )
-            kwargs = {**_coiled_kwargs(config, env_file)}
-            kwargs['vm_type'] = vm_type
-            kwargs['scheduler_vm_type'] = vm_type
-            kwargs['disk_size'] = disk_size
-            kwargs['software'] = COILED_SOFTWARE
-        else:
-            kwargs = {**_local_kwargs()}
-
-        manager.submit_job(command=command, name=name, kwargs=kwargs)
-        manager.wait_for_completion(exit_on_failure=True)
-        return
-
-    from ocr.risks.fire.pipeline.create_building_centroid_pmtiles import (
-        create_building_centroid_pmtiles,
-    )
-
-    config = load_config(env_file)
-
-    create_building_centroid_pmtiles(config=config)
 
 
 @app.command()

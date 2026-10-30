@@ -793,45 +793,17 @@ class VectorConfig(pydantic_settings.BaseSettings):
         if self.debug:
             console.log(
                 f'Wiping vector data storage at these locations:\n'
-                f'- {self.building_geoparquet_uri.parent}\n'
-                f'- {self.buildings_pmtiles_uri.parent}\n'
-                f'- {self.building_centroids_pmtiles_uri.parent}\n'
+                f'- {self.building_geoparquet_uri}\n'
+                f'- {self.regions_uri}\n'
                 f'- {self.region_geoparquet_uri}\n'
                 f'- {self.aggregated_region_analysis_uri}\n'
                 f'- {self.tracts_summary_stats_uri.parent}\n'
             )
-        self.upath_delete(self.building_geoparquet_uri.parent)
-        self.upath_delete(self.buildings_pmtiles_uri.parent)
-        self.upath_delete(self.building_centroids_pmtiles_uri.parent)
+        self.upath_delete(self.building_geoparquet_uri)
+        self.upath_delete(self.regions_uri)
         self.upath_delete(self.region_geoparquet_uri)
         self.upath_delete(self.aggregated_region_analysis_uri)
         self.upath_delete(self.tracts_summary_stats_uri.parent)
-
-    # ----------------------------
-    # output pmtiles
-    # ----------------------------
-
-    @functools.cached_property
-    def pmtiles_prefix(self) -> str:
-        return f'{self.output_prefix}/pmtiles'
-
-    @functools.cached_property
-    def buildings_pmtiles_uri(self) -> UPath:
-        path = UPath(f'{self.storage_root}/{self.pmtiles_prefix}/buildings.pmtiles')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    @functools.cached_property
-    def building_centroids_pmtiles_uri(self) -> UPath:
-        path = UPath(f'{self.storage_root}/{self.pmtiles_prefix}/building_centroids.pmtiles')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    @functools.cached_property
-    def region_pmtiles_uri(self) -> UPath:
-        path = UPath(f'{self.storage_root}/{self.pmtiles_prefix}/regions.pmtiles')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
 
     # ----------------------------
     # geoparquet
@@ -863,7 +835,15 @@ class VectorConfig(pydantic_settings.BaseSettings):
 
     @property
     def building_geoparquet_uri(self) -> UPath:
+        """Every building with its risk values, original geometry and map overviews."""
         path = UPath(f'{self.storage_root}/{self.geoparquet_prefix}/buildings.parquet')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @functools.cached_property
+    def regions_uri(self) -> UPath:
+        """Region summary statistics with geometry, one dataset per region level."""
+        path = UPath(f'{self.storage_root}/{self.geoparquet_prefix}/regions')
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -954,22 +934,19 @@ class VectorConfig(pydantic_settings.BaseSettings):
         rows.append(nv('Output prefix', self.output_prefix))
         rows.append(nv('Geoparquet prefix', self.geoparquet_prefix))
         rows.append(nv('Region Geoparquet prefix', self.region_geoparquet_prefix))
-        rows.append(nv('PMTiles prefix', self.pmtiles_prefix))
 
         # derived URIs (touch cached properties that mkdir/prepare parents)
         rows.extend(
             [
                 nv('Region Geoparquet URI', str(self.region_geoparquet_uri)),
                 nv('Buildings Geoparquet', str(self.building_geoparquet_uri)),
+                nv('Regions Geoparquet', str(self.regions_uri)),
                 nv('Region summary stats dir', str(self.region_summary_stats_prefix)),
                 nv('Block summary stats', str(self.block_summary_stats_uri)),
                 nv('Tracts summary stats', str(self.tracts_summary_stats_uri)),
                 nv('Counties summary stats', str(self.counties_summary_stats_uri)),
                 nv('States summary stats', str(self.states_summary_stats_uri)),
                 nv('Nation summary stats', str(self.nation_summary_stats_uri)),
-                nv('Buildings PMTiles', str(self.buildings_pmtiles_uri)),
-                nv('Building centroids PMTiles', str(self.building_centroids_pmtiles_uri)),
-                nv('Region PMTiles', str(self.region_pmtiles_uri)),
             ]
         )
 

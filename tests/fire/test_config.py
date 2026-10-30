@@ -439,15 +439,9 @@ class TestVectorConfig:
             == f'{temp_dir}/output/fire-risk/vector/qa/geoparquet/buildings.parquet'
         )
 
-        # Test pmtiles_prefix
+        # Test regions_uri
         assert (
-            str(config.buildings_pmtiles_uri)
-            == f'{temp_dir}/output/fire-risk/vector/qa/pmtiles/buildings.pmtiles'
-        )
-        # Test building centroid pmtiles uri
-        assert (
-            str(config.building_centroids_pmtiles_uri)
-            == f'{temp_dir}/output/fire-risk/vector/qa/pmtiles/building_centroids.pmtiles'
+            str(config.regions_uri) == f'{temp_dir}/output/fire-risk/vector/qa/geoparquet/regions'
         )
 
     def test_summary_stats_uris(self, temp_dir):
@@ -507,14 +501,15 @@ class TestVectorConfig:
         assert 'Vector setting' in out
         assert 'Geoparquet prefix' in out
         assert 'Region Geoparquet URI' in out
-        assert 'PMTiles prefix' in out
+        assert 'Regions Geoparquet' in out
 
         # Verify directories were created as a side-effect
         assert config.region_geoparquet_uri.exists()
         assert config.region_geoparquet_uri.is_dir()
         assert config.region_summary_stats_prefix.exists()
         assert config.region_summary_stats_prefix.is_dir()
-        assert config.buildings_pmtiles_uri.parent.exists()
+        assert config.building_geoparquet_uri.parent.exists()
+        assert config.regions_uri.is_dir()
 
 
 # ============= IcechunkConfig Tests =============
