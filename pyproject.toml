@@ -175,6 +175,7 @@
     coiled    = ">=1.120.0,<2"
     ipykernel = ">=6.29"
     python    = "3.12.*"
+    rioxarray = ">=0.18"
     s3fs      = ">=2025.3"
 
 [tool.pixi.feature.coiled-deploy.dependencies]
