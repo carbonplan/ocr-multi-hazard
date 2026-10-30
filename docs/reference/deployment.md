@@ -4,17 +4,16 @@ This document provides a comprehensive reference for the Open Climate Risk (OCR)
 
 ## Overview
 
-The OCR project uses a multi-stage pipeline that processes regional data, aggregates results, and generates visualization tiles. The entire workflow is orchestrated through GitHub Actions with automatic deployments to multiple environments (QA, staging, and production).
+The OCR project uses a multi-stage pipeline that processes regional data and writes building and region GeoParquet that serves both analysis and the web map. The entire workflow is orchestrated through GitHub Actions with automatic deployments to multiple environments (QA, staging, and production).
 
 ## Processing pipeline architecture
 
-The OCR processing pipeline consists of three main phases, each with specific computational requirements and error handling mechanisms. The pipeline leverages Coiled for distributed computing and includes automatic retry logic for resilient processing.
+The OCR processing pipeline consists of two main phases, each with specific computational requirements and error handling mechanisms. The pipeline leverages Coiled for distributed computing and includes automatic retry logic for resilient processing.
 
 ### Pipeline phases
 
 - **Phase 01: Region processing**: Distributed processing of geographic regions with automatic retry capabilities
-- **Phase 02: Aggregation**: Data consolidation and statistical summary generation
-- **Phase 03: Tile generation**: Creation of PMTiles for efficient map visualization
+- **Phase 02: Outputs**: The building GeoParquet with map overviews, the region statistics, and the region GeoParquet
 
 ### Pipeline visualization
 
@@ -60,15 +59,16 @@ graph TB
     CreatePyramid[["🔺 <b>create-pyramid</b><br/>Command: ocr create-pyramid<br/>VM: m8g.4xlarge<br/>Scheduler: m8g.4xlarge<br/>(Optional)"]]
     CheckPyramid -->|Yes| CreatePyramid
 
-    %% Section 02: Aggregation
-    subgraph Section02["<b>Phase 02 - Aggregation</b>"]
-        AggregateGeo[["📊 <b>partition-buildings</b><br/>Command: ocr partition-buildings<br/>VM: c8g.12xlarge<br/>Scheduler: c8g.12xlarge<br/>Creates GeoParquet"]]
+    %% Section 02: Outputs
+    subgraph Section02["<b>Phase 02 - Outputs</b>"]
+        BuildingGeoParquet[["🌍 <b>create-building-geoparquet</b><br/>Command: ocr create-building-geoparquet<br/>VM: r8g.4xlarge<br/>Scheduler: r8g.4xlarge<br/>Disk: 250 GB"]]
 
-        CheckPyramid -->|No| AggregateGeo
-        CreatePyramid --> AggregateGeo
+        CheckPyramid -->|No| BuildingGeoParquet
+        CreatePyramid --> BuildingGeoParquet
 
         RegionSummaryStats[["📈 <b>aggregate-region-risk-summary-stats</b><br/>Command: ocr aggregate-region-<br/>risk-summary-stats<br/>VM: m8g.16xlarge<br/>Scheduler: m8g.16xlarge"]]
-        AggregateGeo --> RegionSummaryStats
+        CheckPyramid -->|No| RegionSummaryStats
+        CreatePyramid --> RegionSummaryStats
 
         CheckWriteRegionalStats{--write-regional-stats?}
         RegionSummaryStats --> CheckWriteRegionalStats
@@ -76,27 +76,18 @@ graph TB
         WriteRegionFiles[["📝 <b>write-aggregated-region-analysis-files</b><br/>Command: ocr write-aggregated-<br/>region-analysis-files<br/>VM: r8g.4xlarge<br/>Scheduler: r8g.4xlarge"]]
         CheckWriteRegionalStats -->|Yes| WriteRegionFiles
 
-        RegionalPMTiles[["🗺️ <b>create-regional-pmtiles</b><br/>Command: ocr create-regional-pmtiles<br/>VM: c8g.12xlarge<br/>Scheduler: c8g.12xlarge<br/>Disk: 250 GB"]]
-        CheckWriteRegionalStats -->|No| RegionalPMTiles
-        WriteRegionFiles --> RegionalPMTiles
-    end
+        RegionGeoParquet[["🗺️ <b>create-region-geoparquet</b><br/>Command: ocr create-region-geoparquet<br/>VM: r8g.2xlarge<br/>Scheduler: r8g.2xlarge<br/>Disk: 100 GB"]]
+        CheckWriteRegionalStats -->|No| RegionGeoParquet
+        WriteRegionFiles --> RegionGeoParquet
 
-    %% Section 03: Tiles Creation
-    subgraph Section03["<b>Phase 03 - Tile Generation</b>"]
-        CreateCentroidPMTiles[["📍 <b>create-building-centroid-pmtiles</b><br/>Command: ocr create-building-<br/>centroid-pmtiles<br/>VM: c8g.12xlarge<br/>Scheduler: c8g.12xlarge<br/>Disk: 250 GB"]]
-        RegionalPMTiles --> CreateCentroidPMTiles
-
-        CreateBuildingPMTiles[["🌍 <b>create-building-pmtiles</b><br/>Command: ocr create-building-pmtiles<br/>VM: c8g.12xlarge<br/>Scheduler: c8g.12xlarge<br/>Disk: 250 GB"]]
-        RegionalPMTiles --> CreateBuildingPMTiles
-
-        WaitForTiles[Wait for both tile jobs]
-        CreateCentroidPMTiles --> WaitForTiles
-        CreateBuildingPMTiles --> WaitForTiles
+        WaitForOutputs[Wait for the output jobs]
+        BuildingGeoParquet --> WaitForOutputs
+        RegionGeoParquet --> WaitForOutputs
     end
 
     %% End States
     Success([Pipeline Complete ✓])
-    WaitForTiles --> Success
+    WaitForOutputs --> Success
 
     Failure([Pipeline Failed ✗])
     RetryError --> Failure
@@ -104,22 +95,18 @@ graph TB
     %% Job Manager Labels
     Manager1[batch_manager_01]
     Manager2[batch_manager_pyramid_01]
-    Manager3[batch_manager_aggregate_02]
+    Manager3[batch_manager_buildings_02]
     Manager4[batch_manager_write_aggregated_<br/>region_analysis_files_01]
-    Manager5[batch_manager_county_<br/>aggregation_01]
-    Manager6[batch_manager_county_<br/>tiles_02]
-    Manager7[batch_manager_centroid_<br/>tiles_03]
-    Manager8[batch_manager_building_<br/>tiles_03]
+    Manager5[batch_manager_region_<br/>aggregation_02]
+    Manager6[batch_manager_regions_02]
 
     %% Connect managers to their jobs (dotted lines for reference)
     Manager1 -.-> ProcessRegions
     Manager2 -.-> CreatePyramid
-    Manager3 -.-> AggregateGeo
+    Manager3 -.-> BuildingGeoParquet
     Manager4 -.-> WriteRegionFiles
     Manager5 -.-> RegionSummaryStats
-    Manager6 -.-> RegionalPMTiles
-    Manager7 -.-> CreateCentroidPMTiles
-    Manager8 -.-> CreateBuildingPMTiles
+    Manager6 -.-> RegionGeoParquet
 
     %% Styling with theme-neutral colors
     classDef process fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e40af
@@ -133,14 +120,14 @@ graph TB
 
     class ProcessRegions process
     class CreatePyramid optional
-    class AggregateGeo,WriteRegionFiles,RegionSummaryStats aggregate
-    class RegionalPMTiles,CreateCentroidPMTiles,CreateBuildingPMTiles tiles
+    class WriteRegionFiles,RegionSummaryStats aggregate
+    class BuildingGeoParquet,RegionGeoParquet tiles
     class CheckEnv,CheckFailed,CheckRetries,CheckWriteRegionalStats,CheckPyramid decision
     class RetryError,LogError,Failure error
-    class Manager1,Manager2,Manager3,Manager4,Manager5,Manager6,Manager7,Manager8 manager
+    class Manager1,Manager2,Manager3,Manager4,Manager5,Manager6 manager
     class Success success
     class Start process
-    class WaitForTiles tiles
+    class WaitForOutputs tiles
 ```
 
 ### Key pipeline features

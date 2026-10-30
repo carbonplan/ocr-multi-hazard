@@ -197,16 +197,31 @@ Vector datasets contain the same risk variables as raster datasets, sampled at e
 | `bp_2011_riley` | float32 | Annual burn probability ~2011 (Riley et al, 2025) at building location             |
 | `bp_2047_riley` | float32 | Annual burn probability ~2047 (Riley et al, 2025) at building location             |
 
+#### Map columns
+
+The file also carries the columns the web map draws tiles from. `lod` is about 28% of the file,
+and `SELECT *` or a read without a column list downloads it, so leave these columns out of analysis
+reads: `SELECT * EXCLUDE (bbox, hilbert, lod)` in DuckDB, or `columns=[...]` in GeoPandas. A query can
+still filter on `bbox` without selecting it.
+
+| Column    | Type   | Description                                                                                                                            |
+| --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `bbox`    | struct | Bounding box covering (float32, rounded outward), with page statistics                                                                 |
+| `hilbert` | int64  | Hilbert index of each building's tile, the file's sort order                                                                           |
+| `lod`     | struct | Simplified geometry for each overview zoom, with `rps_2011` and `rps_2047` at half precision, in the [geoparquet-lod][lod] packed form |
+
+[lod]: https://github.com/Shane98c/geoparquet-lod
+
 ### Storage characteristics
 
-| Property              | Value                                            |
-| --------------------- | ------------------------------------------------ |
-| **Format**            | GeoParquet (schema version 1.1.0)                |
-| **Compression**       | zstd                                             |
-| **Geometry Encoding** | WKB                                              |
-| **Spatial Index**     | Covering bounding box (bbox)                     |
-| **Coverage**          | CONUS-wide, single consolidated file             |
-| **Aggregation**       | Consolidated from regional processing via DuckDB |
+| Property              | Value                                                                          |
+| --------------------- | ------------------------------------------------------------------------------ |
+| **Format**            | GeoParquet (schema version 1.1.0)                                              |
+| **Compression**       | zstd                                                                           |
+| **Geometry Encoding** | WKB                                                                            |
+| **Spatial Index**     | Covering bounding box (bbox), Hilbert order and a geoparquet-lod spatial index |
+| **Coverage**          | CONUS-wide, single consolidated file                                           |
+| **Aggregation**       | Consolidated from regional processing via DuckDB and geoparquet-lod            |
 
 ### Data quality
 
@@ -226,6 +241,56 @@ This single-file format enables:
 - Efficient CONUS-wide spatial queries
 - Direct access for analysis tools and workflows
 - Simplified data distribution and versioning
+
+## Regional statistics datasets
+
+Regional statistics are published as GeoParquet, one dataset per region level, with each region's full
+geometry and the same values as the CSV and GeoJSON downloads (see
+[Regional statistics downloads](../access-data.md#regional-statistics-downloads) for the variables).
+The web map reads its region statistics from these files.
+
+### Layout
+
+```text
+{regions_uri}/
+  nation.parquet
+  states.parquet
+  counties/state_fips=SS/data.parquet
+  tracts/state_fips=SS/county_fips=CCC/data.parquet
+  blocks/state_fips=SS/county_fips=CCC/data.parquet
+```
+
+Partitions are Hive-style, so a query over a level's glob can filter on `state_fips` and `county_fips` and read
+only the matching files:
+
+```sql
+SELECT GEOID, building_count, rps_2011_median
+FROM read_parquet('{regions_uri}/blocks/*/*/data.parquet', hive_partitioning = true)
+WHERE state_fips = '08' AND county_fips = '013';
+```
+
+### Columns that differ from the CSV and GeoJSON
+
+| Column                                         | Type                          | Description                                      |
+| ---------------------------------------------- | ----------------------------- | ------------------------------------------------ |
+| `GEOID`                                        | string                        | Census GEOID, with leading zeros                 |
+| `STUSPS`                                       | string                        | State abbreviation (states only)                 |
+| `NAME`                                         | string                        | Region name (nation, states and counties)        |
+| `risk_score_2011_hist`, `risk_score_2047_hist` | list&lt;double&gt;            | Building count for each risk score, as a list    |
+| `bbox`                                         | struct                        | Bounding box covering, with page statistics      |
+| `geometry`                                     | WKB (Polygon or MultiPolygon) | Full region geometry in WGS84 longitude/latitude |
+
+There are no `longitude` and `latitude` columns; the centroid follows from the geometry.
+
+### Storage characteristics
+
+| Property        | Value                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------- |
+| **Format**      | GeoParquet (schema version 1.1.0)                                                      |
+| **Compression** | zstd                                                                                   |
+| **Row order**   | GEOID                                                                                  |
+| **Indexes**     | Statistics and page indexes on `GEOID` and `bbox`                                      |
+| **Pages**       | At most 1 row per page for nation, states and counties, 8 for tracts and 32 for blocks |
 
 ## Data validation
 
@@ -266,7 +331,7 @@ All datasets include descriptive metadata attributes:
 ### Vector data
 
 - **Full dataset**: Query the consolidated CONUS-wide building dataset
-- **Spatial query**: Use bounding box attributes for efficient spatial filtering
+- **Spatial query**: Use bounding box attributes for efficient spatial filtering; the file is in Hilbert order, so a bounding box filter skips most of it
 - **Attribute query**: Filter by risk threshold using Parquet predicate pushdown with DuckDB or similar tools
 - **Regional subset**: Extract specific areas using spatial predicates on latitude/longitude
 
