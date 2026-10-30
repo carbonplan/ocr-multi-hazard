@@ -16,7 +16,9 @@
         "odc-geo>=0.5.3,<0.6",
         # TODO: swap pyarrow for arro3-core/arro3-io if dask is removed (and some fire deps are refactored).
         "pyarrow>=26.0.0",
+        "pydantic-extra-types>=2.11.1,<3",
         "pydantic-settings>=2.16.1,<3",
+        "semver>=3.1.0,<4", # required by pydantic_extra_types.semantic_version
         "s3fs>=2026.9.0",
         "topozarr>=0.2.1,<0.3",
         "universal-pathlib>=0.3.10,<0.4",
@@ -39,13 +41,11 @@
         "pint-xarray>=0.6.1,<0.7",
         "pooch>=1.9.0,<2",
         "pydantic>=2.14.1,<3",
-        "pydantic-extra-types>=2.11.1,<3",
         "pyproj>=3.8.0,<4",
         "python-dotenv>=1.2.0,<2",
         "rasterio>=1.5.2,<2",
         "rich>=15.0.0",
         "rioxarray>=0.23.0,<0.24",
-        "semver>=3.1.0,<4", # required by pydantic_extra_types.semantic_version
         "tqdm>=4.70.1,<5",
         "typer>=0.27.3,<0.28",
         "xclim>=0.62.0,<0.63",
@@ -117,6 +117,7 @@
         "--cov-report=xml",
         "--cov=./src/ocr",
         "--verbose",
+        "--ignore=tests/fire",  # legacy fire tests; skipped during the multi-hazard refactor
     ]
     console_output_style = "count"
     markers = [

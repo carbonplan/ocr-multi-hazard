@@ -71,7 +71,7 @@ def test_write_geoparquet_metadata(tmp_path: Path) -> None:
         "SELECT * FROM (VALUES ('a', ST_Point(0, 0)), ('b', ST_Point(1, 1))) t(id, geometry)"
     ).to_arrow_table()
     tbl = tbl.append_column('cls', pa.array([3, None], type=pa.int8()))
-    out = tmp_path / 'out.parquet'
+    out = tmp_path / 'vector' / 'out.parquet'  # missing parent dir is created
     write_geoparquet(tbl.replace_schema_metadata(meta), out)
     # Off-raster null in an int var survives the write as a null int, not a float NaN.
     assert con.sql(f"SELECT cls FROM '{out}' ORDER BY id").fetchall() == [(3,), (None,)]
