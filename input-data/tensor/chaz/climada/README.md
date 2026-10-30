@@ -8,6 +8,7 @@ the extrapolation convention can be scored where it is applied, re-scored at
 the scenario stores' sample size, and stressed under warming-like shifts.
 Part 5 of the walkthrough reads the results below. Section 5 reproduces the
 NA2 impact function the damage stores apply and refits it on corrected winds.
+Section 6 runs the CHAZ model, CMIP6 winds and the map step on a laptop.
 
 The hazard is built the way the published maps were (Meiler et al. 2026,
 [CHAZ-hazard-maps](https://github.com/simonameiler/CHAZ-hazard-maps)):
@@ -386,3 +387,107 @@ Not settled: whether a rerun keeps the reader's longitudes and fits with
 them (79–80 m/s) or corrects them and fits with −180–180 (64.4 m/s at 1 h
 steps), and how far the offset moves CHAZ winds directly, which a per-track
 comparison of H08 peak winds with CHAZ's own `Mwspd` would show.
+
+## 6. Running CHAZ ourselves (`chaz_downscale.py`, `chaz_tropicona.py`, `chaz_maptime.py`)
+
+These scripts test, on a laptop, the three stages of a from-scratch rerun:
+the CHAZ model itself, the Holland winds on CMIP6 tracks with both CLIMADA
+fixes, and the published map step. Everything they write stays under
+`~/.cache/ocr/chaz-local/`, and nothing goes to S3. The inputs are public:
+the CHAZ tutorial's ERA5 2017 forcing and regressions (Zenodo 11631930,
+CC BY 4.0) and 25 CMIP6 CHAZ track files from Chia-Ying Lee's TROPICONA
+tutorial (Zenodo 12533388, CC BY 4.0). `fetch_chaz_local.sh` downloads
+both records and checks their md5 sums.
+
+```bash
+L="pixi run -e climada python input-data/tensor/chaz/climada"
+$L/chaz_downscale.py run --year 2017 --realizations 1-40 --ratio 1.13 --workers 12
+$L/chaz_downscale.py compare --year 2017
+$L/chaz_tropicona.py run --files all --workers 12     # --pressure raw for the reader's pressure
+$L/chaz_tropicona.py compare --file CESM2_Global_2100_2ens000_SD
+$L/chaz_tropicona.py summary
+$L/chaz_maptime.py run --tile=-90,-75,25,40 --sample 200
+```
+
+### The CHAZ model on ERA5 2017
+
+`chaz_downscale.py` ports the CHAZ downscaling tutorial notebook to a script.
+It changes the numpy 2 spellings, turns the synchronous dask calls into
+loops, and draws new genesis seeds per track realization, as `CHAZ.py` does.
+The seeding ratio rescales genesis-index seeds to the observed storm count,
+and computing it needs 1981–2005 genesis index, which the Zenodo record
+lacks. 1.13 matches the published files' 2017 trajectory count (140 against
+124 seeds at ratio 1).
+
+| 2017, per track realization (mean over 40 members) | ours, 40 realizations | published, 10 files |
+| -------------------------------------------------- | --------------------- | ------------------- |
+| storms with wind                                   | 88.5 ± 3.4            | 92.8 ± 4.7          |
+| hurricanes / major                                 | 40.0 / 17.7           | 42.0 / 18.8         |
+| lifetime peak, median / 90th percentile (kt)       | 60.5 / 115.3          | 60.4 / 114.7        |
+| North Atlantic / East Pacific / West Pacific       | 12.1 / 14.7 / 26.6    | 11.8 / 18.2 / 25.6  |
+
+The intensity distribution matches. Counts run about 5% low, and the East
+and South Pacific are thinner than in the published files, which may be the
+seeding ratio or differences in CHAZ version.
+
+One realization-year with 40 intensity members took 79 s per process with
+12 running together: 38 s for tracks, 10 s for predictors and 30 s for
+intensity. Alone it takes about 50 s. The Colab timing in the notebook
+(317 CPU-s) is about four times slower.
+
+### CMIP6 winds with both fixes
+
+`chaz_tropicona.py` runs the CMIP6 wind step of the published maps on the
+25 TROPICONA files, on CONUS cells. It uses her members (0, 5, …, 35), her
+base (1995–2014) and end-of-century (2081–2100) windows, and her 1 h step,
+on CLIMADA 6.1. It also re-estimates central pressure from wind with
+longitudes wrapped to −180..180. That adds exactly 12.73 hPa at every
+western-hemisphere node and changes nothing else. A 38 kt storm goes from
+988 hPa under the reader to 1000 hPa.
+
+The longitude bug matters more on CONUS cells than on lifetime peaks. On
+CESM2 SD (ens000), the reader's pressure raises each track's peak CONUS wind
+by a median 25% (5–95%: 8–51%), and 22% among tracks at 33 m/s or more.
+Twice as many tracks reach 33 m/s (1,018 against 507). The offset is fixed
+in hPa, so it weighs most on weak and overland storms. On ERA5 lifetime
+peaks the effect is 14%.
+
+Storms per member-year with CONUS winds of 33 m/s or more, before frequency
+correction (`summary`):
+
+| model        | CRH base | CRH 2081–2100 | SD base | SD 2081–2100 |
+| ------------ | -------- | ------------- | ------- | ------------ |
+| CESM2        | 2.96     | 1.82          | 2.73    | 0.55         |
+| CNRM-CM6-1   | 3.71     | 5.99          | 3.54    | 2.84         |
+| EC-Earth3    | 3.02     | 4.91          | 2.58    | 2.53         |
+| IPSL-CM6A-LR | 3.23     | 4.33          | 3.24    | 1.68         |
+| MIROC6       | 2.38     | 2.82          | 2.45    | 1.46         |
+| MRI-ESM2-0   | 3.86     | 3.68          | 3.14    | 1.86         |
+
+CRH mostly increases and SD decreases, the two diverging genesis scenarios
+of Lee et al. (2020). The files don't state their scenario. Two of ten
+realizations per model leave these as samples, not hazard levels.
+
+The 105,254 cropped tracks took 0.21 core-s each at 1 h steps, with 12
+workers. That compares with 0.29 on Coiled for the ERA5 CONUS set at 0.5 h.
+
+### The map step
+
+The published map scripts select a tile from the global hazard and call
+`local_exceedance_intensity` and `local_return_period`. For every cell those
+densify the cell's column over all event rows, and a tile keeps every row.
+`chaz_maptime.py` times that loop body on tiles of the CONUS crop padded with
+empty rows to her row counts. The replica agrees with a real CLIMADA call to
+within 10%.
+
+| rows per cell                     | 15° SE tile, ms/cell | 5° S Florida tile, ms/cell |
+| --------------------------------- | -------------------- | -------------------------- |
+| events with wind in the tile only | 21                   | 6                          |
+| 1,395,323 (one catalogue)         | 41                   | 31                         |
+| 8,371,938 (the six basin copies)  | 175                  | 168                        |
+
+That is about 20 ms per cell per million rows, plus a term that grows with
+the tile's nonzeros. On the published ERA5 file, either metric works out to
+about 45 serial hours over the 929,389 global cells. The numpy ranking
+(`chaz_tail_test.Ranked`) matches CLIMADA to 2e-9 m/s and ranks the whole
+15° tile in 57 s, against about 6 minutes for CLIMADA without the empty rows.
