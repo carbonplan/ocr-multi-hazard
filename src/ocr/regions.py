@@ -17,7 +17,7 @@ indexes small, so opening a file costs one small read.
 
 import json
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +31,8 @@ from ocr.risks.fire.utils import get_temp_dir
 
 LEVELS = ('nation', 'states', 'counties', 'tracts', 'blocks')
 PAGE_ROWS = {'nation': 1, 'states': 1, 'counties': 1, 'tracts': 8, 'blocks': 32}
-PARTITIONED = {'tracts', 'blocks'}
+# GEOID characters each partitioned level splits on: 2 per state, 5 per county.
+PARTITION_WIDTH = {'counties': 2, 'tracts': 5, 'blocks': 5}
 # Columns a lookup shows come first, so its reads sit close together.
 FIRST = ['GEOID', 'STUSPS', 'NAME', 'building_count']
 BBOX = ('xmin', 'ymin', 'xmax', 'ymax')
@@ -90,11 +91,26 @@ def _split(regions: pa.Table, width: int) -> list[pa.Table]:
     return [regions.slice(s, e - s) for s, e in zip(starts, ends, strict=True)]
 
 
-def _write_counties_of(regions: pa.Table, root: Path, level: str, source_geo: dict, metadata: dict):
-    for county in _split(regions, 5):
-        fips = county['GEOID'][0].as_py()[:5]
-        path = root / level / f'state_fips={fips[:2]}' / f'county_fips={fips[2:]}' / 'data.parquet'
-        _write([county], path, PAGE_ROWS[level], source_geo, metadata)
+def _write_partitioned(regions: pa.Table, root: Path, level: str, source_geo: dict, metadata: dict):
+    width = PARTITION_WIDTH[level]
+    for part in _split(regions, width):
+        geoid = part['GEOID'][0].as_py()
+        keys = [f'state_fips={geoid[:2]}']
+        if width == 5:
+            keys.append(f'county_fips={geoid[2:5]}')
+        path = root / level / Path(*keys) / 'data.parquet'
+        _write([part], path, PAGE_ROWS[level], source_geo, metadata)
+
+
+def _by_state(dataset: pads.Dataset) -> Iterator[pa.Table]:
+    """Each state's rows in turn, so the national table is never in memory."""
+    geoid = dataset.to_table(columns=['GEOID'])['GEOID']
+    states = sorted(set(pc.utf8_slice_codeunits(geoid, 0, 2).to_pylist()))
+    del geoid
+    for state in states:
+        yield dataset.to_table(
+            filter=(pads.field('GEOID') >= state) & (pads.field('GEOID') < state + '\uffff')
+        )
 
 
 def write_region_files(
@@ -117,30 +133,17 @@ def write_region_files(
             src = UPath(sources[level])
             dataset = pads.dataset(src.path, filesystem=src.fs, format='parquet')
             source_geo = json.loads(dataset.schema.metadata[b'geo'])
-            if level == 'blocks':
-                # one state at a time, so the national table is never in memory
-                geoid = dataset.to_table(columns=['GEOID'])['GEOID']
-                states = sorted(set(pc.utf8_slice_codeunits(geoid, 0, 2).to_pylist()))
-                del geoid
-                for state in states:
-                    part = dataset.to_table(
-                        filter=(pads.field('GEOID') >= state)
-                        & (pads.field('GEOID') < state + '\uffff')
-                    )
-                    _write_counties_of(_prepare(part, shown), root, level, source_geo, metadata)
-                log(f'{level}: {len(states)} states')
-                continue
-            regions = _prepare(dataset.to_table(), shown)
-            if level in PARTITIONED:
-                _write_counties_of(regions, root, level, source_geo, metadata)
-            elif level == 'counties':
-                for state in _split(regions, 2):
-                    state_fips = state['GEOID'][0].as_py()[:2]
-                    path = root / level / f'state_fips={state_fips}' / 'data.parquet'
-                    _write([state], path, PAGE_ROWS[level], source_geo, metadata)
-            else:
-                _write([regions], root / f'{level}.parquet', PAGE_ROWS[level], source_geo, metadata)
-            log(f'{level}: {regions.num_rows:,} rows')
+            parts = _by_state(dataset) if level == 'blocks' else [dataset.to_table()]
+            rows = 0
+            for part in parts:
+                regions = _prepare(part, shown)
+                if level in PARTITION_WIDTH:
+                    _write_partitioned(regions, root, level, source_geo, metadata)
+                else:
+                    path = root / f'{level}.parquet'
+                    _write([regions], path, PAGE_ROWS[level], source_geo, metadata)
+                rows += regions.num_rows
+            log(f'{level}: {rows:,} rows')
         dest = UPath(dest)
         log(f'uploading region files to {dest}')
         # one put for the whole tree; on S3 it sends the per-county files concurrently
