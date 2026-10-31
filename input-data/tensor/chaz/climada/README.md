@@ -500,16 +500,65 @@ served store (35.0 $bn/yr):
 | reader's pressure × 104.5 (matched, section 5) | 0.54     |       |      |              |       |
 
 Each wind convention paired with its own curve gives 18–19 $bn/yr: 18.4 with
-both fixes and 18.9 with the reader's pressure. The 40 US calibration events
-average 17.5 $bn/yr (2014 dollars, 1980–2017). The TDR fit forces the
-calibration storms' total to match, so agreement on those storms holds by
-construction. What the comparison does test is CHAZ's ERA5 climatology:
-synthetic storms run through the same winds and curve yield about the
-observed annual damage. The served store is about twice that, because it
-pairs the reader's winds with a curve fit under CLIMADA 1.4.1 conventions.
-Georgia–Carolinas and Virginia–Maine fall to about 60% of Florida's ratio,
-and that shift may come from the same blindness to storm size that zeroes
-out Sandy and Irene.
+both fixes and 18.9 with the reader's pressure. The calibration storms are not
+the benchmark for that number, since they cover only 40 storms in 2014
+dollars. The observed-storm test below is.
+
+### Observed storms through the same pipeline (`chaz_observed.py`)
+
+The 654 IBTrACS storms of 1981–2019 that come within reach of CONUS get
+Holland winds on the same cells, at 0.5 h on CLIMADA 6.1, under three
+conventions:
+
+- `track`: observed pressure and radius, every record. The most realistic.
+- `chaz`: CHAZ conventions with both fixes.
+- `chaz360`: CHAZ conventions with the reader's longitudes.
+
+`compare` counts storms per year with peak wind at or above a threshold on US
+land cells (LitPop value > 0). Observed rates carry a 90% Poisson interval.
+
+| storms/yr ≥ 33 m/s on US land  | US               | TX–AL | FL   | GA–Car | VA–ME |
+| ------------------------------ | ---------------- | ----- | ---- | ------ | ----- |
+| observed, `track`              | 1.18 (0.91–1.51) | 0.49  | 0.49 | 0.56   | 0.18  |
+| observed, `chaz`               | 1.36 (1.07–1.71) | 0.64  | 0.51 | 0.49   | 0.10  |
+| observed, `chaz360`            | 2.33 (1.95–2.78) | 1.03  | 1.03 | 0.92   | 0.26  |
+| CHAZ published (served winds)  | 2.09             | 1.05  | 0.82 | 0.63   | 0.30  |
+| CHAZ `era5_10f` (#833 fixed)   | 1.35             | 0.67  | 0.52 | 0.38   | 0.13  |
+| CHAZ `era5_10f_wrapped` (both) | 0.65             | 0.32  | 0.25 | 0.17   | 0.06  |
+
+Under identical wind construction, CHAZ gives about half the observed rate:
+0.65 against 1.36 with both fixes, and 1.35 against 2.33 with the reader's
+longitudes. At 17.5 m/s the ratio is 0.73–0.83, and at 43 m/s it is
+0.41–0.50. Part of this is the frequency correction. It targets 10.8 North
+Atlantic and 14.5 East Pacific storms a year, while IBTrACS 1981–2019 has
+12.9 and 17.6 storms with 34 kt winds in each basin, about 20% more. The rest
+is CHAZ's ERA5 landfall climatology. The two CLIMADA bugs inflate winds by
+enough to offset it. The served winds land 1.8× above the realistic observed
+rate at 33 m/s, and the #833-only rebuild sits closest to it.
+
+`ead` scores damage from the events themselves, with each wind convention's
+own TDR fit (75.4 for `track` on 6.1, 65.4 for `chaz`, 80.3 for `chaz360`).
+It uses the same `_mdr` and LitPop 2020 values throughout.
+
+| $bn/yr                         | US   | TX–AL | FL   | GA–Car | VA–ME |
+| ------------------------------ | ---- | ----- | ---- | ------ | ----- |
+| observed `track` × 75.4        | 36.5 | 6.2   | 18.5 | 2.7    | 9.1   |
+| observed `chaz` × 65.4         | 31.7 | 7.2   | 21.4 | 1.8    | 1.1   |
+| served (published × 89.2)      | 34.1 | 10.2  | 13.8 | 3.0    | 4.8   |
+| CHAZ `era5_10f` × 80.3         | 20.5 | 6.1   | 9.0  | 1.3    | 2.1   |
+| CHAZ `era5_10f_wrapped` × 65.4 | 18.2 | 5.2   | 8.3  | 1.0    | 1.6   |
+
+Nationally the served store is close to the realistic observed figure, 34
+against 36.5. Resampling years gives that figure a 90% interval of
+17.6–57.5, driven by Sandy (297 $bn on 2020 values), Andrew (287) and Wilma
+(176). The corrected CHAZ set with its matched curve sits near the low end.
+By region, the served store runs high on the Gulf and low in Florida and
+Virginia–Maine.
+
+The CHAZ wind conventions cost Virginia–Maine almost everything (9.1 → 1.1
+on observed storms). Pressure from wind and estimated radius cannot produce
+Sandy's footprint, so no CHAZ set can recover that region's damage through
+this wind model.
 
 ### The map step
 
