@@ -60,6 +60,11 @@ CONVENTIONS = {
 log = logging.getLogger('chaz_observed')
 
 
+def obs_suffix(time_step: float) -> str:
+    """Files at chaz_events' 0.5 h step keep the plain name."""
+    return '' if time_step == ce.TIME_STEP_H else f'_dt{time_step:g}'
+
+
 def reaching(tr) -> bool:
     strong = tr['max_sustained_wind'].values >= ce.INTENSITY_THRES * ce.KT_PER_MS
     return bool((strong & ce.in_conus_reach(tr['lat'].values, tr['lon'].values)).any())
@@ -85,14 +90,14 @@ def cmd_wind(args):
             tr for tr in tracks.data if ce.in_conus_reach(tr['lat'].values, tr['lon'].values).any()
         ]
     tracks.data = [ce.crop_to_reach(tr) for tr in tracks.data]
-    tracks.equal_timestep(ce.TIME_STEP_H)
+    tracks.equal_timestep(args.time_step)
     if args.conv in CONVENTIONS:
         for tr in tracks.data:
             tr['radius_max_wind'] = ('time', np.zeros(tr.sizes['time']))
     cent = Centroids.from_hdf5(str(ce._local(ce.CENTROIDS_KEY)))
     haz = ce.winds_parallel(tracks, cent, args.workers, args.max_memory_gb)
     haz.frequency = np.full(haz.size, 1.0 / (YEARS[1] - YEARS[0] + 1))
-    out = OUT / f'obs_{args.conv}.hdf5'
+    out = OUT / f'obs_{args.conv}{obs_suffix(args.time_step)}.hdf5'
     haz.write_hdf5(str(out))
     print(
         f'{args.conv}: {tracks.size} of {n_all} storms {YEARS[0]}-{YEARS[1]} reach CONUS; '
@@ -109,9 +114,6 @@ def read_set(path: Path):
     from scipy import sparse
 
     with h5py.File(path) as f:
-        inten = sparse.csr_matrix(
-            (f['intensity/data'][:], f['intensity/indices'][:], f['intensity/indptr'][:])
-        )
         freq = f['frequency'][:]
         if 'centroids' in f:
             # CLIMADA 6 writes the centroids as a pandas table; the
@@ -122,6 +124,11 @@ def read_set(path: Path):
         else:
             pts = xr.open_dataset(ce.CACHE / 'hazard' / 'ERA5' / 'levels' / 'published.nc')
             lat, lon = pts['lat'].values, pts['lon'].values
+        indptr = f['intensity/indptr'][:]
+        inten = sparse.csr_matrix(
+            (f['intensity/data'][:], f['intensity/indices'][:], indptr),
+            shape=(indptr.size - 1, len(lat)),
+        )
     return inten, freq, np.asarray(lat, float), np.asarray(lon, float)
 
 
@@ -253,6 +260,7 @@ def main():
     sub = p.add_subparsers(dest='cmd', required=True)
     q = sub.add_parser('wind', help='winds for the observed storms that reach CONUS')
     q.add_argument('--conv', default='track', choices=OBS)
+    q.add_argument('--time-step', type=float, default=ce.TIME_STEP_H, help='hours')
     q.add_argument('--workers', type=int, default=max((os.cpu_count() or 2) - 6, 1))
     q.add_argument('--max-memory-gb', type=float, default=24.0)
     q.set_defaults(func=cmd_wind)

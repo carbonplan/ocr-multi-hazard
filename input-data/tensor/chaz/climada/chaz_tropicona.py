@@ -24,6 +24,8 @@ computed, cropped to that reach (chaz_events.crop_to_reach).
   run      --files all --workers 12     h08/<file>_<tag>.hdf5 and timing.csv
   compare  --file CESM2_..._SD          per-track CONUS peak wind, wrapped vs raw
   summary                               CONUS storm rates, base against end of century
+  baseline                              base-period rates, weighted as published, against
+                                        observed storms (chaz_observed wind --conv chaz --time-step 1)
 
 Everything stays under ~/.cache/ocr/chaz-local/tropicona_h08. Run in the
 `climada` pixi environment.
@@ -240,6 +242,109 @@ def cmd_summary(args):
     df.to_csv(OUT / f'summary_{args.pressure}.csv', index=False)
 
 
+# chaz_freqnorm: how much the published footprint count raises the ERA5
+# weights over the along-track count once the pressure is fixed
+FOOTPRINT_FACTOR = {'NA': 1.176, 'EP': 1.032}
+
+
+def cmd_baseline(args):
+    """Base-period (1995-2014) CONUS storm rates per GCM and genesis index,
+    each set weighted the published way (observed basin count over the set's
+    own basin storm count), against observed storms with the same winds."""
+    import chaz_observed as co
+    import h5py
+    from scipy import sparse
+
+    us = co.us_cells()
+    y0, y1 = PERIODS['base']
+    groups: dict[tuple[str, str], dict] = {}
+    for path in track_files('all'):
+        hz = OUT / 'h08' / f'{path.stem}_wrapped.hdf5'
+        if not hz.exists():
+            continue
+        model, _, rest = path.stem.partition('_Global_2100_')
+        tcgi = rest.split('_')[1]
+        ds = xr.open_dataset(path, decode_times=False).isel(ensembleNum=MEMBERS)
+        year = ds['year'].values
+        lat, lon = ds['latitude'].values, ds['longitude'].values
+        strong = ds['Mwspd'].values >= ce.INTENSITY_THRES * ce.KT_PER_MS
+        base = (year >= y0) & (year <= y1)
+        in_na = (strong & ce.in_north_atlantic(lat, lon)[None]).any(axis=1) & base[None]
+        in_ep = (strong & ce.in_east_pacific(lat, lon)[None]).any(axis=1) & base[None]
+        # the storm positions subset() kept, so event names map back to storms
+        in_window = np.zeros(year.size, bool)
+        for a, b in PERIODS.values():
+            in_window |= (year >= a) & (year <= b)
+        reach = (strong & ce.in_conus_reach(lat, lon)[None]).any(axis=1) & in_window[None]
+        keep = np.nonzero(reach.any(axis=0))[0]
+
+        inten, _, clat, clon = co.read_set(hz)
+        with h5py.File(hz) as f:
+            names = [n.decode() if isinstance(n, bytes) else n for n in f['event_name'][:]]
+        rows, na, ep = [], [], []
+        for k, name in enumerate(names):
+            sid, period = name.rsplit('|', 1)
+            if period != 'base':
+                continue
+            _, pos, member = sid.rsplit('-', 2)
+            storm, mi = keep[int(pos)], MEMBERS.index(int(member))
+            rows.append(k)
+            na.append(in_na[mi, storm])
+            ep.append(in_ep[mi, storm])
+        g = groups.setdefault(
+            (model, tcgi), {'n_na': 0, 'n_ep': 0, 'inten': [], 'na': [], 'ep': [], 'runs': 0}
+        )
+        g['n_na'] += int(in_na.sum())
+        g['n_ep'] += int(in_ep.sum())
+        g['inten'].append(inten[rows])
+        g['na'] += na
+        g['ep'] += ep
+        g['runs'] += 1
+
+    out = []
+    for (model, tcgi), g in sorted(groups.items()):
+        inten = sparse.vstack(g['inten']).tocsr()
+        na, ep = np.array(g['na'], float), np.array(g['ep'], float)
+        member_years = g['runs'] * len(MEMBERS) * (y1 - y0 + 1)
+        for rule, fac in (
+            ('track count', {'NA': 1.0, 'EP': 1.0}),
+            ('footprint rule', FOOTPRINT_FACTOR),
+        ):
+            freq = (
+                fac['NA'] * ce.YRLY_FREQ_IB['NA'] / g['n_na'] * na
+                + fac['EP'] * ce.YRLY_FREQ_IB['EP'] / g['n_ep'] * ep
+            )
+            r = co.rates(inten, freq, clat, clon, us)
+            out.append(
+                {
+                    'source': f'{model} {tcgi}',
+                    'rule': rule,
+                    'na_per_member_yr': g['n_na'] / member_years,
+                    **{f'US>={t:g}': r[('US', t)] for t in co.THRESHOLDS},
+                }
+            )
+    obs_path = co.OUT / 'obs_chaz_dt1.hdf5'
+    inten, _, clat, clon = co.read_set(obs_path)
+    with h5py.File(obs_path) as f:
+        oyear = np.array([int(n.decode()[:4]) for n in f['event_name'][:]])
+    for a, b in ((1981, 2019), (y0, y1)):
+        m = (oyear >= a) & (oyear <= b)
+        freq = np.where(m, 1.0 / (b - a + 1), 0.0)
+        r = co.rates(inten, freq, clat, clon, us)
+        out.append(
+            {
+                'source': f'observed {a}-{b}',
+                'rule': 'chaz conventions, 1 h',
+                **{f'US>={t:g}': r[('US', t)] for t in co.THRESHOLDS},
+            }
+        )
+    df = pd.DataFrame(out)
+    df.to_csv(OUT / 'baseline.csv', index=False)
+    pd.set_option('display.width', 200)
+    print('storms per year with peak wind at or above each threshold on US land cells, both fixes')
+    print(df.round(2).to_string(index=False))
+
+
 def main():
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(name)s: %(message)s')
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -257,6 +362,8 @@ def main():
     q = sub.add_parser('summary', help='CONUS storm rates per model, base against end of century')
     q.add_argument('--pressure', default='wrapped', choices=['wrapped', 'raw'])
     q.set_defaults(func=cmd_summary)
+    q = sub.add_parser('baseline', help='base-period CONUS rates per GCM against observed storms')
+    q.set_defaults(func=cmd_baseline)
     args = p.parse_args()
     args.func(args)
 

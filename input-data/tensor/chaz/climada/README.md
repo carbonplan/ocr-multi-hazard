@@ -623,6 +623,39 @@ observed rate at 33 m/s and 0.57 at 43 m/s. The 12.9 and 17.6 targets use a
 34 kt any-node definition, and Bloemendaal's constants count genesis at about
 40 kt, so the last row is a sensitivity, not a correction.
 
+### The GCM baselines (`chaz_tropicona.py baseline`)
+
+The same test on the public CMIP6 tracks: the 1995–2014 base period of the 25
+TROPICONA files, with both fixes, at the published 1 h step. Each GCM and
+genesis index is weighted the published way, using that set's own
+North Atlantic and East Pacific storm counts. The footprint-rule row borrows
+the ERA5 factors measured above (NA 1.176, EP 1.032). The observed storms use
+the same conventions at 1 h (`chaz_observed.py wind --conv chaz --time-step
+1`).
+
+| storms/yr on US land, footprint rule | ≥ 17.5    | ≥ 33      | ≥ 43      | ≥ 50      |
+| ------------------------------------ | --------- | --------- | --------- | --------- |
+| six GCMs × CRH/SD, range             | 3.03–4.52 | 0.66–1.06 | 0.16–0.36 | 0.05–0.15 |
+| six GCMs × CRH/SD, median            | 3.75      | 0.86      | 0.28      | 0.08      |
+| ERA5 CHAZ (`era5_10f_wrapped`)       | 2.98      | 0.76      | 0.26      |           |
+| observed 1995–2014                   | 3.90      | 1.45      | 0.65      | 0.20      |
+| observed 1981–2019                   | 3.54      | 1.36      | 0.54      | 0.21      |
+
+The GCM baselines get the tropical-storm rate about right, but give 0.6× the
+observed rate at 33 m/s and 0.45–0.5× at 43 and 50 m/s. No model reaches the
+observed hurricane rate. The intensity deficit therefore isn't specific to
+the ERA5-forced set, and the bugged winds were covering it in the scenario
+stores as well.
+
+Limits:
+
+- These are two of ten realizations per model.
+- MRI-ESM2-0 stands in for UKESM1-0-LL.
+- The footprint factor is borrowed from ERA5.
+- The files don't state their scenario. The base period is historical
+  forcing, so that shouldn't matter here.
+- 1995–2014 includes the 2004–05 seasons.
+
 ### What else was tuned or validated against the bugged winds
 
 Ranked by evidence and likely effect (Codex, 2026-10-30):
