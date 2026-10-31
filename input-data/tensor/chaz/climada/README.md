@@ -537,28 +537,84 @@ enough to offset it. The served winds land 1.8× above the realistic observed
 rate at 33 m/s, and the #833-only rebuild sits closest to it.
 
 `ead` scores damage from the events themselves, with each wind convention's
-own TDR fit (75.4 for `track` on 6.1, 65.4 for `chaz`, 80.3 for `chaz360`).
-It uses the same `_mdr` and LitPop 2020 values throughout.
+own TDR fit. It uses the same `_mdr` and LitPop 2020 values throughout. The
+`track` fit has to match the observed winds' 0.5 h step. Refit at 0.5 h on all
+43 calibration storms, it is 77.6 (75.4 at 1 h, which inflates the benchmark
+by 13%).
 
 | $bn/yr                         | US   | TX–AL | FL   | GA–Car | VA–ME |
 | ------------------------------ | ---- | ----- | ---- | ------ | ----- |
-| observed `track` × 75.4        | 36.5 | 6.2   | 18.5 | 2.7    | 9.1   |
+| observed `track` × 77.6        | 32.4 |       |      |        | 8.0   |
 | observed `chaz` × 65.4         | 31.7 | 7.2   | 21.4 | 1.8    | 1.1   |
 | served (published × 89.2)      | 34.1 | 10.2  | 13.8 | 3.0    | 4.8   |
+| published × 104.5 (matched)    | 18.4 |       |      |        |       |
 | CHAZ `era5_10f` × 80.3         | 20.5 | 6.1   | 9.0  | 1.3    | 2.1   |
 | CHAZ `era5_10f_wrapped` × 65.4 | 18.2 | 5.2   | 8.3  | 1.0    | 1.6   |
 
-Nationally the served store is close to the realistic observed figure, 34
-against 36.5. Resampling years gives that figure a 90% interval of
-17.6–57.5, driven by Sandy (297 $bn on 2020 values), Andrew (287) and Wilma
-(176). The corrected CHAZ set with its matched curve sits near the low end.
-By region, the served store runs high on the Gulf and low in Florida and
-Virginia–Maine.
+The observed benchmark is 32.4 $bn/yr, with a 90% interval over resampled
+years of 15.9–51.2. It is driven by Sandy, Andrew and Wilma. Every CHAZ set
+paired with its own curve gives 18–20 $bn/yr, about 0.56 of the benchmark,
+which is in line with the rate deficit. The served store lands near the
+benchmark only because 89.2 is not the curve for its winds; matched, it gives
+18.4. So the served hazard runs 1.8× high at 33 m/s, while its damage matches
+history because of the curve mismatch.
 
-The CHAZ wind conventions cost Virginia–Maine almost everything (9.1 → 1.1
-on observed storms). Pressure from wind and estimated radius cannot produce
-Sandy's footprint, so no CHAZ set can recover that region's damage through
-this wind model.
+Two caveats from a review of this comparison (Codex, 2026-10-30):
+
+- `chaz_events` gives an event whose track touches both basin outlines the
+  sum of both weights over its whole footprint. The published file instead
+  applies each basin's weight on its own side of 100°W. Splitting the
+  footprint the same way lowers the wrapped 33 m/s rate from 0.65 to 0.62 and
+  its EAD from 18.2 to 17.4.
+- The published set is a different track realization with different basin
+  denominators. The published-to-rebuild step therefore mixes the #833 fix
+  with a change of sample. Only the `era5_10f` → `era5_10f_wrapped` step
+  isolates a bug (the longitude one).
+
+The CHAZ wind conventions can't reproduce Sandy. Its matched-curve loss falls
+from 262 to 6 $bn, mostly because pressure is inferred from wind and the
+environmental pressure is set to 1010 hPa. That collapses the observed
+storms' Virginia–Maine damage (8.0 → 1.1). It doesn't show that no synthetic
+catalogue can carry the region's loss: the wrapped CHAZ set gives 1.6 there.
+
+A deficit of CHAZ landfalls in the Gulf and the eastern US was already
+reported by Lee et al. (2018, §5.2), who matched observed 35 kt return
+periods with a regional frequency adjustment. The published maps apply only
+the basin-wide correction.
+
+### What else was tuned or validated against the bugged winds
+
+Ranked by evidence and likely effect (Codex, 2026-10-30):
+
+1. **Regional damage curves and their uncertainty ranges.** Every Eberenz
+   curve (NA1, NA2, NI, OC, SI, WP1–4, global) was fit on winds with the
+   double count, and CLIMADA ships them unchanged. NA2's per-event IQR goes
+   from 74–115 m/s on 1.4.1 to about 42–82 under the corrected CHAZ
+   conventions. So the uncertainty samples in Meiler's pipeline, and the
+   bounds in `chaz_damage.py`, are off too.
+2. **Meiler's frequency denominator depends on the winds.**
+   `freq_corr_era5.py` and `CHAZ_wind_concat_freq.py` divide the observed
+   count by the number of storms with a nonzero footprint (at least 17.5 m/s
+   on some cell) in the basin. Fixing the winds shrinks that count and raises
+   each storm's weight, a partial automatic compensation. `chaz_events`
+   counts along-track `Mwspd` instead, so the rebuilds above don't reproduce
+   it, and its global size is unmeasured.
+3. **CHAZ's landfall deficit**, known since 2018, which the inflated winds hid.
+4. **Pressure from wind, pressure-derived radius and 1010 hPa.** These
+   regressions are fit to IBTrACS, not to CLIMADA winds, but they lose large
+   storms. Fixing the longitude also widens the estimated radius by 18–38%,
+   so the fix is not a uniform wind multiplier.
+5. **Validation that shared the errors**: Meiler et al. 2022 (CLIMADA 3.1.2
+   on both the synthetic and the historical sets), the ERA5-against-GCM map
+   checks, and our tail convention. The slope tail's ratio to event EAD moves
+   from 1.024 on the published winds to 1.058 after the #833 fix alone.
+
+Not compensations: CHAZ's intensity regression, genesis, survival ratio and
+beta drift, which are fit to best tracks, and the Holland-B, surface-factor
+and translational-attenuation formulas. Two confounds remain. CLIMADA 6.1
+clips Holland B to [0.81, 2.025] where 4.0.1 and 4.1.0 used [1, 2.5], so the
+4.0.1 → 6.1 refit shift is not all #833. And the pressure regression is fit
+on |lat| but evaluated on signed latitude, about 2.2 hPa at 20°S.
 
 ### The map step
 
