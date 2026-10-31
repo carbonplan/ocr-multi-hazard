@@ -471,6 +471,46 @@ realizations per model leave these as samples, not hazard levels.
 The 105,254 cropped tracks took 0.21 core-s each at 1 h steps, with 12
 workers. That compares with 0.29 on Coiled for the ERA5 CONUS set at 0.5 h.
 
+### Both fixes with a matched damage curve
+
+`chaz_events.py` takes `--pressure wrapped` on `hazard`, `batch` and `levels`,
+and `--years` restricts a hazard run to the analysis window. The rebuild
+`era5_10f_wrapped` is the `era5_10f` event set (206,770 events, files 0–9,
+1981–2019) with pressure re-estimated from wrapped longitudes. The pressure
+fix halves the cells above 17.5 m/s per event, from 500 to 244. `levels
+--workers` ranks blocks of cells in parallel and drops the events with no
+wind in each block. On a test tile it matches CLIMADA's serial call exactly.
+
+The matched curve is fit with `eberenz_na2.py wind --radius est --records 6h
+--pressure wind180 --penv 1010 --time-step 0.5`, the conventions of CHAZ
+winds once both fixes are in. TDR gives 65.4 and RMSF gives 51.3. The fit is
+weak: 5 of 43 events land within 25%, and Sandy, Irene, Hugo and Irma
+simulate almost no damage, because pressure estimated from wind can't
+represent large storms with modest peak winds.
+
+`eberenz_na2.py ead --tag era5_10f_wrapped` scores the result against the
+served store (35.0 $bn/yr):
+
+| pairing                                        | national | TX–AL | FL   | GA–Carolinas | VA–ME |
+| ---------------------------------------------- | -------- | ----- | ---- | ------------ | ----- |
+| both fixes × 89.2 (shipped curve)              | 0.15     | 0.14  | 0.16 | 0.09         | 0.09  |
+| both fixes × 65.4 (matched, TDR)               | 0.53     | 0.50  | 0.58 | 0.32         | 0.34  |
+| both fixes × 70.2 (observed-pressure fit)      | 0.39     | 0.37  | 0.43 | 0.24         | 0.25  |
+| both fixes × 51.3 (matched, RMSF)              | 1.51     | 1.45  | 1.67 | 0.98         | 1.05  |
+| reader's pressure × 104.5 (matched, section 5) | 0.54     |       |      |              |       |
+
+Each wind convention paired with its own curve gives 18–19 $bn/yr: 18.4 with
+both fixes and 18.9 with the reader's pressure. The 40 US calibration events
+average 17.5 $bn/yr (2014 dollars, 1980–2017). The TDR fit forces the
+calibration storms' total to match, so agreement on those storms holds by
+construction. What the comparison does test is CHAZ's ERA5 climatology:
+synthetic storms run through the same winds and curve yield about the
+observed annual damage. The served store is about twice that, because it
+pairs the reader's winds with a curve fit under CLIMADA 1.4.1 conventions.
+Georgia–Carolinas and Virginia–Maine fall to about 60% of Florida's ratio,
+and that shift may come from the same blindness to storm size that zeroes
+out Sandy and Irene.
+
 ### The map step
 
 The published map scripts select a tile from the global hazard and call

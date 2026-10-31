@@ -354,8 +354,9 @@ def cmd_ead(args) -> None:
     import xarray as xr
     from chaz_damage import BANDS, ead_from_levels
 
-    pub = xr.open_dataset(CHAZ_EVENTS / 'levels' / 'published.nc')
-    new = xr.open_dataset(CHAZ_EVENTS / 'levels' / 'era5_10f.nc')
+    levels = CHAZ_EVENTS / 'hazard' / 'ERA5' / 'levels'
+    pub = xr.open_dataset(levels / 'published.nc')
+    new = xr.open_dataset(levels / f'{args.tag}.nc')
     value = xr.open_dataset(CHAZ_EVENTS / 'tail' / 'published_decompose.nc')[
         'litpop_value_us'
     ].values
@@ -382,7 +383,8 @@ def cmd_ead(args) -> None:
     top = np.argsort(-served)
     top = top[np.cumsum(served[top]) <= 0.9 * served.sum()]
     print(
-        f'served ERA5 store x {args.served}: {served.sum() / 1e9:.1f} $bn/yr over US cells (LitPop 2020)'
+        f'served ERA5 store x {args.served}: {served.sum() / 1e9:.1f} $bn/yr over US cells (LitPop 2020); '
+        f'rebuild {args.tag}'
     )
     print(
         f'{"":26s} {"national":>8s}'
@@ -397,7 +399,7 @@ def cmd_ead(args) -> None:
         loss = ead_from_levels(vn, vh)[us] * scale[us] * value[us]
         r = loss[top] / served[top]
         print(
-            f'{f"corrected winds x {vh}":26s} {loss.sum() / served.sum():8.3f}'
+            f'{f"rebuild x {vh}":26s} {loss.sum() / served.sum():8.3f}'
             + ''.join(f'{loss[m[us]].sum() / served[m[us]].sum():8.2f}' for m in regions.values())
             + f'   {np.median(r):.2f} ({np.percentile(r, 5):.2f}-{np.percentile(r, 95):.2f})'
         )
@@ -448,6 +450,9 @@ def main(argv=None) -> None:
     )
     e.add_argument('v_halfs', nargs='+', type=float)
     e.add_argument('--served', type=float, default=89.2, help='v_half of the served store')
+    e.add_argument(
+        '--tag', default='era5_10f', help='levels of the rebuild (chaz_events levels --tag)'
+    )
     args = ap.parse_args(argv)
     {'prep': cmd_prep, 'wind': cmd_wind, 'fit': cmd_fit, 'ead': cmd_ead}[args.cmd](args)
 

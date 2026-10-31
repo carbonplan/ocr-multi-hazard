@@ -99,20 +99,6 @@ def subset(path: Path) -> tuple[Path, pd.DataFrame]:
     return sub, df
 
 
-def fix_pressure(tr):
-    """Central pressure from wind with longitudes in -180..180, the range
-    CLIMADA's regression was fit on."""
-    from climada.hazard.tc_tracks import _estimate_pressure
-
-    lon = tr['lon'].values % 360
-    lon = np.where(lon > 180, lon - 360, lon)
-    est = _estimate_pressure(
-        np.full(lon.size, -1.0), tr['lat'].values, lon, tr['max_sustained_wind'].values
-    )
-    tr['central_pressure'].values[:] = est
-    return tr
-
-
 def read_tracks(path: Path, pressure: str):
     from climada.hazard import TCTracks
 
@@ -128,7 +114,7 @@ def read_tracks(path: Path, pressure: str):
         if tr.sid in wanted:
             tr.attrs['period'] = wanted[tr.sid]
             if pressure == 'wrapped':
-                tr = fix_pressure(tr)
+                tr = ce.fix_pressure(tr)
             kept.append(ce.crop_to_reach(tr))
     tracks.data = kept
     tracks.equal_timestep(TIME_STEP_H)

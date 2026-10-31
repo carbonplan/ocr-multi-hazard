@@ -31,10 +31,18 @@ Steps, each writing under s3://carbonplan-ocr/ocr-explore/CHAZ/hazard/ERA5/:
   centroids                         centroids_conus_0300as.hdf5
   events    --files 0-39            events/ens###.parquet, subsets/ens###.nc
   hazard    --file 3 --members 0-7  h08/ens003_m00-07.hdf5   (one Coiled task)
+            --pressure wrapped --years 1981-2019
+                                    h08_wrapped_1981-2019/ens003_m00-07.hdf5
   batch     --files 0-9             submits the hazard tasks to Coiled
   levels    --files 0-9 --years 1981-2019 --tag era5_10f
                                     sets/<tag>.hdf5, levels/<tag>.nc
   check     --tag era5_10f          levels/<tag>_check.png, ratio table
+
+CLIMADA's CHAZ reader estimates central pressure from wind with 0-360
+longitudes, but the regression was fit on -180..180, so every western-
+hemisphere node comes out 12.73 hPa too deep. The published maps carry that
+offset and `--pressure raw` (the default) keeps it; `--pressure wrapped`
+re-estimates the pressure with wrapped longitudes.
 
 Run in the `climada` pixi environment (pixi run -e climada python ...).
 """
@@ -303,8 +311,33 @@ def cmd_events(args):
 # hazard: wind fields for one file and a run of intensity members
 
 
-def hazard_key(i: int, m0: int, m1: int) -> str:
-    return f'{HAZARD}/h08/ens{i:03d}_m{m0:02d}-{m1:02d}.hdf5'
+def hazard_dir(pressure: str = 'raw', years: tuple[int, int] | None = None) -> str:
+    """Chunks with the reader's pressure and every year keep the original
+    directory; other variants get their own."""
+    name = 'h08' if pressure == 'raw' else f'h08_{pressure}'
+    if years:
+        name += f'_{years[0]}-{years[1]}'
+    return f'{HAZARD}/{name}'
+
+
+def hazard_key(i: int, m0: int, m1: int, pressure: str = 'raw', years=None) -> str:
+    return f'{hazard_dir(pressure, years)}/ens{i:03d}_m{m0:02d}-{m1:02d}.hdf5'
+
+
+def parse_years(s: str | None) -> tuple[int, int] | None:
+    return tuple(int(y) for y in s.split('-')) if s else None
+
+
+def fix_pressure(track):
+    """Central pressure from wind with longitudes in -180..180, the range
+    CLIMADA's regression was fit on."""
+    from climada.hazard.tc_tracks import _estimate_pressure
+
+    lon = wrap_lon(track['lon'].values % 360)
+    track['central_pressure'].values[:] = _estimate_pressure(
+        np.full(lon.size, -1.0), track['lat'].values, lon, track['max_sustained_wind'].values
+    )
+    return track
 
 
 def parse_task(task: str) -> tuple[int, int, int]:
@@ -383,10 +416,20 @@ def crop_to_reach(track):
     return track.isel(time=slice(lo, hi))
 
 
-def compute_hazard(i: int, m0: int, m1: int, s3, force: bool, max_memory_gb: float, workers: int):
+def compute_hazard(
+    i: int,
+    m0: int,
+    m1: int,
+    s3,
+    force: bool,
+    max_memory_gb: float,
+    workers: int,
+    pressure: str = 'raw',
+    years: tuple[int, int] | None = None,
+):
     from climada.hazard import TCTracks
 
-    key = hazard_key(i, m0, m1)
+    key = hazard_key(i, m0, m1, pressure, years)
     if not force and s3.exists(f'{BUCKET}/{key}'):
         print(f'exists: s3://{BUCKET}/{key}')
         return
@@ -395,6 +438,8 @@ def compute_hazard(i: int, m0: int, m1: int, s3, force: bool, max_memory_gb: flo
     events = pd.read_parquet(_fetch(s3, events_key(i)))
     reaching = events[events['reach_conus']]
     wanted = reaching[reaching['member'].between(m0, m1)]
+    if years:
+        wanted = wanted[wanted['year'].between(*years)]
     sub = _fetch(s3, subset_key(i))
     tracks = TCTracks.from_simulations_chaz(str(sub), ensemble_nums=list(range(m0, m1 + 1)))
     # the reader names tracks <file>-<storm>-<member>, with storm numbered by
@@ -409,6 +454,8 @@ def compute_hazard(i: int, m0: int, m1: int, s3, force: bool, max_memory_gb: flo
         if tr.sid in rename:
             tr.attrs['sid'] = tr.attrs['name'] = rename[tr.sid]
             kept.append(tr)
+    if pressure == 'wrapped':
+        kept = [fix_pressure(tr) for tr in kept]
     tracks.data = [crop_to_reach(tr) for tr in kept]
     log.info(
         'ens%03d m%02d-%02d: %d reaching tracks read in %.0fs',
@@ -438,7 +485,17 @@ def cmd_hazard(args):
     else:
         i = args.file
         m0, m1 = parse_range(args.members)[0], parse_range(args.members)[-1]
-    compute_hazard(i, m0, m1, _s3(), args.force, args.max_memory_gb, args.workers or os.cpu_count())
+    compute_hazard(
+        i,
+        m0,
+        m1,
+        _s3(),
+        args.force,
+        args.max_memory_gb,
+        args.workers or os.cpu_count(),
+        args.pressure,
+        parse_years(args.years),
+    )
 
 
 def member_groups(per_task: int) -> list[tuple[int, int]]:
@@ -450,7 +507,8 @@ def cmd_batch(args):
     tasks = []
     for i in parse_range(args.files):
         for m0, m1 in member_groups(args.members_per_task):
-            if args.force or not s3.exists(f'{BUCKET}/{hazard_key(i, m0, m1)}'):
+            key = hazard_key(i, m0, m1, args.pressure, parse_years(args.years))
+            if args.force or not s3.exists(f'{BUCKET}/{key}'):
                 tasks.append(f'{i}:{m0}-{m1}')
     if args.limit:
         tasks = tasks[: args.limit]
@@ -468,6 +526,7 @@ def cmd_batch(args):
     # each task keeps its own log in the bucket; Coiled's task logs are not
     # always retrievable
     force = ' --force' if args.force else ''
+    variant = f' --pressure {args.pressure}' + (f' --years {args.years}' if args.years else '')
     script = f"""#!/bin/bash
 set -uo pipefail
 exec > >(tee task.log) 2>&1
@@ -481,7 +540,7 @@ import os, s3fs
 name = os.environ.get('COILED_BATCH_TASK_INPUT', 'task').replace(':', '_')
 s3fs.S3FileSystem().put('task.log', '{BUCKET}/{HAZARD}/logs/' + name + '.log')
 PY
-python chaz_events.py hazard --max-memory-gb {args.max_memory_gb} --workers {args.workers}{force} &
+python chaz_events.py hazard --max-memory-gb {args.max_memory_gb} --workers {args.workers}{variant}{force} &
 pid=$!
 while kill -0 $pid 2>/dev/null; do sleep 60; python upload_log.py || true; done
 wait $pid
@@ -534,13 +593,23 @@ def basin_weights(events: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def load_set(files: list[int], years: tuple[int, int], s3):
+def load_set(
+    files: list[int],
+    years: tuple[int, int],
+    s3,
+    pressure: str = 'raw',
+    chunk_years: tuple[int, int] | None = None,
+):
     from climada.hazard import Hazard
 
+    if chunk_years and not (chunk_years[0] <= years[0] and years[1] <= chunk_years[1]):
+        raise ValueError(f'chunks hold {chunk_years}, which does not cover {years}')
     chunks = []
     for i in files:
         keys = sorted(
-            k for k in s3.ls(f'{BUCKET}/{HAZARD}/h08/') if Path(k).name.startswith(f'ens{i:03d}_')
+            k
+            for k in s3.ls(f'{BUCKET}/{hazard_dir(pressure, chunk_years)}/')
+            if Path(k).name.startswith(f'ens{i:03d}_')
         )
         if not keys:
             raise FileNotFoundError(f'no hazard chunks for ens{i:03d}')
@@ -588,12 +657,67 @@ def load_set(files: list[int], years: tuple[int, int], s3):
     return haz, info
 
 
+def _rank_block(payload):
+    """CLIMADA's exceedance intensities and return periods on a block of
+    cells, with the events that carry no wind there dropped. Zero winds never
+    enter the ranking, so the result per cell is unchanged."""
+    from climada.hazard import Centroids, Hazard
+    from scipy import sparse
+
+    intensity, frequency, lat, lon = payload
+    rows = np.nonzero(intensity.getnnz(axis=1) > 0)[0]
+    intensity = intensity[rows]
+    haz = Hazard(
+        haz_type='TC',
+        units='m/s',
+        centroids=Centroids(lat=lat, lon=lon),
+        event_id=np.arange(1, rows.size + 1),
+        frequency=frequency[rows],
+        intensity=intensity,
+        fraction=sparse.csr_matrix(intensity.shape),
+    )
+    lv = haz.local_exceedance_intensity(return_periods=RETURN_PERIODS, method=EXTRAPOLATION)[0]
+    rp = haz.local_return_period(threshold_intensities=THRESHOLDS, method=EXTRAPOLATION)[0]
+    return (
+        {T: lv[str(T)].values for T in RETURN_PERIODS},
+        {v: rp[str(float(v))].values for v in THRESHOLDS},
+    )
+
+
+def rank_levels(haz, workers: int):
+    """Return levels and threshold return periods per cell, over blocks of
+    cells in parallel."""
+    import multiprocessing as mp
+
+    inten = haz.intensity.tocsc()
+    n = inten.shape[1]
+    edges = np.linspace(0, n, max(4 * workers, 1) + 1).astype(int)
+    payloads = [
+        (
+            inten[:, a:b].tocsr(),
+            haz.frequency,
+            haz.centroids.lat[a:b],
+            haz.centroids.lon[a:b],
+        )
+        for a, b in zip(edges[:-1], edges[1:])
+        if b > a
+    ]
+    if workers <= 1:
+        parts = [_rank_block(p_) for p_ in payloads]
+    else:
+        with mp.get_context('spawn').Pool(workers) as pool:
+            parts = pool.map(_rank_block, payloads)
+    lv = {T: np.concatenate([p_[0][T] for p_ in parts]) for T in RETURN_PERIODS}
+    rp = {v: np.concatenate([p_[1][v] for p_ in parts]) for v in THRESHOLDS}
+    return lv, rp
+
+
 def cmd_levels(args):
     s3 = _s3()
     files = parse_range(args.files)
     years = tuple(int(y) for y in args.years.split('-'))
     t0 = time.time()
-    haz, info = load_set(files, years, s3)
+    haz, info = load_set(files, years, s3, args.pressure, parse_years(args.chunk_years))
     print(
         f'{info["n_events"]:,} events over {len(files)} files, {years[0]}-{years[1]}; '
         f'w_NA = 1/{1 / info["w_na"]:,.0f} yr (N={info["n_na"]:,}), w_EP = 1/{1 / info["w_ep"]:,.0f} yr '
@@ -604,16 +728,12 @@ def cmd_levels(args):
     _put(s3, local_set, set_key(args.tag))
 
     t0 = time.time()
-    lv = haz.local_exceedance_intensity(return_periods=RETURN_PERIODS, method=EXTRAPOLATION)[0]
-    rp = haz.local_return_period(threshold_intensities=THRESHOLDS, method=EXTRAPOLATION)[0]
+    lv, rp = rank_levels(haz, args.workers)
     print(f'levels in {time.time() - t0:.0f}s')
     out = xr.Dataset(
         {
-            **{f'rp_{T}': ('points', lv[str(T)].values.astype('float32')) for T in RETURN_PERIODS},
-            **{
-                f'thr_{int(v)}': ('points', rp[str(float(v))].values.astype('float32'))
-                for v in THRESHOLDS
-            },
+            **{f'rp_{T}': ('points', lv[T].astype('float32')) for T in RETURN_PERIODS},
+            **{f'thr_{int(v)}': ('points', rp[v].astype('float32')) for v in THRESHOLDS},
         },
         coords={'lat': ('points', haz.centroids.lat), 'lon': ('points', haz.centroids.lon)},
         attrs={
@@ -621,6 +741,7 @@ def cmd_levels(args):
             'wind_model': WIND_MODEL,
             'time_step_h': TIME_STEP_H,
             'method': EXTRAPOLATION,
+            'pressure': args.pressure,
             'files': ','.join(map(str, files)),
             'years': f'{years[0]}-{years[1]}',
             **{k: v for k, v in info.items() if k not in ('files', 'years')},
@@ -757,6 +878,8 @@ def main():
     q.add_argument(
         '--workers', type=int, default=0, help='processes for the wind fields; 0 = all cores'
     )
+    q.add_argument('--pressure', default='raw', choices=['raw', 'wrapped'])
+    q.add_argument('--years', help='only storms in these years, e.g. 1981-2019')
     q.add_argument('--force', action='store_true')
     q.set_defaults(func=cmd_hazard)
 
@@ -771,6 +894,8 @@ def main():
     q.add_argument('--limit', type=int, default=0, help='submit only the first N pending tasks')
     q.add_argument('--max-memory-gb', type=float, default=8.0, help='for the whole VM')
     q.add_argument('--force', action='store_true')
+    q.add_argument('--pressure', default='raw', choices=['raw', 'wrapped'])
+    q.add_argument('--years', help='only storms in these years, e.g. 1981-2019')
     q.add_argument('--dry-run', action='store_true')
     q.set_defaults(func=cmd_batch)
 
@@ -778,6 +903,9 @@ def main():
     q.add_argument('--files', default='0-9')
     q.add_argument('--years', default='1981-2019')
     q.add_argument('--tag', required=True)
+    q.add_argument('--pressure', default='raw', choices=['raw', 'wrapped'])
+    q.add_argument('--chunk-years', help='the --years the hazard chunks were built with')
+    q.add_argument('--workers', type=int, default=1, help='processes for the ranking')
     q.set_defaults(func=cmd_levels)
 
     q = sub.add_parser('check', help='compare a levels file with the published ERA5 points')
