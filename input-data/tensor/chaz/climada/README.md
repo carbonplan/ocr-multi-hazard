@@ -656,6 +656,53 @@ Limits:
   forcing, so that shouldn't matter here.
 - 1995–2014 includes the 2004–05 seasons.
 
+### Where the deficit lives (`chaz_trackdiag.py`)
+
+A track-space comparison with no wind model. The 10 ERA5 track files
+(15,600 member-years, 1981–2019) go against IBTrACS US-agency records at
+6-hourly nodes, both interpolated to hourly with longitudes unwrapped across
+the date line. US landfall is the first hour on US land (Natural Earth
+1:10m) right after an hour over water. CHAZ rates are scaled ×1.05 so its
+North Atlantic tropical-storm count matches the observed 13.4 a year.
+
+| per year unless noted                   | observed | CHAZ | ratio |
+| --------------------------------------- | -------- | ---- | ----- |
+| NA storms reaching 64 kt (share)        | 0.51     | 0.45 | 0.89  |
+| NA storms reaching 96 kt (share)        | 0.21     | 0.20 | 0.97  |
+| US landfalls ≥ 34 kt                    | 2.97     | 2.20 | 0.74  |
+| US landfalls ≥ 64 kt                    | 1.31     | 0.60 | 0.46  |
+| US landfalls ≥ 96 kt                    | 0.18     | 0.11 | 0.62  |
+| share of NA storms making US landfall   | 0.22     | 0.16 | 0.72  |
+| share of landfalls ≥ 64 kt              | 0.44     | 0.27 | 0.62  |
+| landfallers' lifetime peak, median (kt) | 70       | 71   | 1.01  |
+| wind at landfall / peak of prior 24 h   | 0.92     | 0.88 | 0.96  |
+| wind 12 h after landfall / at landfall  | 0.63     | 0.74 | 1.19  |
+| hurricane landfalls, TX–AL              | 0.54     | 0.23 | 0.42  |
+| hurricane landfalls, FL                 | 0.39     | 0.20 | 0.53  |
+| hurricane landfalls, GA–Carolinas       | 0.33     | 0.11 | 0.32  |
+| hurricane landfalls, VA–ME              | 0.05     | 0.04 | 0.79  |
+
+The basin-wide intensity distribution is close, and so is the decay over
+land, where CHAZ actually decays more slowly. The 0.46 for hurricane
+landfalls splits into two roughly equal parts:
+
+- **Tracks.** 28% fewer North Atlantic storms make US landfall. This is the
+  deficit Lee et al. (2018) reported, and their candidate cause is beta
+  drift. The public code ships two settings: (−2.5, 1.0) in `Namelist.py`
+  and (−1.5, 2.0) in the tutorial.
+- **Intensity at the coast.** Storms that do land reach the same lifetime
+  peak, but weaken more in the 24 h before landfall (0.88 against 0.92 of
+  their recent peak). They arrive as hurricanes 38% less often. The intensity
+  regression's land term (`landmaskMean`, the land fraction within 300 km)
+  is the obvious suspect: it starts weakening a storm as soon as the coast is
+  in range, without the over-water strengthening some observed storms show.
+
+Both rates use 6-hourly nodes, which under-count the landfall peaks HURDAT
+records. The observed hurricane landfalls come to 1.3 a year here against
+about 1.7 in HURDAT. The comparison uses the same sampling on both sides, so
+the ratios hold. The observed counts are small: about 51 hurricane landfalls
+nationally and 2 in VA–ME.
+
 ### What else was tuned or validated against the bugged winds
 
 Ranked by evidence and likely effect (Codex, 2026-10-30):
