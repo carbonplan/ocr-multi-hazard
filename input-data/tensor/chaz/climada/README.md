@@ -582,6 +582,47 @@ reported by Lee et al. (2018, §5.2), who matched observed 35 kt return
 periods with a regional frequency adjustment. The published maps apply only
 the basin-wide correction.
 
+### The published frequency rule on corrected winds (`chaz_freqnorm.py`)
+
+The published correction divides each basin's observed count by N, the number
+of storms with any wind (at least 17.5 m/s) on a cell inside the basin. That
+cell set includes about 22,000 coarse ocean cells. `chaz_freqnorm.py count`
+counts N her way on global CLIMADA 6.1 winds for the same tracks: four member
+runs of file 0, 1981–2019. It uses the Oct 13 rerun chunks for the reader's
+pressure and `chaz_rerun.py wind --pressure wrapped` for the fix
+(1.21 core-s per track on the laptop).
+
+| storms per member-year counted    | NA    | EP    | NI   | SI    | SP    | WP    |
+| --------------------------------- | ----- | ----- | ---- | ----- | ----- | ----- |
+| published file (pre-#833 winds)   | 13.31 | 20.45 |      |       |       |       |
+| footprint, 6.1, reader's pressure | 12.96 | 19.21 | 3.73 | 17.24 | 15.74 | 28.91 |
+| footprint, 6.1, wrapped pressure  | 10.76 | 16.48 | 3.73 | 17.24 | 14.86 | 28.91 |
+| along-track count (`chaz_events`) | 12.65 | 17.00 |      |       |       |       |
+
+With the fix, 17% fewer North Atlantic storms leave a footprint, so the
+published rule would raise each one's weight by 1.205. The East Pacific
+weight rises by 1.166 and the South Pacific by 1.060 (only its east side
+crosses 180°), and the others don't change. The published file used a
+different track sample, so its counts compare only loosely: #833 had already
+trimmed N by 3–6%.
+
+Reweighting `era5_10f_wrapped` by this rule (NA × 1.176 and EP × 1.032 over
+the along-track weights) gives, on US land:
+
+| storms/yr; $bn/yr                     | ≥ 17.5 | ≥ 33 | ≥ 43 | EAD × 65.4 |
+| ------------------------------------- | ------ | ---- | ---- | ---------- |
+| as rebuilt                            | 2.58   | 0.65 | 0.22 | 18.2       |
+| published rule on corrected winds     | 2.98   | 0.76 | 0.26 | 21.0       |
+| plus IBTrACS 1981–2019 ≥ 34 kt counts | 3.56   | 0.91 | 0.31 | 25.1       |
+| observed storms, `chaz` conventions   | 3.54   | 1.36 | 0.54 | 31.7       |
+
+The normalization rule and storm-count targets close the gap at
+tropical-storm strength (3.56 against 3.54). The rest of the deficit is in
+intensity: CHAZ storms reaching the US are too weak, giving 0.67 of the
+observed rate at 33 m/s and 0.57 at 43 m/s. The 12.9 and 17.6 targets use a
+34 kt any-node definition, and Bloemendaal's constants count genesis at about
+40 kt, so the last row is a sensitivity, not a correction.
+
 ### What else was tuned or validated against the bugged winds
 
 Ranked by evidence and likely effect (Codex, 2026-10-30):
@@ -592,13 +633,14 @@ Ranked by evidence and likely effect (Codex, 2026-10-30):
    from 74–115 m/s on 1.4.1 to about 42–82 under the corrected CHAZ
    conventions. So the uncertainty samples in Meiler's pipeline, and the
    bounds in `chaz_damage.py`, are off too.
-2. **Meiler's frequency denominator depends on the winds.**
+2. **Meiler's frequency denominator depends on the winds** (measured
+   above: about +20% North Atlantic weight once the pressure is fixed).
    `freq_corr_era5.py` and `CHAZ_wind_concat_freq.py` divide the observed
    count by the number of storms with a nonzero footprint (at least 17.5 m/s
    on some cell) in the basin. Fixing the winds shrinks that count and raises
    each storm's weight, a partial automatic compensation. `chaz_events`
-   counts along-track `Mwspd` instead, so the rebuilds above don't reproduce
-   it, and its global size is unmeasured.
+   counts along-track `Mwspd` instead, so the rebuilds above leave out that
+   compensation.
 3. **CHAZ's landfall deficit**, known since 2018, which the inflated winds hid.
 4. **Pressure from wind, pressure-derived radius and 1010 hPa.** These
    regressions are fit to IBTrACS, not to CLIMADA winds, but they lose large

@@ -66,6 +66,14 @@ log = logging.getLogger('chaz_rerun')
 RERUN = f'{ce.PREFIX}/rerun/ERA5'
 CENTROIDS_KEY = f'{RERUN}/centroids_global_0300as.hdf5'
 PRESENT = f'{RERUN}/hazard/present'
+
+
+def present_dir(pressure: str = 'raw') -> str:
+    """The reader's pressure keeps the published layout; wrapped-longitude
+    pressure (chaz_events.fix_pressure) gets its own directory."""
+    return PRESENT if pressure == 'raw' else f'{PRESENT}_{pressure}'
+
+
 MAPS = f'{RERUN}/maps'
 YEAR_RANGE = (1981, 2019)
 TRACK_BATCH = 25  # tracks per from_tracks call; about 70 MB each on the global cells
@@ -189,13 +197,13 @@ def _winds(data):
     return TropCyclone.concat(parts)
 
 
-def compute_wind(i: int, m: int, s3, force: bool, workers: int):
+def compute_wind(i: int, m: int, s3, force: bool, workers: int, pressure: str = 'raw'):
     import multiprocessing as mp
     from importlib.metadata import version
 
     from climada.hazard import TCTracks, TropCyclone
 
-    key = f'{PRESENT}/{wind_name(i, m)}'
+    key = f'{present_dir(pressure)}/{wind_name(i, m)}'
     if not force and s3.exists(f'{ce.BUCKET}/{key}'):
         print(f'exists: s3://{ce.BUCKET}/{key}')
         return
@@ -211,6 +219,8 @@ def compute_wind(i: int, m: int, s3, force: bool, workers: int):
     clean.parent.mkdir(parents=True, exist_ok=True)
     one.to_netcdf(clean)
     tracks = TCTracks.from_simulations_chaz(clean, year_range=YEAR_RANGE)
+    if pressure == 'wrapped':
+        tracks.data = [ce.fix_pressure(tr) for tr in tracks.data]
     log.info(
         'climada %s; file %d member %d: %d tracks read in %.0fs',
         version('climada'),
@@ -243,7 +253,9 @@ def compute_wind(i: int, m: int, s3, force: bool, workers: int):
 def cmd_wind(args):
     task = args.task or os.environ.get('COILED_BATCH_TASK_INPUT')
     i, _, m = task.partition(':')
-    compute_wind(int(i), int(m), ce._s3(), args.force, args.workers or os.cpu_count())
+    compute_wind(
+        int(i), int(m), ce._s3(), args.force, args.workers or os.cpu_count(), args.pressure
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +436,7 @@ def main():
     q = sub.add_parser('wind', help='wind fields for one file and member')
     q.add_argument('--task', help="'<file>:<member>'; defaults to $COILED_BATCH_TASK_INPUT")
     q.add_argument('--workers', type=int, default=0, help='processes; 0 = all cores')
+    q.add_argument('--pressure', default='raw', choices=['raw', 'wrapped'])
     q.add_argument('--force', action='store_true')
     q.set_defaults(func=cmd_wind)
 
