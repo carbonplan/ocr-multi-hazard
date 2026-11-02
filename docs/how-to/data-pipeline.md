@@ -182,41 +182,36 @@ ocr process-region y10_x2 --risk-type fire
 ocr process-region y15_x7 --env-file production.env --risk-type wind
 ```
 
-#### `ocr partition-buildings` - data consolidation
+#### `ocr create-building-geoparquet` - buildings for analysis and the web map
 
-Partition processed geoparquet files by state and county FIPS codes.
+Write every processed building to one GeoParquet file. It keeps every column and the
+original geometry, and adds the overviews the web map draws tiles from (see
+[geoparquet-lod](https://github.com/Shane98c/geoparquet-lod)).
 
 ```bash
-ocr partition-buildings --env-file .env
+ocr create-building-geoparquet --env-file .env
 ```
 
 #### `ocr aggregate-region-risk-summary-stats` - statistical summaries
 
-Generate county and tract-level risk statistics.
+Generate risk statistics for the nation, states, counties, tracts and blocks.
 
 ```bash
 ocr aggregate-region-risk-summary-stats --env-file .env
 ```
 
-#### `ocr create-regional-pmtiles` - regional tiles
+#### `ocr create-region-geoparquet` - regions for analysis and the web map
 
-Create PMTiles for county and tract-level visualizations.
-
-```bash
-ocr create-regional-pmtiles --env-file .env
-```
-
-#### `ocr create-building-pmtiles` - Building PMTiles
-
-Generate PMTiles from the consolidated building dataset.
+Write the region statistics as GeoParquet, one dataset per region level, laid out so the
+web map can look up a region by GEOID or location with a few range requests.
 
 ```bash
-ocr create-building-pmtiles --env-file .env
+ocr create-region-geoparquet --env-file .env
 ```
 
 #### `ocr write-aggregated-region-analysis-files` - write analysis files
 
-Write aggregated region analysis files (csv, geoparquet and geojson).
+Write the region statistics as CSV and GeoJSON downloads.
 You can add the flag `--write-region-files` to `ocr run` to add this optional step in the pipeline.
 
 ```bash

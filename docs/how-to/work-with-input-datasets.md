@@ -21,11 +21,12 @@ These are n-dimensional raster datasets stored in Zarr/Icechunk stores.
 ### USFS Wildfire Risk to Communities
 
 - Source: [Scott et al. 2024](../reference/data-sources.md#scott-et-al-2024)
-- Ingested to: `ocr/input_datasets/tensor/usfs_scott_2024.py`
+- Ingested to: `src/ocr/risks/fire/input_datasets/tensor/usfs_scott_2024.py`
 - Typical usage:
 
 ```python
 from ocr import catalog
+
 crps = catalog.get_dataset('scott-et-al-2024-30m-4326').to_xarray()
 ```
 
@@ -51,7 +52,7 @@ Vector data are building footprints, administrative boundaries, and other GIS ve
 ### Overture buildings
 
 - Source: [Overture Maps Foundation buildings dataset](../reference/data-sources.md#overture-maps-foundation-buildings-dataset)
-- Ingested subset for CONUS in `ocr/input_datasets/vector/overture.py`
+- Ingested subset for CONUS in `src/ocr/risks/fire/input_datasets/vector/overture.py`
 
 ```python
 conus_buildings = catalog.get_dataset('conus-overture-buildings')

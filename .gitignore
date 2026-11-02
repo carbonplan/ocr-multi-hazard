@@ -178,9 +178,7 @@ cython_debug/
 .pixi
 *.egg-info
 ocr/_version.py
-pixi.lock
 .vscode/
-pixi.lock
 uv.lock
 environment.yaml
 .DS_Store

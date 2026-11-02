@@ -6,13 +6,13 @@ This page documents the Open Climate Risk (OCR) repository layout and explains t
 
 ## Repository overview
 
-The OCR platform is organized into distinct layers: the core Python package (`ocr/`), supporting infrastructure (configuration, deployment, testing), input data management, exploratory research notebooks, and comprehensive documentation. The structure follows best practices for scientific Python projects with emphasis on reproducibility, modularity, and cloud-native execution.
+The OCR platform is organized into distinct layers: the core Python package (`src/ocr/`, with one subpackage per hazard under `src/ocr/risks/`), supporting infrastructure (configuration, deployment, testing), input data management, exploratory research notebooks, and comprehensive documentation. The structure follows best practices for scientific Python projects with emphasis on reproducibility, modularity, and cloud-native execution.
 
 ```mermaid
 graph TB
     subgraph Repository["OCR Repository"]
         subgraph Core["Core Package"]
-            OCR[ocr/]
+            OCR[src/ocr/risks/fire/]
             OCR --> CONFIG[config.py - Configuration models]
             OCR --> TYPES[types.py - Type definitions]
             OCR --> DATASETS[datasets.py - Data catalog]
@@ -26,10 +26,10 @@ graph TB
 
             OCR --> PIPELINE[pipeline/]
             PIPELINE --> PROCESS[process_region.py]
-            PIPELINE --> PARTITION[partition.py]
+            PIPELINE --> BUILDINGS[create_building_geoparquet.py]
             PIPELINE --> STATS[fire_wind_risk_regional_aggregator.py]
             PIPELINE --> PYRAMID[create_pyramid.py]
-            PIPELINE --> PMTILES[create_building_pmtiles.py<br/>create_building_centroid_pmtiles.py<br/>create_regional_pmtiles.py]
+            PIPELINE --> REGIONS[create_region_geoparquet.py]
             PIPELINE --> WRITERS[write_aggregated_region_analysis_files.py]
 
             OCR --> INPUTDS[input_datasets/]
@@ -50,7 +50,7 @@ graph TB
         end
 
         subgraph Research["Research & Exploration"]
-            NOTEBOOKS[notebooks/]
+            NOTEBOOKS[notebooks/fire/]
             NOTEBOOKS --> NB1[Wind analysis notebooks]
             NOTEBOOKS --> NB2[Fire risk kernels]
             NOTEBOOKS --> NB3[Scaling experiments]
@@ -94,9 +94,9 @@ graph TB
 
 ---
 
-## Core package (`ocr/`)
+## Core package (`src/ocr/`)
 
-Contains all production code organized into logical modules:
+Each hazard lives in its own subpackage under `src/ocr/risks/` (`fire/`, `flood/`, `hurricane/`). Shared code will live as modules directly under `src/ocr/`. The fire subpackage (`src/ocr/risks/fire/`, imported as `ocr.risks.fire`) is organized into these modules:
 
 ### Top-level modules
 
@@ -122,12 +122,10 @@ Orchestration layer for local and cloud execution:
 Internal processing modules coordinated by the CLI. These implement the data processing workflow:
 
 - **`process_region.py`** - Sample risk values to building locations
-- **`partition.py`** - Partition GeoParquet by geographic regions
+- **`create_building_geoparquet.py`** - Write all buildings to one GeoParquet file with web map overviews
 - **`fire_wind_risk_regional_aggregator.py`** - Compute regional statistics with DuckDB
 - **`create_pyramid.py`** - Generate ndpyramid multiscale Zarr for web visualization
-- **`create_building_pmtiles.py`** - Generate PMTiles for building footprint visualization
-- **`create_building_centroid_pmtiles.py`** - Generate PMTiles for building centroid visualization
-- **`create_regional_pmtiles.py`** - Generate PMTiles for regional aggregated statistics
+- **`create_region_geoparquet.py`** - Write region statistics as GeoParquet laid out for web map lookups
 - **`write_aggregated_region_analysis_files.py`** - Write regional summary tables for all regions
 
 ### Risk models (`risks/`)
@@ -169,7 +167,7 @@ Raw data files are typically not committed. This directory contains ingestion sc
 
 ## Research notebooks (`notebooks/`)
 
-Exploratory Jupyter notebooks for prototyping and analysis:
+Exploratory Jupyter notebooks for prototyping and analysis, grouped by hazard (`notebooks/fire/`):
 
 - `conus404-winds.ipynb` - Wind data exploration and CONUS404 analysis
 - `elliptical_kernel.ipynb` - Fire spread kernel development
@@ -205,7 +203,7 @@ Documentation is built with Sphinx using the sphinx-book-theme and deployed auto
 
 ## Testing (`tests/`)
 
-Comprehensive test suite with unit and integration tests:
+Tests mirror the hazard layout (`tests/fire/` for `ocr.risks.fire`). Fire test suite:
 
 | File                         | Purpose                                               |
 | ---------------------------- | ----------------------------------------------------- |
@@ -278,8 +276,8 @@ GitHub Actions workflows for automated testing, building, and deployment:
 
 ### Adding new code
 
-1. **Create module** under `ocr/` (or in appropriate subpackage)
-2. **Add tests** under `tests/` (unit tests are required, integration tests for complex scenarios)
+1. **Create module** under `src/ocr/risks/<hazard>/` (or `src/ocr/` if shared across hazards)
+2. **Add tests** under `tests/<hazard>/` (unit tests are required, integration tests for complex scenarios)
 3. **Update documentation**:
     - Add how-to guide if introducing new user-facing workflow
     - Update API reference if adding public functions/classes
@@ -288,7 +286,7 @@ GitHub Actions workflows for automated testing, building, and deployment:
 ### Adding new datasets
 
 1. **Create ingestion script** under `input-data/tensor/` or `input-data/vector/`
-2. **Register dataset** in `ocr.datasets` catalog with metadata
+2. **Register dataset** in `ocr.risks.fire.datasets` catalog with metadata
 3. **Document provenance**: Add new source information to `docs/reference/data-sources.md`
 4. **Document ingestion** Add information to `docs/how-to/input-dataset-ingestion.md`
 5. **Document workflow** Add information to `docs/how-to/work-with-input-datasets.md`
