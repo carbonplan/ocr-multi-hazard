@@ -158,8 +158,57 @@ The attributions explain the model, not causation: correlated terrain
 predictors share credit arbitrarily, and inside the floodplain nearly all of
 the probability is credited to the floodplain, for the reason above.
 
+### Standard errors
+
+`task --se` also runs `se_fdp.R`, which writes each cell's standard error as
+`se.tif` with a record in `se.json`. `se` adds them to a watershed that is
+already trained and uploaded, from its saved forest and prediction:
+
+```bash
+pixi run -e fdp-r python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --distance planar --huc 03
+```
+
+The method is the paper's (supplement 1.1.2): ranger's infinitesimal jackknife
+with its empirical Bayes calibration. The paper mapped it for four cities only;
+here it covers every cell. Three things differ from calling
+`predict(type = "se")`:
+
+- The jackknife variance is computed from the B × B Gram matrix of in-bag
+  counts, so a cell costs one per-tree prediction plus 1e6 multiply-adds,
+  whatever the training size. It matches ranger's uncalibrated variance to
+  3.6e-14.
+- ranger fits the calibration prior to whatever batch it is given, so the same
+  cell gets different values in different batches. Here the prior and the Monte
+  Carlo noise scale are fitted once per forest on a seeded sample of 100k cells
+  in the watershed, and every cell uses them. Both match ranger's to 1.2e-7 on
+  the same cells.
+- ranger's `calibrateEB` passes `q =` to `quantile()`, which ignores it, so it
+  interpolates the calibrated variance linearly between the batch's quartiles
+  and its maximum. Across the top quartile that overstates the standard error.
+  `se_fdp.R` evaluates the exact posterior mean instead.
+
+Before calibration ~40% of cells have a negative variance, so the calibration
+does real work. The paper's maps carry the interpolation artefact. On the port
+of the released points around Charleston, stock ranger run on the paper's
+panel as one batch puts 22% of cells at or above 0.05, against 6% here, with
+the same median (0.038). Its map has the speckle seen in the paper's
+Figure 8a.
+
+HUC 03 (`noaa-200612-202512`, planar; 67.6M cells) took 68 min locally on 18
+workers, including a 165 s calibration fit. Its standard errors have median
+0.047, p90 0.060 and p99 0.091, and barely vary with the probability (median
+0.047–0.048 in every 0.2 band). The calibration shrinks each cell toward a
+floor near 0.04, so spatial structure is weak.
+
+The jackknife measures only the forest's resampling noise around one training
+set. It leaves out the absence draw and the choice of best CV fold, which
+together move the map about as much as six extra years of reports.
+
+### Served store
+
 `fdp_retrained.py` mosaics a run's watersheds onto the published grid as a
-served store with `fdp`, `contribution (driver, y, x)` and `dominant_driver`:
+served store with `fdp`, `contribution (driver, y, x)`, `dominant_driver` and,
+when every watershed has `se.tif`, `fdp_se`:
 
 ```bash
 pixi run -e fdp python input-data/tensor/fdp/fdp_retrained.py build --run noaa-200612-202512 --distance planar --hucs 03

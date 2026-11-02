@@ -21,10 +21,14 @@ on the published surface's grid, cropped to the watersheds included:
     contribution     (driver, y, x)  int16    x 1e-4; per cell, the watershed's
                                               baseline + sum over drivers = fdp
     dominant_driver  (y, x)          uint8    index of the largest contribution
+    fdp_se           (y, x)          float32  standard error of fdp, present when
+                                              every watershed has `se.tif`
 
 `fdp` and `contribution` coarsen by mean, which keeps the sum identity at every
 level up to int16 truncation. `dominant_driver` is recomputed per level from
-that level's contributions, so it always agrees with them. Root attributes carry
+that level's contributions, so it always agrees with them. `fdp_se` also
+coarsens by mean, so coarse levels show the average cell's standard error, not
+the standard error of the averaged probability. Root attributes carry
 the driver names, the per-watershed baselines and each driver's mean absolute
 contribution over the store's cells.
 
@@ -56,6 +60,7 @@ from topozarr.coarsen import create_pyramid
 
 CONTRIBUTION = 'contribution'
 DOMINANT = 'dominant_driver'
+SE = 'fdp_se'
 SCALE = 1e-4
 NODATA = -32768
 NO_DRIVER = 255
@@ -94,7 +99,11 @@ def read_watershed(prefix: str, grid: rasterio.Affine) -> dict:
         contribution = src.read()
         if src.nodata != NODATA or contribution.shape[0] != len(meta['drivers']):
             sys.exit(f'{prefix}/contributions.tif: unexpected nodata or band count')
-    return {'fdp': fdp, 'contribution': contribution, 'offset': offset, 'meta': meta}
+    se = None
+    if s3.exists(f'{prefix}/se.tif'):
+        with rasterio.open(f's3://{prefix}/se.tif') as src:
+            se = src.read(1, masked=True).filled(np.nan).astype('float32')
+    return {'fdp': fdp, 'contribution': contribution, 'se': se, 'offset': offset, 'meta': meta}
 
 
 def mosaic(run: str, distance: str, quick: bool, hucs: list[str]) -> xr.Dataset:
@@ -107,6 +116,9 @@ def mosaic(run: str, distance: str, quick: bool, hucs: list[str]) -> xr.Dataset:
     drivers = sheds[hucs[0]]['meta']['drivers']
     if any(s['meta']['drivers'] != drivers for s in sheds.values()):
         sys.exit('watersheds disagree on driver order')
+    with_se = [huc for huc, s in sheds.items() if s['se'] is not None]
+    if with_se and len(with_se) != len(hucs):
+        sys.exit(f'only HUCs {with_se} have se.tif; run `fdp_train.py se` for the rest')
 
     r0 = min(s['offset'][0] for s in sheds.values())
     c0 = min(s['offset'][1] for s in sheds.values())
@@ -114,12 +126,15 @@ def mosaic(run: str, distance: str, quick: bool, hucs: list[str]) -> xr.Dataset:
     c1 = max(s['offset'][1] + s['fdp'].shape[1] for s in sheds.values())
     fdp = np.full((r1 - r0, c1 - c0), np.nan, dtype='float32')
     contribution = np.full((len(drivers), r1 - r0, c1 - c0), NODATA, dtype='int16')
+    se = np.full_like(fdp, np.nan) if with_se else None
     for s in sheds.values():
         r, c = s['offset'][0] - r0, s['offset'][1] - c0
         h, w = s['fdp'].shape
         valid = np.isfinite(s['fdp'])
         fdp[r : r + h, c : c + w][valid] = s['fdp'][valid]
         contribution[:, r : r + h, c : c + w][:, valid] = s['contribution'][:, valid]
+        if se is not None:
+            se[r : r + h, c : c + w][valid] = s['se'][valid]
 
     valid = contribution[0] != NODATA
     mean_abs = [float(np.abs(band[valid], dtype='float64').mean() * SCALE) for band in contribution]
@@ -146,6 +161,12 @@ def mosaic(run: str, distance: str, quick: bool, hucs: list[str]) -> xr.Dataset:
             'hucs': hucs,
         },
     )
+    if se is not None:
+        ds[SE] = (
+            ('y', 'x'),
+            se,
+            {'long_name': 'standard error of fdp', 'method': 'infinitesimal jackknife'},
+        )
     return ds.proj.assign_crs(spatial_ref=CRS)
 
 
@@ -199,7 +220,7 @@ def cmd_build(args) -> None:
         {
             'id': f'retrained/{name}',
             'variable': VARIABLE,
-            'variables': [VARIABLE, CONTRIBUTION, DOMINANT],
+            'variables': [VARIABLE, CONTRIBUTION, DOMINANT, *([SE] if SE in ds else [])],
             'drivers': ds.attrs['drivers'],
             'baselines': ds.attrs['baselines'],
             'hucs': hucs,
@@ -246,6 +267,12 @@ def verify(run: str, distance: str, quick: bool) -> None:
             fails.append(f'level {level}: sum identity off by {residual.max():.2e} (> {tol:.1e})')
         if (d[valid] != c[:, valid].argmax(axis=0)).any():
             fails.append(f'level {level}: dominant_driver disagrees with contribution')
+        if SE in group:
+            se = np.asarray(group[SE][win])
+            if not np.isfinite(se[valid]).all():
+                fails.append(f'level {level}: fdp_se missing where fdp is set')
+            elif se[valid].min() < 0 or se[valid].max() > 0.5:
+                fails.append(f'level {level}: fdp_se outside [0, 0.5]')
         print(
             f'/{level}: shape={fdp.shape} fdp {np.nanmin(p):.3f}..{np.nanmax(p):.3f}'
             f' max residual {residual.max():.1e}'

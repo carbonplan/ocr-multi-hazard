@@ -21,7 +21,10 @@ prediction with the published surface, and uploads everything to
 released script's spatial-sorting distances; `planar` corrects them (see
 train_fdp.R). `--quick` shrinks tuning and the forest for a smoke test.
 `--contributions` adds per-cell attributions of the prediction to each
-predictor (contrib_fdp.R).
+predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
+
+`se` adds standard errors to a watershed already trained and uploaded, from
+its saved forest and prediction, without retraining.
 
 `launch` submits one `task` per watershed as a Coiled batch job. dismo has no
 linux-aarch64 build, so the VMs are x86.
@@ -31,7 +34,8 @@ an R with them installed (see the README); on Coiled they are added to the
 synced environment as conda extras.
 
 Usage:
-  python fdp_train.py task --run original --huc 03 [--rscript PATH] [--quick] [--contributions]
+  python fdp_train.py task --run original --huc 03 [--rscript PATH] [--quick] [--contributions] [--se]
+  python fdp_train.py se --run original --huc 03 [--rscript PATH]
   python fdp_train.py launch --run original --hucs 03 [--vm-type m7i.4xlarge] [--quick]
 """
 
@@ -63,6 +67,8 @@ HERE = Path(__file__).resolve().parent
 R_SCRIPT = 'train_fdp.R'
 CONTRIB_SCRIPT = 'contrib_fdp.R'
 CONTRIB_SOURCE = 'fdp_contrib.cpp'
+SE_SCRIPT = 'se_fdp.R'
+SE_FILES = ('se.tif', 'se.json', 'se-log.txt')
 R_PACKAGES = [
     'compilers',
     'r-rcpp',
@@ -288,6 +294,25 @@ def upload(local: Path, prefix: str) -> None:
     print(f'uploaded {len(list(local.iterdir()))} files -> s3://{prefix}')
 
 
+def run_se(args, out: Path, predictors: Path, work: Path, threads: int) -> dict:
+    print('estimating standard errors', flush=True)
+    cmd = [
+        args.rscript,
+        str(r_script(SE_SCRIPT)),
+        '--model',
+        str(out / 'rf.rds'),
+        '--predictors',
+        str(predictors),
+        '--prediction',
+        str(out / 'fdp.tif'),
+        '--out',
+        str(out),
+        '--threads',
+        str(threads),
+    ]
+    return run_r(cmd, out / 'se-log.txt', work)
+
+
 def cmd_task(args) -> None:
     huc = args.huc or os.environ.get('COILED_BATCH_TASK_INPUT')
     if huc not in HUCS:
@@ -352,6 +377,7 @@ def cmd_task(args) -> None:
             str(threads),
         ]
         contributions = run_r(contrib_cmd, out / 'contrib-log.txt', work)
+    se = run_se(args, out, predictors, work, threads) if args.se else None
 
     print('comparing with the published surface', flush=True)
     stats = compare(out / 'fdp.tif', inside, predictors / 'floodplain.tif')
@@ -369,6 +395,7 @@ def cmd_task(args) -> None:
                 'prepare_seconds': prepare_seconds,
                 'r': r,
                 'contributions': contributions,
+                'se': se,
                 'host': {
                     'platform': platform.platform(),
                     'cpus': os.cpu_count(),
@@ -379,6 +406,36 @@ def cmd_task(args) -> None:
         )
     )
     upload(out, prefix)
+    if not args.keep:
+        shutil.rmtree(work)
+
+
+def cmd_se(args) -> None:
+    """Standard errors for an uploaded watershed, added to its prefix."""
+    huc = args.huc or os.environ.get('COILED_BATCH_TASK_INPUT')
+    if huc not in HUCS:
+        sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
+    prefix = model_prefix(args.run, args.distance, args.quick, huc)
+    s3 = s3fs.S3FileSystem()
+    if not s3.exists(f'{prefix}/rf.rds'):
+        sys.exit(f's3://{prefix} has no trained forest; run `task` first')
+    threads = args.threads or os.cpu_count()
+    print(f'HUC {huc} standard errors -> s3://{prefix} ({threads} threads)', flush=True)
+
+    work = Path(tempfile.mkdtemp(prefix=f'fdp-se-huc{huc}-', dir=args.work))
+    out = work / 'out'
+    out.mkdir()
+    predictors, _ = prepare_predictors(huc, read_manifest())
+    for name in ('rf.rds', 'fdp.tif', 'run.json'):
+        s3.get_file(f'{prefix}/{name}', str(out / name))
+    se = run_se(args, out, predictors, work, threads)
+
+    record = json.loads((out / 'run.json').read_text())
+    record['se'] = se | {'host': {'platform': platform.platform(), 'cpus': os.cpu_count()}}
+    (out / 'run.json').write_text(json.dumps(record, indent=2))
+    for name in (*SE_FILES, 'run.json'):
+        s3.put_file(str(out / name), f'{prefix}/{name}')
+    print(f'uploaded {", ".join(SE_FILES)} -> s3://{prefix}')
     if not args.keep:
         shutil.rmtree(work)
 
@@ -421,6 +478,8 @@ def cmd_launch(args) -> None:
         str(HERE / CONTRIB_SCRIPT),
         '--upload',
         str(HERE / CONTRIB_SOURCE),
+        '--upload',
+        str(HERE / SE_SCRIPT),
     ]
     for pkg in R_PACKAGES:
         cmd += ['--package-sync-conda-extras', pkg]
@@ -438,6 +497,8 @@ def cmd_launch(args) -> None:
         cmd.append('--quick')
     if args.contributions:
         cmd.append('--contributions')
+    if args.se:
+        cmd.append('--se')
     print(' '.join(cmd))
     subprocess.run(cmd, check=True)
 
@@ -452,25 +513,37 @@ def main() -> None:
     common.add_argument('--run', required=True, help='points set from fdp_points.py')
     common.add_argument('--distance', choices=['lonlat', 'planar'], default='lonlat')
     common.add_argument('--quick', action='store_true')
-    common.add_argument(
+
+    outputs = argparse.ArgumentParser(add_help=False)
+    outputs.add_argument(
         '--contributions', action='store_true', help='also write per-cell predictor attributions'
     )
+    outputs.add_argument('--se', action='store_true', help='also write per-cell standard errors')
 
-    t = sub.add_parser('task', parents=[common], help='train and predict one watershed here')
-    t.add_argument('--huc', help='defaults to $COILED_BATCH_TASK_INPUT')
-    t.add_argument('--rscript', default='Rscript')
-    t.add_argument('--threads', type=int)
-    t.add_argument('--work', help='parent directory for the working files')
-    t.add_argument('--keep', action='store_true', help='keep the working directory')
+    local = argparse.ArgumentParser(add_help=False)
+    local.add_argument('--huc', help='defaults to $COILED_BATCH_TASK_INPUT')
+    local.add_argument('--rscript', default='Rscript')
+    local.add_argument('--threads', type=int)
+    local.add_argument('--work', help='parent directory for the working files')
+    local.add_argument('--keep', action='store_true', help='keep the working directory')
 
-    la = sub.add_parser('launch', parents=[common], help='submit one task per watershed to Coiled')
+    sub.add_parser(
+        'task', parents=[common, outputs, local], help='train and predict one watershed here'
+    )
+    sub.add_parser(
+        'se', parents=[common, local], help='add standard errors to an uploaded watershed'
+    )
+
+    la = sub.add_parser(
+        'launch', parents=[common, outputs], help='submit one task per watershed to Coiled'
+    )
     la.add_argument('--hucs', nargs='+', choices=HUCS)
     la.add_argument('--vm-type', default='m7i.4xlarge')
     la.add_argument('--disk-size', type=int, default=200)
     la.add_argument('--spot', action='store_true')
 
     args = p.parse_args()
-    {'task': cmd_task, 'launch': cmd_launch}[args.cmd](args)
+    {'task': cmd_task, 'se': cmd_se, 'launch': cmd_launch}[args.cmd](args)
 
 
 if __name__ == '__main__':
