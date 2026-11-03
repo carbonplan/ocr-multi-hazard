@@ -106,19 +106,26 @@ def test_overflow_in_last_bin_and_nan_missing(paths) -> None:
     assert c['v_hist'] == [0, 0, 0, 0, 1]  # 150 > last edge, in the last bin
 
 
-def test_hist_sums_to_non_null_count(paths) -> None:
+def test_nan_missing_when_pyarrow_written(paths) -> None:
+    # pyarrow's float stats omit NaN; DuckDB must not take them as proof of no NaN (duckdb#25521).
+    pq.write_table(pq.read_table(paths['buildings']), paths['buildings'])
+    c = _rows(paths, RegionLevel.BLOCK, 'blocks')[C]
+    assert c['v_mean'] == 150.0
+    assert c['v_median'] == 150.0
+
+
+def test_hist_plus_missing_is_building_count(paths) -> None:
     for level, regions in [(RegionLevel.BLOCK, 'blocks'), (RegionLevel.COUNTY, 'counties')]:
         for r in _rows(paths, level, regions).values():
-            assert sum(r['v_hist']) == r['building_count'] - (
-                r['GEOID'] in (C, '06003')
-            )  # minus 'nan'
+            assert r['v_missing'] == (r['GEOID'] in (C, '06003'))  # the 'nan' building
+            assert sum(r['v_hist']) + r['v_missing'] == r['building_count']
 
 
 def test_no_hists(paths) -> None:
     # Every value column gets mean and median; only Hist vars get a hist.
     rows = _rows_with(paths, [])
     assert rows[A]['building_count'] == 3
-    assert [c for c in rows[A] if c.startswith('v_')] == ['v_mean', 'v_median']
+    assert [c for c in rows[A] if c.startswith('v_')] == ['v_mean', 'v_median', 'v_missing']
     assert rows[A]['v_median'] == pytest.approx(0.015)
 
 
@@ -175,7 +182,7 @@ def test_write_regions(paths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     write_regions(OutputPaths(Risk.FLOOD, 'v2.0.0'), levels, temp_dir=scratch)
     assert not any(scratch.iterdir())
     out = root / 'output/flood/v2.0.0/vector/regions'
-    stats = ['building_count', 'v_median', 'v_hist', 'v_mean']
+    stats = ['building_count', 'v_median', 'v_hist', 'v_mean', 'v_missing']
     files = {
         'blocks/state_fips=06/county_fips=001/data.parquet': (2, []),
         'blocks/state_fips=06/county_fips=003/data.parquet': (1, []),

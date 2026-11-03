@@ -57,8 +57,8 @@ def write_region_stats(
     out: str | Path,
     regions: str | Path | None = None,
 ) -> None:
-    """Write to `out` per-region building_count, mean and median of every building value column, hist of
-    each `hists` var, plus the region's columns.
+    """Write to `out` per-region building_count, mean, median and missing count of every building value
+    column, hist of each `hists` var, plus the region's columns.
 
     `buildings` is a GeoParquet with GEOID (`write_buildings` output); its value columns are all but
     NOT_VALUES. Each building rolls up from its block GEOID by prefix (`level.group_key`), so levels
@@ -81,14 +81,19 @@ def write_region_stats(
             raise ValueError(f'Hist variables not in buildings: {sorted(missing)}')
         values = ''.join(f', nullif("{v}"::DOUBLE, \'NaN\'::DOUBLE) AS "{v}"' for v in variables)
         stats = ['count(*) AS building_count']
-        stats += [f'avg("{v}") AS "{v}_mean", median("{v}") AS "{v}_median"' for v in variables]
+        stats += [
+            f'avg("{v}") AS "{v}_mean", median("{v}") AS "{v}_median", '
+            f'count(*) FILTER ("{v}" IS NULL) AS "{v}_missing"'
+            for v in variables
+        ]
         stats += [_hist_sql(v, h.bins) for h in hists for v in h.variables]
         rel = con.sql(
             f"""
             -- each building's GEOID at this level; NaN -> NULL
+            -- can_have_nan: fallback for files with NaN; ours write NULL (buildings._sample, duckdb#25521)
             WITH tagged AS (
                 SELECT {level.group_key} AS GEOID{values}
-                FROM read_parquet($buildings)
+                FROM read_parquet($buildings, can_have_nan = true)
                 WHERE GEOID IS NOT NULL
             ),
             stats AS (

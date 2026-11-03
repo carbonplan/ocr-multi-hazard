@@ -91,7 +91,11 @@ def _sample(ds: xr.Dataset, iy: np.ndarray, ix: np.ndarray) -> dict[str, pa.Arra
             xdim: xr.DataArray(np.where(inside, ix, 0), dims='pt'),
         }
     )
-    return {str(v): pa.array(da.values, mask=~inside) for v, da in pts.data_vars.items()}
+    # NaN -> NULL: pyarrow's stats skip NaN, so DuckDB NaN filters (region stats, lod_shown) miss it (duckdb#25521).
+    return {
+        str(v): pa.array(da.values, mask=~inside | np.isnan(da.values))
+        for v, da in pts.data_vars.items()
+    }
 
 
 def sample_buildings(

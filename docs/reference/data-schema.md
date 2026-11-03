@@ -251,9 +251,9 @@ This single-file format enables:
 ## Regional statistics datasets
 
 Regional statistics are published as GeoParquet, one dataset per region level, with each region's full
-TIGER geometry. Each region gets `building_count`, plus `{var}_mean` and `{var}_median` for every building
-value and `{var}_hist` for the risk's histogram variables. Buildings roll up from their block `GEOID`, so
-levels nest. The web map reads its region statistics from these files.
+TIGER geometry. Each region gets `building_count`, plus `{var}_mean`, `{var}_median` and `{var}_missing`
+(NULL or NaN count) for every building value and `{var}_hist` for the risk's histogram variables.
+Buildings roll up from their block `GEOID`, so levels nest. The web map reads its region statistics from these files.
 
 ### Layout
 
@@ -284,7 +284,7 @@ WHERE state_fips = '08' AND county_fips = '013';
 | `NAME`                                         | string                        | Region name (nation, states and counties)        |
 | `{var}_hist` (e.g. `rps_2011_hist`)            | list&lt;int64&gt;             | Building count per bin: see below                |
 | `bbox`                                         | struct                        | Bounding box covering, with page statistics      |
-| `geometry`                                     | WKB (Polygon or MultiPolygon) | Full region geometry in WGS84 longitude/latitude |
+| `geometry`                                     | WKB (Polygon or MultiPolygon) | Full region geometry in EPSG:4269 (NAD83, from TIGER) longitude/latitude |
 
 There are no `longitude` and `latitude` columns; the centroid follows from the geometry.
 

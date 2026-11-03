@@ -40,10 +40,11 @@ def _ds(crs: str = 'EPSG:4326') -> xr.Dataset:
 def test_sample_inside_and_out_of_bounds() -> None:
     ds = _ds()
     ds['cls'] = ds['risk'].astype('int8')
-    iy, ix = np.array([0, 3, -1, 2]), np.array([0, 4, 0, 5])
+    ds['risk'][0, 1] = np.nan
+    iy, ix = np.array([0, 3, -1, 2, 0]), np.array([0, 4, 0, 5, 1])
     got = _sample(ds, iy, ix)
-    assert got['risk'].to_pylist() == [0, 19, None, None]
-    assert got['cls'].to_pylist() == [0, 19, None, None]
+    assert got['risk'].to_pylist() == [0, 19, None, None, None]  # NaN pixel is null too
+    assert got['cls'].to_pylist() == [0, 19, None, None, 1]
     assert got['cls'].type == pa.int8()  # off-raster is null, not a cast to float
 
 
