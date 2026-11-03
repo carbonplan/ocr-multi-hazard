@@ -7,7 +7,7 @@ import pydantic
 import xarray as xr
 from shapely import wkt
 
-# Public Source Coop mirror of s3://carbonplan-ocr; read anonymously
+# Public Source Coop bucket; read anonymously
 SOURCE_COOP_BUCKET = 'us-west-2.opendata.source.coop'
 SOURCE_COOP_PREFIX = 'carbonplan/carbonplan-ocr'
 
