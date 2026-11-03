@@ -219,7 +219,19 @@ memory, so all 18 at once need a large VM (contributions alone are ~33 GB as
 int16 at CONUS scale). Coarse levels average `fdp` and `contribution`, so the
 sum identity holds at every level up to int16 truncation (2.4e-3 at level 7);
 `dominant_driver` is recomputed from each level's contributions. `verify`
-checks both. The ocr-explore layer _Flood Damage Probability Drivers_ reads it.
+checks both. The ocr-explore layer _Flood Damage Probability Drivers_ and the
+ocr-web branch `Shane98c/fdp-retrained` read it.
+
+`ocr.risks.flood.retrained` builds the same variables as an icechunk store at
+the versioned output path, `output/flood/<version>/store.icechunk`, with
+`contribution` as float16 and NaN for no data:
+
+```bash
+pixi run -e flood flood-retrained build --run noaa-200612-202512 --hucs 03 --version vX.Y.Z
+```
+
+obstore reads AWS credentials from the environment only, so locally export
+them first with `eval "$(aws configure export-credentials --format env)"`.
 
 ## Outputs
 

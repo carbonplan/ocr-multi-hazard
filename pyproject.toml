@@ -168,6 +168,7 @@
 
 [tool.pixi.feature.flood.tasks]
     flood-etl = { cmd = "python -m ocr.risks.flood.etl.flood" }
+    flood-retrained = { cmd = "python -m ocr.risks.flood.retrained" }
 
 [tool.pixi.feature.data-mgmt.tasks]
     jupyter = { cmd = "jupyter lab" }
