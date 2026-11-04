@@ -137,7 +137,3 @@ The `ocr` command (`ocr run`, `ocr stage`), run files (`RunFile`) and Coiled job
 .. automodule:: ocr.cli
    :members:
 ```
-
-### Fire CLI application
-
-The older fire CLI, exposed as `ocr-deploy` until the fire refactor. Options: `ocr-deploy --help`.

@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import xarray as xr
 from odc.geo import CRS
-from odc.geo.geom import BoundingBox
+from odc.geo.geom import BoundingBox, box
 
 from ocr.config import OVERTURE_RELEASE, TIGER_VINTAGE
 from ocr.duck import duckdb_connect
@@ -133,9 +133,11 @@ def sample_buildings(
 
     point_strategy = PointSamplingStrategy(point_strategy)
     ds_crs, y, x = _validate_dataset(ds)
-    left, bottom, right, top = bbox
-    if not (left < right and bottom < top):
-        raise ValueError(f'bbox {bbox} is not (xmin, ymin, xmax, ymax)')
+    area = box(*bbox, 'EPSG:4326').boundingbox  # orders swapped corners
+    if not (area.left < area.right and area.bottom < area.top):
+        raise ValueError(f'bbox {bbox} has zero width or height')
+    if not CONUS.polygon.contains(area.polygon):
+        raise ValueError(f'bbox {bbox} is not inside CONUS {CONUS.bbox}; lon/lat order?')
 
     url = str(
         source
@@ -144,10 +146,10 @@ def sample_buildings(
     params = {
         'url': url,
         'blocks': str(blocks or RegionLevel.BLOCK.uri),
-        'left': left,
-        'bottom': bottom,
-        'right': right,
-        'top': top,
+        'left': area.left,
+        'bottom': area.bottom,
+        'right': area.right,
+        'top': area.top,
     }
     with tempfile.TemporaryDirectory(dir=temp_dir) as tmp, duckdb_connect() as con:
         joined, values = Path(tmp) / 'joined.parquet', Path(tmp) / 'values.parquet'

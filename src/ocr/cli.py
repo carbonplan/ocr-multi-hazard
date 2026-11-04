@@ -1,20 +1,18 @@
-"""`ocr run FILE` (a run file under runs/<risk>/) or `ocr stage [opts] <risk> <stage>...`:
-run stages in order, in process or one Coiled batch job per stage.
-"""
+"""`ocr run` / `ocr stage`: run a risk's stages in order, in process or one Coiled job each."""
 
 import json
-import os
 import time
 import tomllib
 from enum import StrEnum
+from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, Self, TypedDict
 
 import typer
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from ocr.config import OUTPUT_PREFIX, OutputPaths, Risk, StorageConfig
-from ocr.stages import RISKS, STAGES, check_storage, stage_kwargs, unimplemented
+from ocr.stages import RISKS, STAGES, preflight, stage_kwargs
 
 
 class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
@@ -26,7 +24,7 @@ class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
     forward_aws_credentials: bool
     software: str
     region: str
-    spot_policy: str  # 'on-demand', 'spot' or 'spot_with_fallback'
+    spot_policy: Literal['on-demand', 'spot', 'spot_with_fallback']
     job_timeout: str  # e.g. '6h'; Coiled stops the VM after this
     tag: dict[str, str]
     env: dict[str, str]
@@ -35,36 +33,27 @@ class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
 DEFAULT: JobConfig = {
     'arm': True,
     'forward_aws_credentials': True,
+    'spot_policy': 'on-demand',
     'tag': {'Project': 'OCR'},
     'env': {'PYTHONUNBUFFERED': '1'},  # stream logs live; piped stdout is block-buffered
 }
-# Driver env vars the VM needs to write where the driver reads. LOCAL_ROOT can't go (see `execute`).
-FORWARD_ENV = ('OCR_STORAGE_BUCKET', 'OCR_STORAGE_REGION')
 # `ocr stage --kwargs` from env: how Coiled jobs get their stage kwargs (`run_coiled`).
 KWARGS_ENV = 'OCR_STAGE_KWARGS'
 # Estimates from data size until CONUS timing/RAM runs; vm_type lists are first-available.
 JOBS: dict[str, JobConfig] = {
-    'etl': {'vm_type': ['r8g.xlarge'], 'disk_size': '50 GiB'},  # whole tif in RAM, ~10-15 GB peak
     'score': {'vm_type': ['r8g.xlarge']},
-    'pyramid': {
-        'vm_type': ['r8g.2xlarge'],
-        'spot_policy': 'spot_with_fallback',
-        'job_timeout': '2h',
-    },
-    # Long single-task jobs: a spot reclaim loses hours.
+    'pyramid': {'vm_type': ['r8g.2xlarge'], 'job_timeout': '2h'},
     # Flood CONUS on r8g.8xlarge (2026-11-03): 64 min, ~1/4 of it at the gp3 write cap, mostly 1-2 cores busy.
     # r8gd: local NVMe at /scratch (~1 GB/s write vs 133 MB/s); /tmp is a small EBS root, so TMPDIR.
     'buildings': {
         'vm_type': ['r8gd.4xlarge'],
         'disk_size': '50 GiB',  # root only: temp files go to NVMe
         'env': {'TMPDIR': '/scratch/batch'},
-        'spot_policy': 'on-demand',
         'job_timeout': '8h',
     },
     'regions': {
         'vm_type': ['r8g.4xlarge'],
         'disk_size': '200 GiB',
-        'spot_policy': 'on-demand',
         'job_timeout': '4h',
     },
 }
@@ -83,10 +72,18 @@ class RunFile(BaseModel):
     version: str
     stages: list[Stage]
     coiled: bool = False
-    bucket: str | None = None  # over env OCR_STORAGE_BUCKET (`StorageConfig`)
     prefix: str = OUTPUT_PREFIX  # of outputs, `OutputPaths.prefix`
     kwargs: dict[Stage, dict[str, Any]] = {}  # per stage: keyword args of its util, `STAGE_KWARGS`
     job: dict[Stage, JobConfig] = {}  # per stage: over JOBS
+
+    @cached_property
+    def out(self) -> OutputPaths:
+        return OutputPaths(self.risk, self.version, self.prefix)
+
+    @model_validator(mode='after')
+    def _check_out(self) -> Self:
+        self.out  # bad version or prefix fails at load
+        return self
 
 
 app = typer.Typer(
@@ -96,13 +93,15 @@ app = typer.Typer(
 
 
 def job_config(stage: str, job: JobConfig, vm: str | None) -> JobConfig:
-    # Same region as the bucket. No `software`: Coiled package-syncs the local env.
-    runtime: JobConfig = {'region': StorageConfig().region}
-    if env := {k: v for k in FORWARD_ENV if (v := os.environ.get(k))}:
-        runtime['env'] = env
+    # Same bucket and region as the driver. No `software`: Coiled package-syncs the local env.
+    s = StorageConfig()
+    runtime: JobConfig = {
+        'region': s.region,
+        'env': {'OCR_STORAGE_BUCKET': s.bucket, 'OCR_STORAGE_REGION': s.region},
+    }
     layers = [DEFAULT, runtime, JOBS.get(stage, {}), job, {'vm_type': [vm]} if vm else {}]
     cfg: JobConfig = {k: v for layer in layers for k, v in layer.items()}  # last wins
-    for key in ('env', 'tag'):  # dicts merge key by key, so a run file's env keeps FORWARD_ENV
+    for key in ('env', 'tag'):  # dicts merge key by key, so a run file's env keeps the storage env
         if merged := {k: v for layer in layers for k, v in layer.get(key, {}).items()}:
             cfg[key] = merged
     return cfg
@@ -235,23 +234,22 @@ def stage(
     ] = None,
 ) -> None:
     """Run stages given on the command line (also what each Coiled job runs)."""
-    data = {'risk': risk, 'version': version, 'prefix': prefix, 'stages': stages, 'coiled': coiled}
-    execute(load({**data, 'kwargs': kwargs or {}}, '--kwargs'), vm, dry_run, overwrite)
+    data = {
+        'risk': risk,
+        'version': version,
+        'prefix': prefix,
+        'stages': stages,
+        'coiled': coiled,
+        'kwargs': kwargs or {},
+    }
+    execute(load(data, '--version / --prefix / --kwargs'), vm, dry_run, overwrite)
 
 
 def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> None:
     """Run the requested stages one at a time, in `STAGES` order. Unrequested stages are
     assumed done (their outputs already in storage).
     """
-    risk = cfg.risk
-    if cfg.bucket:
-        # Env, so every StorageConfig() (inputs too) and FORWARD_ENV on Coiled see it.
-        os.environ['OCR_STORAGE_BUCKET'] = cfg.bucket
-    storage = StorageConfig()
-    try:
-        out = OutputPaths(risk, cfg.version, cfg.prefix)
-    except ValidationError as e:
-        raise typer.BadParameter(str(e), param_hint='--version / --prefix') from e
+    risk, out, storage = cfg.risk, cfg.out, StorageConfig()
     if cfg.coiled and storage.local_root:
         raise typer.BadParameter('Coiled jobs write to S3: unset OCR_STORAGE_LOCAL_ROOT')
     checked = {}
@@ -261,19 +259,15 @@ def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> Non
         except ValidationError as e:
             valid = ', '.join(type(stage_kwargs(s, {})).model_fields) or 'none'
             raise typer.BadParameter(f'{e}\nvalid {s} kwargs: {valid}', param_hint='kwargs') from e
-    if 'buildings' in checked and 'bbox' in checked['buildings'].model_fields_set:
-        if out.prefix == OUTPUT_PREFIX and not out.version.prerelease:
-            msg = (
-                f'bbox subsets buildings: use --prefix scratch/<you> or e.g. v{out.version}-scratch'
-            )
-            raise typer.BadParameter(msg, param_hint='--version / --prefix')
+    given = {s: kw.model_dump(exclude_unset=True) for s, kw in checked.items()}
+    production = out.prefix == OUTPUT_PREFIX and not out.version.prerelease
+    if 'bbox' in given.get('buildings', {}) and production:
+        msg = f'bbox subsets buildings: use --prefix scratch/<you> or e.g. v{out.version}-scratch'
+        raise typer.BadParameter(msg, param_hint='--version / --prefix')
     ordered = [s for s in STAGES if s in cfg.stages]
     if unused := sorted(set(cfg.kwargs) - set(ordered)):
         typer.echo(f'warning: kwargs for stages not run, ignored: {unused}', err=True)
-    if todo := unimplemented(ordered, RISKS[risk]):
-        raise typer.BadParameter(f'{risk}: ' + '; '.join(todo), param_hint='stages')
-    given = {s: kw.model_dump(exclude_unset=True) for s, kw in checked.items()}
-    if problems := check_storage(ordered, RISKS[risk], out, overwrite, given):
+    if problems := preflight(ordered, RISKS[risk], out, given):
         raise typer.BadParameter('\n'.join(problems), param_hint='stages')
 
     if dry_run:
@@ -297,7 +291,6 @@ def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> Non
         if cfg.coiled:
             run_coiled(cfg, stage, checked.get(stage), vm, overwrite)
         else:
-            kw = checked[stage].model_dump(exclude_unset=True) if stage in checked else {}
-            STAGES[stage](RISKS[risk], out, overwrite, **kw)
+            STAGES[stage](RISKS[risk], out, overwrite, **given.get(stage, {}))
         mins = (time.monotonic() - t0) / 60
         typer.echo(f'[{i}/{len(ordered)}] {risk} {stage}: done in {mins:.1f} min')

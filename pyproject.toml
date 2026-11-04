@@ -163,7 +163,7 @@
     docs-serve = { cmd = "sphinx-autobuild docs _build/html" }
 
 [tool.pixi.feature.flood.tasks]
-    flood-etl   = { cmd = "ocr stage flood etl" }  # pixi run flood-etl --version v2.0.0 [--overwrite]
+    flood-etl   = { cmd = "python -m ocr.risks.flood.etl.flood" }  # pixi run flood-etl --version v2.0.0 [--overwrite]
     flood-all   = { cmd = "ocr run runs/flood/v2.0.0.toml" }
     flood-local = { cmd = "ocr run runs/flood/local.toml" }
 
@@ -175,8 +175,6 @@
     python = "3.13.*"
 
 [tool.pixi.tasks]
-    # Fire deploy CI (.github/workflows/deploy.yaml) still builds a software env with this.
-    export-and-create-coiled = { cmd = "pixi project export conda-environment | python .github/scripts/export_pixi_to_conda.py --stdin --output environment.yaml --create-coiled" }
-    regions-etl              = { cmd = "python -m ocr.regions.tiger" }
+    regions-etl = { cmd = "python -m ocr.regions.tiger" }
     # Package-syncs the local env. Bigger VM: `pixi run start-coiled-notebook m8g.2xlarge`.
     start-coiled-notebook = { cmd = "coiled notebook start --sync --vm-type {{ vm }} --sync-ignore .pixi --sync-ignore .venv --tag Project=OCR", args = [{ arg = "vm", default = "m8g.xlarge" }] }

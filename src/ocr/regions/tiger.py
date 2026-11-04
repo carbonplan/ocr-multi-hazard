@@ -69,26 +69,17 @@ SOURCES = {
 
 # obstore retries failed requests with backoff (default RetryConfig), so a flaky census.gov response
 # doesn't kill a 49-zip run. Its default 30 s timeout covers the whole body; big state zips need longer.
-STORE = HTTPStore.from_url(TIGER, client_options={'timeout': timedelta(minutes=30)})
+CLIENT_OPTIONS = {'timeout': timedelta(minutes=30)}
 
 
 def download(path: str, dest: Path) -> None:
     """Stream TIGER `path` (relative to TIGER) to `dest`."""
-    try:
-        _stream(STORE, path, dest)
-    except obstore.exceptions.GenericError as e:
-        # census.gov's CDN can cache a "Request Rejected" HTML page for a zip (2026: ND blocks); it has
-        # no Content-Length, which obstore refuses. A query string skips that cache entry; it must sit
-        # in the store URL, since obstore percent-encodes '?' in a path.
-        if 'Content-Length' not in str(e):
-            raise
-        store = HTTPStore.from_url(f'{TIGER}/{path}?nocache', client_options=STORE.client_options)
-        _stream(store, '', dest)
-
-
-def _stream(store: HTTPStore, path: str, dest: Path) -> None:
+    # census.gov's CDN can cache a "Request Rejected" page for a zip (2026: ND blocks), which obstore
+    # refuses (no Content-Length). A query string skips the cache; it sits in the store URL because
+    # obstore percent-encodes '?' in a path.
+    store = HTTPStore.from_url(f'{TIGER}/{path}?nocache', client_options=CLIENT_OPTIONS)
     with dest.open('wb') as f:
-        for chunk in obstore.get(store, path).stream():
+        for chunk in obstore.get(store, '').stream():
             f.write(chunk)
 
 

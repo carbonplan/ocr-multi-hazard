@@ -156,47 +156,59 @@ def test_positive_excludes_nan_and_null() -> None:
         assert con.sql(sql).fetchall() == [(1,)]
 
 
-def test_check_storage_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preflight_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path))
     out, flood = OutputPaths(Risk.FLOOD, 'v2.0.0'), RISKS[Risk.FLOOD]
     for level in RegionLevel:
         (tmp_path / level.key).parent.mkdir(parents=True)
         (tmp_path / level.key).touch()
-    assert stages.check_storage(['etl', 'buildings'], flood, out, False) == []
-    assert len(stages.check_storage(['pyramid', 'buildings'], flood, out, False)) == 2
-    assert stages.check_storage(['etl', 'buildings', 'regions'], flood, out, False) == []
-    assert stages.check_storage(['regions'], flood, out, False)[0].endswith('run buildings first')
-    (tmp_path / out.buildings).parent.mkdir(parents=True)
-    (tmp_path / out.buildings).touch()
-    assert stages.check_storage(['regions'], flood, out, False) == []
-    # A risk with score: its etl writes inputs, not the store.
+    problems = stages.preflight(['pyramid', 'buildings'], flood, out)
+    assert len(problems) == 2 and problems[0].endswith('run the flood ETL first')
+    assert stages.preflight(['regions'], flood, out)[0].endswith('run buildings first')
+    (tmp_path / out.store).mkdir(parents=True)
+    (tmp_path / out.store / 'repo').touch()
+    assert stages.preflight(['buildings', 'regions'], flood, out) == []
+    # A risk with score writes the store in the run.
     scored = dataclasses.replace(flood, score=lambda out: None)
-    assert stages.check_storage(['etl', 'buildings'], scored, out, False)[0].endswith(
-        'run score first'
-    )
+    fresh = OutputPaths(Risk.FLOOD, 'v3.0.0')
+    assert stages.preflight(['buildings'], scored, fresh)[0].endswith('run score first')
+    assert stages.preflight(['score', 'buildings'], scored, fresh) == []
 
 
-def test_check_storage_tiger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preflight_unimplemented(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path))
-    out, flood = OutputPaths(Risk.FLOOD, 'v2.0.0'), RISKS[Risk.FLOOD]
-    # etl writes the store and buildings the buildings file, so only TIGER is missing.
-    problems = stages.check_storage(['etl', 'buildings', 'regions'], flood, out, False)
-    assert len(problems) == 1 + len(RegionLevel) and 'regions-etl' in problems[0]
-    # Own blocks file, and only the levels asked for.
-    kw = {'buildings': {'blocks': 'x.parquet'}, 'regions': {'levels': ['states']}}
-    assert stages.check_storage(['etl', 'buildings', 'regions'], flood, out, False, kw) == [
-        f'regions needs TIGER states at {RegionLevel.STATE.uri}: run pixi run regions-etl'
+    out = OutputPaths(Risk.HURRICANE, 'v2.0.0')
+    problems = stages.preflight(['score', 'pyramid'], RISKS[Risk.HURRICANE], out)
+    assert problems == [
+        'score: not implemented for hurricane',
+        'pyramid: not implemented for hurricane',
     ]
 
 
-def test_check_storage_etl_existing_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Flood etl refuses an existing store without --overwrite; fail before a job starts.
+def test_preflight_tiger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path))
     out, flood = OutputPaths(Risk.FLOOD, 'v2.0.0'), RISKS[Risk.FLOOD]
     (tmp_path / out.store).mkdir(parents=True)
     (tmp_path / out.store / 'repo').touch()
-    assert stages.check_storage(['etl'], flood, out, False)[0].endswith('skip etl')
-    assert stages.check_storage(['etl'], flood, out, True) == []
+    # The store exists and buildings writes the buildings file, so only TIGER is missing.
+    problems = stages.preflight(['buildings', 'regions'], flood, out)
+    assert len(problems) == 1 + len(RegionLevel) and 'regions-etl' in problems[0]
+    # Own blocks file, and only the levels asked for.
+    kw = {'buildings': {'blocks': 'x.parquet'}, 'regions': {'levels': ['states']}}
+    assert stages.preflight(['buildings', 'regions'], flood, out, kw) == [
+        f'regions needs TIGER states at {RegionLevel.STATE.uri}: run pixi run regions-etl'
+    ]
+
+
+def test_delete_prefix_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path))
+    for key in ('a/b/x', 'a/b/c/y', 'a/bc/z'):
+        (tmp_path / key).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / key).touch()
+    stages._delete_prefix('a/b')
+    assert sorted(str(f.relative_to(tmp_path)) for f in tmp_path.rglob('*') if f.is_file()) == [
+        'a/bc/z'
+    ]
 
 
 def test_score_overwrite_deletes_store(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,7 +267,7 @@ def test_buildings_bbox_kwarg() -> None:
 def test_pipeline_from_store(
     risk: Risk, inputs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Every stage after etl, through the CLI on local storage, from a hand-written store.icechunk:
+    # Every stage, through the CLI on local storage, from a hand-written store.icechunk:
     # checks each stage reads what the previous one wrote (the hand-off Coiled jobs rely on), with
     # real preflight. Each risk's etl, which writes that store, has its own test.
     import xproj  # noqa: F401
@@ -288,7 +300,7 @@ def test_pipeline_from_store(
     to_icechunk(ds, session, group='0')
     session.commit('test store')
 
-    run = [s for s in ('pyramid', 'buildings', 'regions') if not stages.unimplemented([s], spec)]
+    run = ['pyramid', 'buildings', 'regions'] if spec.crs else ['buildings', 'regions']
     kwargs = {
         'pyramid': {'levels': 2},
         'buildings': {

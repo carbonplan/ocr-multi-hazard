@@ -69,8 +69,10 @@ def test_rejects_bad_inputs_before_s3(tmp_path: Path) -> None:
         sample_buildings(ds, out)
     with pytest.raises(ValueError, match='not a valid PointSamplingStrategy'):
         sample_buildings(_ds(), out, point_strategy='1; DROP TABLE x')
-    with pytest.raises(ValueError, match='bbox'):
-        sample_buildings(_ds(), out, bbox=(-99, 30, -100, 31))  # xmin > xmax
+    with pytest.raises(ValueError, match='lon/lat order'):
+        sample_buildings(_ds(), out, bbox=(30, -100, 31, -99))  # lat/lon swapped
+    with pytest.raises(ValueError, match='zero width'):
+        sample_buildings(_ds(), out, bbox=(-122, 37, -122, 38))
 
 
 def test_write_geoparquet_metadata(tmp_path: Path) -> None:
@@ -202,6 +204,8 @@ def test_sample_buildings_bbox(tmp_path: Path, blocks: Path) -> None:
     src = _source(tmp_path, {'a': _square(-99.5, 30.5), 'b': _square(-98.5, 30.5)})
     tbl = _sampled(tmp_path, blocks=blocks, source=src, bbox=(-100, 30, -99, 31))
     assert tbl['id'].to_pylist() == ['a']
+    swapped = _sampled(tmp_path, blocks=blocks, source=src, bbox=(-99, 31, -100, 30))
+    assert swapped['id'].to_pylist() == ['a']
 
 
 def test_sample_buildings_values_follow_rows(tmp_path: Path) -> None:

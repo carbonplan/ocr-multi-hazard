@@ -1,4 +1,4 @@
-"""Per-risk output settings and the shared stages: etl, score, pyramid, buildings, regions."""
+"""Per-risk output settings and the shared stages: score, pyramid, buildings, regions."""
 
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -46,18 +46,8 @@ class RiskSpec:
     lod_carry: Sequence[str | tuple[str, str]]
     # Store CRS, `write_multiscales`. None -> no pyramid.
     crs: str | None = None
-    # None -> no such stage for this risk (`unimplemented`).
-    # (out, overwrite); writes store.icechunk itself when the risk has no score (flood).
-    etl: Callable[[OutputPaths, bool], None] | None = None
-    # Writes store.icechunk group "0".
+    # Writes store.icechunk group "0". None -> the risk's own ETL writes it (flood: FDP is the risk layer).
     score: Callable[[OutputPaths], None] | None = None
-
-
-def _flood_etl(out: OutputPaths, overwrite: bool) -> None:
-    # Lazy: flood ETL deps (rioxarray) live in the flood extra.
-    from ocr.risks.flood.etl import flood
-
-    flood.run(out, overwrite)
 
 
 RISKS = {
@@ -73,7 +63,6 @@ RISKS = {
         lod_shown=positive('fdp'),
         lod_carry=[('fdp', 'halffloat')],
         crs='EPSG:5070',
-        etl=_flood_etl,
     ),
     # TODO: hurricane bins, shown predicate and carried columns; empty hists write building_count only.
     Risk.HURRICANE: RiskSpec(hists=[], lod_shown='true', lod_carry=[]),
@@ -143,21 +132,25 @@ def write_regions(
             stats.unlink()
 
 
+def _exists(store: obstore.store.ObjectStore, key: str) -> bool:
+    # list matches whole path segments, so a file's own key lists nothing: head it first.
+    try:
+        obstore.head(store, key)
+        return True
+    except FileNotFoundError:
+        return any(obstore.list(store, prefix=key, chunk_size=1))
+
+
 def _delete_prefix(prefix: str) -> None:
     store = StorageConfig().object_store()
     for batch in obstore.list(store, prefix=prefix):
         obstore.delete(store, [m['path'] for m in batch])
 
 
-# Stages take (spec, out, overwrite, **util kwargs). Storage is the hand-off, so each reads what
-# the previous one wrote; run in this order.
-def etl(spec: RiskSpec, out: OutputPaths, overwrite: bool) -> None:
-    assert spec.etl is not None  # `unimplemented` preflight
-    spec.etl(out, overwrite)
-
-
+# Stages take (spec, out, overwrite, **util kwargs). Storage is the hand-off: each reads what an
+# earlier one wrote (`preflight`'s `reads`).
 def score(spec: RiskSpec, out: OutputPaths, overwrite: bool) -> None:
-    assert spec.score is not None
+    assert spec.score is not None  # `preflight`
     if overwrite:
         _delete_prefix(out.store)
     spec.score(out)
@@ -190,13 +183,8 @@ def regions(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> Non
     write_regions(out, **kw)
 
 
-# Run order. Data flow under output/<risk>/v<version>/:
-#   etl -> [score, fire only] -> store.icechunk -> pyramid
-#                                               -> buildings -> vector/buildings.geoparquet -> regions
-# pyramid and buildings are independent: both read only store.icechunk.
-# Adding a stage, dependency or risk: checklist in docs/how-to/data-pipeline.md.
+# Run order.
 STAGES: dict[str, Callable[..., None]] = {
-    'etl': etl,
     'score': score,
     'pyramid': pyramid,
     'buildings': buildings,
@@ -204,63 +192,44 @@ STAGES: dict[str, Callable[..., None]] = {
 }
 
 
-# Stage -> the `OutputPaths` key of the input it reads. Checked before a run, so skipping the stage
-# that writes it works only if it's already in storage.
-NEEDS: dict[str, str] = {'pyramid': 'store', 'buildings': 'store', 'regions': 'buildings'}
-
-
-def check_storage(
+def preflight(
     stages: Sequence[str],
     spec: RiskSpec,
     out: OutputPaths,
-    overwrite: bool,
     kwargs: Mapping[str, Mapping[str, Any]] = {},
 ) -> list[str]:
-    """One message per requested stage whose input is neither produced in this run nor in storage,
-    one per missing TIGER input (`pixi run regions-etl`), and one if etl would refuse an existing
-    store (it raises only once the job is running). `kwargs`: per stage, the kwargs it was given.
+    """One message per problem that would otherwise surface only once a stage is running: no code
+    for this risk, input neither written in this run nor in storage, or TIGER missing.
+    `kwargs`: per stage, the kwargs it was given.
     """
     cfg = StorageConfig()
     store = cfg.object_store()
-    # `OutputPaths` key -> the stage that writes it. Without score (flood: FDP is the risk layer),
-    # etl writes the store.
-    writers = {'store': 'score' if spec.score else 'etl', 'buildings': 'buildings'}
-
-    def exists(prefix: str) -> bool:
-        # list matches whole path segments, so a file's own key lists nothing: head it first.
-        try:
-            obstore.head(store, prefix)
-            return True
-        except FileNotFoundError:
-            return any(obstore.list(store, prefix=prefix, chunk_size=1))
-
-    problems = []
-    for s in stages:
-        if s not in NEEDS:
-            continue
-        w, prefix = writers[NEEDS[s]], getattr(out, NEEDS[s])
-        if w not in stages and not exists(prefix):
-            problems.append(f'{s} needs {w} output at {cfg.uri(prefix)}: run {w} first')
-    tiger: dict[str, Sequence[RegionLevel]] = {
+    store_writer = 'score' if spec.score else f'the {out.risk} ETL'
+    implemented = {'score': spec.score, 'pyramid': spec.crs}
+    reads = {  # stage -> (input key, what writes it)
+        'pyramid': (out.store, store_writer),
+        'buildings': (out.store, store_writer),
+        'regions': (out.buildings, 'buildings'),
+    }
+    tiger = {
         'buildings': [] if kwargs.get('buildings', {}).get('blocks') else [RegionLevel.BLOCK],
         'regions': kwargs.get('regions', {}).get('levels', tuple(RegionLevel)),
     }
-    for s in (s for s in stages if s in tiger):
-        for level in map(RegionLevel, tiger[s]):
-            if not exists(level.key):
-                problems.append(f'{s} needs TIGER {level} at {level.uri}: run pixi run regions-etl')
-    if 'etl' in stages and writers['store'] == 'etl' and not overwrite and exists(out.store):
-        problems.append(f'etl: {cfg.uri(out.store)} exists: pass --overwrite or skip etl')
+    problems = []
+    for s in stages:
+        if s in implemented and implemented[s] is None:
+            problems.append(f'{s}: not implemented for {out.risk}')
+            continue
+        if s in reads:
+            key, writer = reads[s]
+            if writer not in stages and not _exists(store, key):
+                problems.append(f'{s} needs {writer} output at {cfg.uri(key)}: run {writer} first')
+        problems += [
+            f'{s} needs TIGER {level} at {level.uri}: run pixi run regions-etl'
+            for level in map(RegionLevel, tiger.get(s, ()))
+            if not _exists(store, level.key)
+        ]
     return problems
-
-
-def unimplemented(stages: Sequence[str], spec: RiskSpec) -> list[str]:
-    """One message per requested stage this risk has no implementation for."""
-    # pyramid has no RiskSpec function; a store CRS marks it implemented (hurricane has none).
-    needs = {'etl': spec.etl, 'score': spec.score, 'pyramid': spec.crs}
-    return [
-        f'{s}: not implemented for this risk' for s in stages if s in needs and needs[s] is None
-    ]
 
 
 # Stage -> the util it calls, then the utils that util passes its **kwargs to. A stage accepts

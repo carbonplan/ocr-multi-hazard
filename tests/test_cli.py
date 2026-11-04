@@ -16,8 +16,8 @@ from ocr.stages import RISKS, STAGES
 
 @pytest.fixture(autouse=True)
 def inputs_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Most tests run a single stage; skip the storage check (`test_check_storage*` covers it).
-    monkeypatch.setattr(cli, 'check_storage', lambda *_: [])
+    # Most tests run a single stage; skip the storage check (`test_preflight*` covers it).
+    monkeypatch.setattr(cli, 'preflight', lambda *_: [])
 
 
 def jobs(state: str, exit_code: int | None = None, cluster_state: str = 'ready') -> list[dict]:
@@ -179,7 +179,9 @@ def test_coiled_forwards_storage_env_and_package_syncs(
         'PYTHONUNBUFFERED': '1',
         'TMPDIR': '/scratch/batch',
         'OCR_STORAGE_BUCKET': 'other-bucket',
+        'OCR_STORAGE_REGION': 'us-west-2',
     }
+    assert kw['spot_policy'] == 'on-demand'
     assert 'software' not in kw
 
 
@@ -190,6 +192,7 @@ def test_job_env_and_tag_merge(monkeypatch: pytest.MonkeyPatch) -> None:
         'PYTHONUNBUFFERED': '1',
         'TMPDIR': '/scratch/batch',
         'OCR_STORAGE_BUCKET': 'other-bucket',
+        'OCR_STORAGE_REGION': 'us-west-2',
         'FOO': '1',
     }
     assert cfg['tag'] == {'Project': 'OCR', 'Owner': 'x'}
@@ -213,16 +216,16 @@ def test_downstream_util_kwargs_reach_task(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_missing_input_fails_before_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(cli, 'check_storage', stages.check_storage)
+    monkeypatch.setattr(cli, 'preflight', stages.preflight)
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path))
     task = MagicMock()
     monkeypatch.setitem(STAGES, 'buildings', task)
     args = ['stage', '--version', 'v2.0.0', 'flood', 'buildings']
     r = CliRunner().invoke(cli.app, args)
-    assert r.exit_code != 0 and 'run etl first' in r.output
+    assert r.exit_code != 0 and 'run the flood ETL first' in r.output
     task.assert_not_called()
 
-    # Once etl's output and TIGER blocks exist, buildings runs without score (pyramid skipped too).
+    # Once the flood store and TIGER blocks exist, buildings runs without score (pyramid skipped too).
     blocks = tmp_path / RegionLevel.BLOCK.key
     blocks.parent.mkdir(parents=True)
     blocks.touch()
@@ -234,8 +237,11 @@ def test_missing_input_fails_before_run(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 
 @pytest.mark.parametrize('dry_run', [False, True])
-def test_unimplemented_stage_fails_before_submit(batch: MagicMock, dry_run: bool) -> None:
+def test_unimplemented_stage_fails_before_submit(
+    batch: MagicMock, dry_run: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Flood has no score yet: fail here, not after a Coiled VM boots.
+    monkeypatch.setattr(cli, 'preflight', stages.preflight)
     r = invoke('score', *(['--dry-run'] if dry_run else []))
     assert r.exit_code != 0 and 'score: not implemented' in r.output
     batch.run.assert_not_called()
@@ -245,7 +251,8 @@ def test_bad_version_is_cli_error() -> None:
     r = CliRunner().invoke(
         cli.app, ['stage', '--version', 'nope', '--dry-run', 'flood', 'buildings']
     )
-    assert r.exit_code == 2 and 'Invalid value for --version' in r.output
+    # Not 'Invalid value for --version': on GitHub Actions typer colors option names, splitting it.
+    assert r.exit_code == 2 and 'version must start with v' in r.output
 
 
 def test_unknown_stage_in_kwargs_fails() -> None:
@@ -322,21 +329,16 @@ def test_vm_flag_beats_run_file(batch: MagicMock, tmp_path: Path) -> None:
     assert batch.run.call_args.kwargs['vm_type'] == ['m8g.large']
 
 
-def test_run_file_bucket_and_prefix(
-    batch: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv('OCR_STORAGE_BUCKET', 'carbonplan-ocr')  # execute sets it; restored after
-    storage = 'bucket = "scratch-bucket"\nprefix = "/scratch/nrh/"\n'
-    (f := tmp_path / 'run.toml').write_text(storage + RUN_FILE)
+def test_run_file_prefix(batch: MagicMock, tmp_path: Path) -> None:
+    (f := tmp_path / 'run.toml').write_text('prefix = "scratch/nrh"\n' + RUN_FILE)
     r = CliRunner().invoke(cli.app, ['run', str(f), '--dry-run'])
     assert r.exit_code == 0, r.output
-    assert 's3://scratch-bucket/scratch/nrh/flood/v2.0.0' in r.output
+    assert 's3://carbonplan-ocr/scratch/nrh/flood/v2.0.0' in r.output
     assert CliRunner().invoke(cli.app, ['run', str(f)]).exit_code == 0
-    kw = batch.run.call_args.kwargs
-    assert kw['env']['OCR_STORAGE_BUCKET'] == 'scratch-bucket'
-    assert kw['command'][4:6] == ['--prefix', '/scratch/nrh/']  # the VM strips it
-    (f := tmp_path / 'bad.toml').write_text('prefix = "/"\n' + RUN_FILE)
-    assert CliRunner().invoke(cli.app, ['run', str(f), '--dry-run']).exit_code != 0
+    assert batch.run.call_args.kwargs['command'][4:6] == ['--prefix', 'scratch/nrh']
+    for bad in ('/', '/scratch/nrh/', 's3://carbonplan-ocr/scratch', 'a//b'):
+        (f := tmp_path / 'bad.toml').write_text(f'prefix = "{bad}"\n' + RUN_FILE)
+        assert CliRunner().invoke(cli.app, ['run', str(f), '--dry-run']).exit_code != 0, bad
 
 
 def test_bbox_needs_prerelease_version() -> None:

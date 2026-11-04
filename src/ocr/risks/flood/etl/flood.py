@@ -10,17 +10,21 @@ Raw tif provenance (manual, one-time):
 2. Unzip Output_CONUS_FDP_100m/CONUS_FDP_100m.tif (striped GeoTIFF, 100 m, EPSG:5070).
 3. Upload it to RAW_KEY.
 
-Run: pixi run -e flood flood-etl --version v2.0.0 [--overwrite] (same as `ocr stage --version v2.0.0 flood etl`).
+Run before `ocr run`: pixi run -e flood flood-etl --version v2.0.0 [--prefix scratch/<you>] [--overwrite].
+On Coiled: coiled batch run --vm-type r8g.xlarge --disk-size 50 --arm --forward-aws-credentials --tag Project=OCR -- python -m ocr.risks.flood.etl.flood --version v2.0.0
 """
+
+from typing import Annotated
 
 import icechunk
 import rioxarray
+import typer
 import xarray as xr
 import xproj  # noqa: F401
 from icechunk.xarray import to_icechunk
 from topozarr import attach_geozarr_metadata, recommend_encoding
 
-from ocr.config import OutputPaths, StorageConfig
+from ocr.config import OUTPUT_PREFIX, OutputPaths, Risk, StorageConfig
 
 # TODO: move RAW_KEY into a shared input-path config once a second risk has raw inputs.
 SOURCE = 'https://www.sciencebase.gov/catalog/item/6170694ed34ea36449a67ef7'
@@ -63,3 +67,13 @@ def run(out: OutputPaths, overwrite: bool = False) -> None:
     ds = attach_geozarr_metadata(ds)
     snapshot = write_icechunk(cfg, ds, out.store, overwrite)
     print(f'wrote {cfg.uri(out.store)} : {snapshot}')
+
+
+def main(
+    version: Annotated[str, typer.Option()], prefix: str = OUTPUT_PREFIX, overwrite: bool = False
+) -> None:
+    run(OutputPaths(Risk.FLOOD, version, prefix), overwrite)
+
+
+if __name__ == '__main__':
+    typer.run(main)

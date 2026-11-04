@@ -1,6 +1,6 @@
 # Data pipeline
 
-Each risk runs as an ordered list of stages: `etl`, `score`, `pyramid`, `buildings`, `regions`. Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
+Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. Each risk's ETL runs on its own first (flood: `pixi run -e flood flood-etl`). Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
 
 Fire still uses the older `ocr-deploy` CLI (`ocr-deploy --help`) until its refactor.
 
@@ -17,7 +17,7 @@ ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```toml
 risk = "flood"
 version = "v2.0.0"
-stages = ["pyramid", "buildings", "regions"]  # etl runs separately (flood-etl)
+stages = ["pyramid", "buildings", "regions"]
 coiled = true
 
 [kwargs.buildings]          # keyword args of the stage's utils, checked before any job starts
@@ -62,7 +62,6 @@ ocr stage --version v2.0.0 --coiled flood pyramid
 - A failed stage stops the run; later stages don't start. Rerun from it with `--stages`.
 - A stage you skip must already have its input in storage, or the run fails before it starts. So must TIGER (`pixi run regions-etl`) for `buildings` and `regions`.
 - A stage the risk has no code for also fails before any job starts.
-- Flood `etl` on an existing store fails before any job starts; pass `--overwrite` or leave `etl` out of `--stages`.
 - `--overwrite` deletes a stage's old output first, where that applies (`score`, `pyramid`, `regions`). `buildings` and `regions` replace their files on every run; pass `--overwrite` to `regions` after a smaller run (`bbox`, fewer `levels`) so no old files stay.
 - Coiled jobs print their job and cluster id and a `coiled batch logs <cluster id>` command when submitted.
 - `--vm TYPE` sets the Coiled VM type for every stage in the run.
@@ -74,7 +73,7 @@ ocr stage --version v2.0.0 --coiled flood pyramid
 | `OCR_STORAGE_BUCKET`, `OCR_STORAGE_REGION` | S3 bucket and region. Forwarded to Coiled jobs. |
 | `OCR_STORAGE_LOCAL_ROOT` | Write under a local directory instead of S3. Not allowed with `--coiled`. |
 
-A run file can set `bucket = "..."` (wins over `OCR_STORAGE_BUCKET`) and `prefix = "..."`, the output prefix (default `output`; inputs stay under `input/`). The prefix has no env var: it comes from the run file or `ocr stage --prefix`, and Coiled jobs get it as `--prefix`.
+A run file can set `prefix = "..."`, the output prefix (default `output`; inputs stay under `input/`). The prefix has no env var: it comes from the run file or `ocr stage --prefix`, and Coiled jobs get it as `--prefix`.
 
 Scratch runs: use a prerelease version (`v2.0.0-scratch`, `v0.0.0-nrh`), or a scratch `prefix`. The version must be semver with a leading `v`.
 
@@ -90,26 +89,18 @@ ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -
 
 `ocr run` and `ocr stage` (`ocr/cli.py`) run a risk's stages one at a time, in `STAGES` order (`ocr/stages.py`). There is no graph and no scheduler, only a for-loop in `execute()`. Paths are under `<prefix>/<risk>/v<version>/` (prefix default `output`) (`OutputPaths.store`, `.buildings`, `.regions`).
 
-| stage | util | reads (`NEEDS`) | writes |
+| stage | util | reads | writes |
 | --- | --- | --- | --- |
-| etl | `RiskSpec.etl` | raw source | flood: `store.icechunk` group "0"; others: `input/<risk>/...` |
 | score (fire only) | `RiskSpec.score` | ETL output (not checked) | `store.icechunk` group "0" |
 | pyramid | `write_multiscales` | `store.icechunk` | `store.icechunk` groups 1..N |
 | buildings | `write_buildings` | `store.icechunk` | `vector/buildings.geoparquet` |
 | regions | `write_regions` | `vector/buildings.geoparquet` | `vector/regions/` |
 
-The store is written by `score`, or by `etl` when the risk has no score (flood). Before anything runs, `check_storage()` and `unimplemented()` do the preflight checks listed under [Rerun some stages](#rerun-some-stages), so Coiled never boots a VM just to raise.
-
-Coiled job settings stack in this order, last wins: `DEFAULT`, then runtime (bucket region, forwarded storage env), then `JOBS[stage]`, then the run file's `[job.<stage>]`, then `--vm`. `env` and `tag` merge key by key. Each job runs `ocr stage --version V <risk> <stage> [--overwrite]`, because the VM doesn't have the run file. Its kwargs go as JSON in the `OCR_STAGE_KWARGS` env var, not as `--kwargs`: Coiled rebuilds the command as a shell string and strips the JSON quotes.
+The store is written by `score`, or by the risk's own ETL when it has no score (flood). Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so Coiled never boots a VM just to raise.
 
 ## Change the pipeline
 
-| change | where |
-| --- | --- |
-| new stage | A function `(spec, out, overwrite, **kw)` and a `STAGES` entry at its place in run order. Add `NEEDS` if it reads another stage's output (and, for a new output, its writer in `check_storage`'s `writers`), `STAGE_KWARGS` if it takes kwargs, an `OutputPaths` property for a new output, and a `cli.JOBS` default. |
-| stage only some risks have | A `RiskSpec` field (None means no code) and an entry in `unimplemented()`. |
-| new risk | `Risk` (`ocr/config.py`), a `RISKS` entry, and `runs/<risk>/vX.Y.Z.toml`. |
-| new kwarg on a util | Nothing: `stage_kwargs()` reads the signature (needs a default and a type hint). If the util forwards `**kwargs`, add the receiving util to its `STAGE_KWARGS` tuple. |
+New stage: a function `(spec, out, overwrite, **kw)` in `STAGES` at its place in run order, plus its row in `preflight` if it reads another stage's output. New risk: `Risk` (`ocr/config.py`), a `RISKS` entry and `runs/<risk>/vX.Y.Z.toml`.
 
 `test_run_files_dry_run` dry-runs every `runs/**/*.toml`. After a change, run:
 
