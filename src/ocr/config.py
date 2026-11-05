@@ -8,9 +8,13 @@ import icechunk
 import pydantic_settings
 from obstore.auth.boto3 import Boto3CredentialProvider
 from obstore.store import LocalStore, S3Store
-from pydantic import BeforeValidator, field_validator
+from pydantic import BeforeValidator, StringConstraints, field_validator
 from pydantic.dataclasses import dataclass
 from pydantic_extra_types.semantic_version import SemanticVersion
+
+# Pinned inputs shared by all risks. Bumping either changes building ids / GEOIDs: rebuild every risk.
+OVERTURE_RELEASE = '2026-10-21.0'
+TIGER_VINTAGE = '2026'
 
 
 class StorageConfig(pydantic_settings.BaseSettings):
@@ -58,6 +62,9 @@ def _strip_v(version: str) -> str:
     return version[1:]
 
 
+OUTPUT_PREFIX = 'output'  # production outputs; anything else is scratch
+
+
 @dataclass(frozen=True)
 class OutputPaths:
     """Bucket-relative output keys for one risk version. Resolve with StorageConfig.uri / icechunk_storage.
@@ -70,10 +77,12 @@ class OutputPaths:
     risk: Risk
     # not a standard str, so we can validate as semver
     version: Annotated[SemanticVersion, BeforeValidator(_strip_v)]
+    # Bucket key prefix for outputs, e.g. 'scratch/<you>'. Inputs always read from input/.
+    prefix: Annotated[str, StringConstraints(pattern=r'^[\w.-]+(/[\w.-]+)*$')] = OUTPUT_PREFIX
 
     @property
     def root(self) -> str:
-        return f'output/{self.risk}/v{self.version}'
+        return f'{self.prefix}/{self.risk}/v{self.version}'
 
     @property
     def store(self) -> str:

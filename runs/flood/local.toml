@@ -1,0 +1,9 @@
+# Laptop smoke run: `OCR_STORAGE_LOCAL_ROOT=~/ocr-data pixi run flood-local` (needs a flood store and TIGER under that root).
+risk = "flood"
+version = "v2.0.0-dev"
+stages = ["buildings", "regions"]
+
+[kwargs.buildings]
+memory_limit = "8GB"
+workers = 4
+bbox = [-122.5, 37.7, -122.3, 37.8]  # San Francisco

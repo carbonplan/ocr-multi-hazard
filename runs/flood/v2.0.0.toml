@@ -1,0 +1,11 @@
+# Full flood deploy on Coiled: `pixi run flood-all`. Run `pixi run flood-etl --version v2.0.0` first.
+risk = "flood"
+version = "v2.0.0"
+stages = ["pyramid", "buildings", "regions"]
+coiled = true
+
+[kwargs.pyramid]
+levels = "auto"
+
+[kwargs.buildings]
+point_strategy = "ST_Centroid"
