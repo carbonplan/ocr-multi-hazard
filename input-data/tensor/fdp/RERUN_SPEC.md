@@ -242,7 +242,7 @@ These are new components to implement, not existing executable commands:
    pseudo-absence generation and frozen splits.
 4. `train_fdp.R`: parameterized HUC-specific fitting, tuning and saved models.
 5. `predict_fdp.R`: windowed prediction and validated national mosaic.
-6. Existing `fdp.py` / `fdp_buildings.py`: versioned ingestion of selected outputs.
+6. The flood pipeline (`ocr run`, `ocr.risks.flood.refit`): versioned ingestion of selected outputs.
 
 Targeted checks should cover NOAA event/location joins, duplicate handling,
 CRS/cell indexing, forbidden pseudo-absence cells, split leakage, categorical

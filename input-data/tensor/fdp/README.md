@@ -10,78 +10,19 @@ Random-forest-predicted probability of flood damage, 0..1, on a 100 m
 Like the CHAZ scripts, these are run by hand. The refit's training inputs and
 model runs go under `input/flood/fdp-refit/`, where the flood pipeline's `score`
 stage reads them (see [Served store](#served-store)); the published raster under
-`input/flood/raw/usgs-fdp/`, as for the flood ETL. Products for the exploration
-viewer go under `ocr-explore/FDP/`.
+`input/flood/raw/usgs-fdp/`, as for the flood ETL. Training compares each refit
+with the published surface's zarr pyramid at
+`ocr-explore/FDP/processed/flood_damage_probability/`.
 
 For the proposed temporal validation and retraining with newer NOAA reports,
-see [the validation and rerun specification](RERUN_SPEC.md). The first commands
-below package the published raster; [Retraining](#retraining) refits the model.
+see [the validation and rerun specification](RERUN_SPEC.md);
+[Retraining](#retraining) refits the model.
 
 The executed [local validation notebook](validation-2026-10-15/validation.ipynb)
 compares the frozen raster with June 2020–December 2025 NOAA reports. An
 [HTML version](validation-2026-10-15/validation.html) and a
 [run record](validation-2026-10-15/README.md) accompany the results, limitations,
 input hashes and reproducible local validation script.
-
-## Running it
-
-`build` moves ~12 GB and holds a 6 GB array in memory, so run it next to the
-bucket. Credentials forward automatically and the script has no Coiled
-dependency, so it runs anywhere with enough RAM.
-
-Use the `fdp` pixi environment: Coiled package sync replicates whatever
-environment it is launched from, and the default one carries packages its solver
-cannot resolve (`pydantic-extra-types`).
-
-```bash
-pixi run -e fdp coiled run --region us-west-2 --vm-type m8g.2xlarge --disk-size 60 -- python input-data/tensor/fdp/fdp.py build
-
-pixi run -e fdp python input-data/tensor/fdp/fdp.py verify
-```
-
-`coiled run` uploads any argument that is a local file and rewrites the path, so
-the script needs no `--file`.
-
-`build` resolves the source raster, builds the pyramid, syncs it, writes a
-`manifest.json` record alongside, and verifies what it wrote. The source comes
-from the local cache, else the raw copy in S3, else a 3 GB zip from ScienceBase
-that it stages under `input/flood/raw/usgs-fdp/` on the way through, so the slow download happens
-once ever. Budget ~9 GB of cache disk (`~/.cache/ocr/fdp`, `FDP_CACHE`
-overrides); the zip is left behind once the tif is extracted.
-
-`verify` checks levels present and float32, shapes halving, values in [0, 1],
-`proj:code`, and the manifest record. Non-zero exit on any violation.
-
-The sync deletes keys under the store prefix that the build did not write, so a
-change in shape or chunking leaves no orphaned chunks behind.
-
-## Building footprints
-
-`fdp_buildings.py` samples the store onto the ~156M Overture CONUS footprints
-from the fire pipeline's region-tagged buildings source, writing one GeoParquet
-with an `fdp` column.
-
-```bash
-pixi run -e fdp coiled run --region us-west-2 --vm-type m8g.4xlarge --disk-size 200 -- python input-data/tensor/fdp/fdp_buildings.py build
-
-pixi run -e fdp python input-data/tensor/fdp/fdp_buildings.py verify
-```
-
-Each building takes the value of the cell nearest its bbox centroid. At 100 m
-that is close to footprint scale, so these read as per-building values rather
-than the cell expectations a coarse grid gives; buildings larger than a cell
-still get one value, and neighbours inside the same cell share one.
-
-Footprints are in lon/lat and the grid is in Albers metres, so centroids are
-reprojected before the cell arithmetic. The full grid is 1.5e9 cells, too many
-to join against, so a first pass collects the cells that actually contain a
-building and only those become the join table. That pass reads just the `bbox`
-column, which parquet column pruning makes much cheaper than the full scan.
-Buildings outside the store's valid data are dropped by the join, so every
-written row has a value.
-
-Rows are sorted into grid row-major order so bbox-filtered reads prune row
-groups. The sort spills, hence the disk headroom above.
 
 ## Retraining
 
@@ -209,21 +150,8 @@ together move the map about as much as six extra years of reports.
 
 ### Served store
 
-`fdp_retrained.py` mosaics a run's watersheds onto the published grid as a
-served store with `fdp`, `contribution (driver, y, x)`, `dominant_driver` and,
-when every watershed has `se.tif`, `fdp_se`:
-
-```bash
-pixi run -e fdp python input-data/tensor/fdp/fdp_retrained.py build --run noaa-200612-202512 --distance planar --hucs 03
-```
-
-The store is cropped to the watersheds included and holds the whole level in
-memory, so all 18 at once need a large VM (contributions alone are ~33 GB as
-int16 at CONUS scale). Coarse levels average `fdp` and `contribution`, so the
-sum identity holds at every level up to int16 truncation (2.4e-3 at level 7);
-`dominant_driver` is recomputed from each level's contributions. `verify`
-checks both. The ocr-explore layer _Flood Damage Probability Drivers_ and the
-ocr-web branch `Shane98c/fdp-retrained` read it.
+The ocr-web branch `Shane98c/fdp-retrained` reads an earlier HUC 03 mosaic at
+`ocr-explore/FDP/processed/retrained/noaa-200612-202512-planar/`.
 
 The flood pipeline's `score` stage (`ocr.risks.flood.refit`) mosaics the
 watersheds of the run it pins (`RUN`, `DISTANCE`) into group "0" of
@@ -243,11 +171,6 @@ them first with `eval "$(aws configure export-credentials --format env)"`.
 
 ## Outputs
 
-| level | resolution | shape       |
-| ----- | ---------- | ----------- |
-| 0     | 100 m      | 31327×48357 |
-| 7     | 12.8 km    | 244×377     |
-
 ```
 input/flood/raw/usgs-fdp/CONUS_FDP_100m.tif
 input/flood/fdp-refit/inputs/predictors/{floodplain,distwater,...}.tif
@@ -256,20 +179,6 @@ input/flood/fdp-refit/inputs/huc2_100m.tif
 input/flood/fdp-refit/inputs/manifest.json
 input/flood/fdp-refit/runs/<run>/points.{csv,json}
 input/flood/fdp-refit/runs/<run>/<distance>[-quick]/huc<NN>/
-ocr-explore/FDP/processed/flood_damage_probability/{0..7}/
-ocr-explore/FDP/processed/manifest.json
-ocr-explore/FDP/processed/retrained/<run>-<distance>/{0..7}/
-ocr-explore/FDP/buildings/fdp_buildings_conus.parquet
-ocr-explore/FDP/buildings/manifest.json
-```
-
-Level `0` is the native grid; `x`/`y` are Albers metres, not degrees.
-
-```python
-import xarray as xr
-
-base = 's3://carbonplan-ocr/ocr-explore/FDP/processed'
-ds = xr.open_zarr(f'{base}/flood_damage_probability/0', consolidated=False)
 ```
 
 ## Caveats
