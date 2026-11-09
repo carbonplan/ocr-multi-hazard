@@ -20,8 +20,9 @@ segments sit together and its attributes compress to almost nothing.
 A segment with tropical-storm-force winds but no radii takes the radius recorded closest in time on the
 same storm, within NEAREST_HOURS, the larger on a tie; `r34_source` is `observed` or `nearest`. Such gaps
 are rare (10 segments in the 2026-11-08 source), each at the start or end of a storm's 34 kt stage, on a
-point off the regular 3-hourly times. A gap with no radius that near keeps no R34 and matches no point;
-within NEAR_CONUS_DEG of CONUS, where it could change which storms reached a point, it fails the build.
+point off the regular 3-hourly times. A gap with no radius that near keeps no R34 and matches no point,
+unless the largest radius in the source would carry it to CONUS, where it could change which storms reached
+a point: then it fails the build.
 Radii describe the largest quadrant, so they bound where those winds reached.
 
 writes input/historic/ibtracs/<YYYYMMDD>/ibtracs_tracks.parquet, dated by the source's Last-Modified. The
@@ -67,9 +68,6 @@ M_PER_DEG_LON_EQUATOR = 111_320.0
 FIRST_SEASON = 2004
 # Hours on the same storm within which a segment without radii takes the nearest recorded one.
 NEAREST_HOURS = 6
-# Degrees around CONUS within which a segment without R34 fails the build: farther out, even the largest
-# radius in the file (~12 degrees) cannot reach CONUS.
-NEAR_CONUS_DEG = 15
 ZSTD_LEVEL = 9
 # pyproject.toml [tool.setuptools_scm] fallback_version: what a build without repository metadata reports.
 SCM_FALLBACK_VERSION = '999'
@@ -142,10 +140,6 @@ def reaches_conus_sql(geom: str, r34_nmi: str) -> str:
 def tracks(con: duckdb.DuckDBPyConnection, source: str) -> duckdb.DuckDBPyRelation:
     """Every segment of the storms since FIRST_SEASON whose winds reached CONUS from `source`, a table or table expression with
     the IBTrACS columns and `geom` in EPSG:4326, with R34 (see the module docstring)."""
-    near_conus = (
-        f'ST_MakeEnvelope({CONUS.left - NEAR_CONUS_DEG}, {CONUS.bottom - NEAR_CONUS_DEG}, '
-        f'{CONUS.right + NEAR_CONUS_DEG}, {CONUS.top + NEAR_CONUS_DEG})'
-    )
     strong = f'usa_wind >= {TS_WIND_KT}'
     con.sql(
         f"""
@@ -184,9 +178,12 @@ def tracks(con: duckdb.DuckDBPyConnection, source: str) -> duckdb.DuckDBPyRelati
         """
     )
     # Checked before storms are picked, since a segment without R34 cannot reach CONUS and could drop its storm.
+    # Any gap could matter when the source records no radius at all.
+    largest = con.sql('SELECT max(r34_nmi) FROM ibtracs_segments').fetchall()[0][0]
+    could_reach = reaches_conus_sql('geometry', str(largest)) if largest else 'true'
     missing = con.sql(
         'SELECT sid, iso_time FROM ibtracs_segments '
-        f'WHERE {strong} AND r34_nmi IS NULL AND ST_Intersects(geometry, {near_conus}) ORDER BY ALL'
+        f'WHERE {strong} AND r34_nmi IS NULL AND {could_reach} ORDER BY ALL'
     ).fetchall()
     if missing:
         raise ValueError(

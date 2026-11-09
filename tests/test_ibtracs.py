@@ -113,6 +113,14 @@ def test_tracks_keep_every_segment_of_storms_whose_winds_reach_conus(con, subtes
             ],
             id='its_radius_is_too_far_in_time',
         ),
+        # 16 degrees east of CONUS at 45N is ~680 nmi, within the largest radius in the source.
+        pytest.param(
+            [
+                ('lonely', 'NA', 60, 0, None, (-50, 45), 0),
+                ('large', 'NA', 60, 0, (720, 720, 720, 720), (-30, 20), 0),
+            ],
+            id='beyond_15_degrees_but_within_the_largest_radius',
+        ),
     ],
 )
 def test_tracks_raise_on_a_gap_near_conus_with_no_radius_to_take(rows):
