@@ -7,9 +7,11 @@
 Random-forest-predicted probability of flood damage, 0..1, on a 100 m
 31327 × 48357 CONUS grid in NAD83 / Conus Albers (EPSG:5070).
 
-Like the CHAZ scripts, these are run by hand and write to the `ocr-explore`
-prefix, where the exploration viewer reads them. The refit's per-watershed
-outputs feed the flood pipeline's `score` stage (see [Served store](#served-store)).
+Like the CHAZ scripts, these are run by hand. The refit's training inputs and
+model runs go under `input/flood/fdp-refit/`, where the flood pipeline's `score`
+stage reads them (see [Served store](#served-store)); the published raster under
+`input/flood/raw/usgs-fdp/`, as for the flood ETL. Products for the exploration
+viewer go under `ocr-explore/FDP/`.
 
 For the proposed temporal validation and retraining with newer NOAA reports,
 see [the validation and rerun specification](RERUN_SPEC.md). The first commands
@@ -43,7 +45,7 @@ the script needs no `--file`.
 `build` resolves the source raster, builds the pyramid, syncs it, writes a
 `manifest.json` record alongside, and verifies what it wrote. The source comes
 from the local cache, else the raw copy in S3, else a 3 GB zip from ScienceBase
-that it stages under `FDP/raw/` on the way through, so the slow download happens
+that it stages under `input/flood/raw/usgs-fdp/` on the way through, so the slow download happens
 once ever. Budget ~9 GB of cache disk (`~/.cache/ocr/fdp`, `FDP_CACHE`
 overrides); the zip is left behind once the tif is extracted.
 
@@ -85,13 +87,13 @@ groups. The sort spills, hence the disk headroom above.
 
 Refits the paper's 18 HUC-2 random forests with `train_fdp.R`, a port of the
 released R script (see its header for what differs). Three steps, each
-resumable and each writing under `ocr-explore/FDP/`:
+resumable and each writing under `input/flood/fdp-refit/`:
 
 ```bash
-# 1. predictors, released points and the HUC-2 raster -> FDP/inputs/ (~18 GB of downloads)
+# 1. predictors, released points and the HUC-2 raster -> inputs/ (~18 GB of downloads)
 pixi run -e fdp python input-data/tensor/fdp/fdp_inputs.py stage
 
-# 2. training points for each run -> FDP/runs/<run>/points.csv
+# 2. training points for each run -> runs/<run>/points.csv
 pixi run -e fdp python input-data/tensor/fdp/fdp_points.py build
 
 # 3. one watershed here, or all of them on Coiled
@@ -247,18 +249,18 @@ them first with `eval "$(aws configure export-credentials --format env)"`.
 | 7     | 12.8 km    | 244×377     |
 
 ```
-ocr-explore/FDP/raw/CONUS_FDP_100m.tif
+input/flood/raw/usgs-fdp/CONUS_FDP_100m.tif
+input/flood/fdp-refit/inputs/predictors/{floodplain,distwater,...}.tif
+input/flood/fdp-refit/inputs/response/{presence,absence}.csv
+input/flood/fdp-refit/inputs/huc2_100m.tif
+input/flood/fdp-refit/inputs/manifest.json
+input/flood/fdp-refit/runs/<run>/points.{csv,json}
+input/flood/fdp-refit/runs/<run>/<distance>[-quick]/huc<NN>/
 ocr-explore/FDP/processed/flood_damage_probability/{0..7}/
 ocr-explore/FDP/processed/manifest.json
+ocr-explore/FDP/processed/retrained/<run>-<distance>/{0..7}/
 ocr-explore/FDP/buildings/fdp_buildings_conus.parquet
 ocr-explore/FDP/buildings/manifest.json
-ocr-explore/FDP/inputs/predictors/{floodplain,distwater,...}.tif
-ocr-explore/FDP/inputs/response/{presence,absence}.csv
-ocr-explore/FDP/inputs/huc2_100m.tif
-ocr-explore/FDP/inputs/manifest.json
-ocr-explore/FDP/runs/<run>/points.{csv,json}
-ocr-explore/FDP/processed/retrained/<run>-<distance>/{0..7}/
-ocr-explore/FDP/runs/<run>/<distance>[-quick]/huc<NN>/
 ```
 
 Level `0` is the native grid; `x`/`y` are Albers metres, not degrees.

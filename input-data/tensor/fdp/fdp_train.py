@@ -15,7 +15,7 @@ watershed's predictors from the staged COGs, masks them to its HUC raster
 cells (cached under $FDP_CACHE/predictors/), runs train_fdp.R, compares the
 prediction with the published surface, and uploads everything to
 
-  FDP/runs/<run>/<distance>[-quick]/huc<NN>/
+  input/flood/fdp-refit/runs/<run>/<distance>[-quick]/huc<NN>/
 
 `run` names a points set built by fdp_points.py; its absence seed also seeds
 the folds and tuning in train_fdp.R. `--distance lonlat` keeps the
@@ -28,7 +28,7 @@ predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
 its saved forest and prediction, without retraining.
 
 `launch` submits one `task` per watershed as a Coiled batch job. It copies
-this directory's scripts to FDP/code/<hash>/, and fdp_task.sh fetches them on
+this directory's scripts to input/flood/fdp-refit/code/<hash>/, and fdp_task.sh fetches them on
 each VM. dismo has no linux-aarch64 build, so the VMs are x86.
 
 The R packages are not in any pixi environment: locally, point `--rscript` at
@@ -61,7 +61,7 @@ import pandas as pd
 import rasterio
 import s3fs
 import zarr
-from fdp import BUCKET, CACHE, PREFIX, VARIABLE, store_uri
+from fdp import BUCKET, CACHE, REFIT, VARIABLE, store_uri
 from fdp_inputs import HUC_KEY, HUCS, PREDICTORS, predictor_key, read_manifest
 from fdp_points import RUNS, SEED, run_key
 from rasterio.windows import Window
@@ -467,7 +467,7 @@ def cmd_se(args) -> None:
 def stage_code() -> str:
     """Copy the task's scripts to S3 under a hash of their contents."""
     digest = hashlib.sha256(b''.join((HERE / name).read_bytes() for name in CODE)).hexdigest()
-    prefix = f'{BUCKET}/{PREFIX}/code/{digest[:12]}'
+    prefix = f'{BUCKET}/{REFIT}/code/{digest[:12]}'
     s3 = s3fs.S3FileSystem()
     for name in CODE:
         s3.put_file(str(HERE / name), f'{prefix}/{name}')

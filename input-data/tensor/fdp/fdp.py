@@ -51,9 +51,10 @@ import zarr
 from topozarr.coarsen import create_pyramid
 
 BUCKET = 'carbonplan-ocr'
-PREFIX = 'ocr-explore/FDP'
-RAW = f'{PREFIX}/raw'
+PREFIX = 'ocr-explore/FDP'  # products for the explore viewer
+RAW = 'input/flood/raw/usgs-fdp'  # shared with ocr.risks.flood.etl.flood
 OUT = f'{PREFIX}/processed'
+REFIT = 'input/flood/fdp-refit'  # training inputs and model runs, read by ocr.risks.flood.refit
 
 NAME = 'flood_damage_probability'
 VARIABLE = 'fdp'

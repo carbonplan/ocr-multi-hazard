@@ -225,7 +225,7 @@ runtime/RAM/disk before giving a national cost estimate. The existing README's
 12 GB packaging estimate is not a training-resource estimate.
 
 Publish only to a versioned experimental prefix such as
-`ocr-explore/FDP/runs/<run-id>/`. Extend `fdp.py` to accept an explicit source
+`input/flood/fdp-refit/runs/<run-id>/`. Extend `fdp.py` to accept an explicit source
 raster and destination prefix; the current source and pruning destination are
 hard-coded. Reuse pyramid/building sampling after raster QA, but keep the
 published original intact. Record response dates, predictor vintages, code and

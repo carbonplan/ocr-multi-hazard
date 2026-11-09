@@ -32,7 +32,7 @@ from topozarr import attach_geozarr_metadata, recommend_encoding
 
 from ocr.config import OutputPaths, StorageConfig
 
-RUNS = 'ocr-explore/FDP/runs'
+RUNS = 'input/flood/fdp-refit/runs'
 RUN = 'noaa-200612-202512'
 DISTANCE = 'planar'
 HUCS = tuple(f'{i:02d}' for i in range(1, 19))

@@ -12,7 +12,7 @@
 """Stage the Collins et al. (2022) model inputs in S3 for retraining.
 
 Copies the eleven predictor rasters and the released presence/absence points
-from the USGS data release (doi:10.5066/P954TTQN) into `FDP/inputs/`, and
+from the USGS data release (doi:10.5066/P954TTQN) into `input/flood/fdp-refit/inputs/`, and
 rasterizes the HUC-2 watersheds onto the predictor grid.
 
 The predictors are rewritten as tiled, deflate-compressed COGs so a training
@@ -53,10 +53,10 @@ import rasterio.features
 import rasterio.shutil
 import requests
 import s3fs
-from fdp import BUCKET, PREFIX, PROJ4, download, sciencebase_url
+from fdp import BUCKET, PROJ4, REFIT, download, sciencebase_url
 from pyproj import CRS
 
-INPUTS = f'{BUCKET}/{PREFIX}/inputs'
+INPUTS = f'{BUCKET}/{REFIT}/inputs'
 MANIFEST = f'{INPUTS}/manifest.json'
 
 # Stack order of the released R script; ranger draws mtry candidates by column

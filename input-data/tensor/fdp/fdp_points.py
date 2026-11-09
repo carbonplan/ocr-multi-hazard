@@ -11,7 +11,7 @@
 # ///
 """Build the presence/absence training points for each FDP model run.
 
-Each run is written to `FDP/runs/<run>/points.csv` with `x, y, pa, huc2,
+Each run is written to `input/flood/fdp-refit/runs/<run>/points.csv` with `x, y, pa, huc2,
 nlcd` (EPSG:5070 metres) and a `points.json` summary:
 
 - `original`: the released Collins et al. (2022) points, unchanged, tagged
@@ -68,12 +68,12 @@ import pandas as pd
 import rasterio
 import requests
 import s3fs
-from fdp import BUCKET, PREFIX
+from fdp import BUCKET, REFIT
 from fdp_inputs import HUC_KEY, HUCS, predictor_key, read_manifest, response_key
 from pyproj import Transformer
 from rasterio.windows import Window
 
-RUNS = f'{BUCKET}/{PREFIX}/runs'
+RUNS = f'{BUCKET}/{REFIT}/runs'
 NOAA = 'https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/'
 NOAA_START, NOAA_END = pd.Timestamp('2006-12-01'), pd.Timestamp('2026-01-01')
 ORIGINAL_END = pd.Timestamp('2020-06-01')
