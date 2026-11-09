@@ -147,7 +147,7 @@ def run_coiled(
         # In env, not argv: Coiled rebuilds the command as a shell string and strips JSON's quotes.
         dumped = json.dumps({stage: kwargs.model_dump(mode='json', exclude_unset=True)})
         job['env'] = {**job.get('env', {}), KWARGS_ENV: dumped}
-    j = coiled.batch.run(command=command, name=f'ocr-{cfg.risk}-{stage}', **job)
+    j = coiled.batch.run(command=command, name=f'ocr-{cfg.risk}-{stage}-{cfg.version}', **job)
     logs = f'coiled batch logs {j["cluster_id"]}'  # takes the cluster id, not the job id
     typer.echo(f'{cfg.risk} {stage}: job {j["job_id"]}, cluster {j["cluster_id"]}; logs: {logs}')
     try:

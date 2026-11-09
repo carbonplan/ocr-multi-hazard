@@ -259,11 +259,11 @@ Buildings roll up from their block `GEOID`, so levels nest. The web map reads it
 
 ```text
 output/{risk}/v{version}/vector/regions/
-  nation.parquet
-  states.parquet
-  counties/state_fips=SS/data.parquet
-  tracts/state_fips=SS/county_fips=CCC/data.parquet
-  blocks/state_fips=SS/county_fips=CCC/data.parquet
+  nation.geoparquet
+  states.geoparquet
+  counties/state_fips=SS/data.geoparquet
+  tracts/state_fips=SS/county_fips=CCC/data.geoparquet
+  blocks/state_fips=SS/county_fips=CCC/data.geoparquet
 ```
 
 Partitions are Hive-style, so a query over a level's glob can filter on `state_fips` and `county_fips` and read
@@ -271,7 +271,7 @@ only the matching files:
 
 ```sql
 SELECT GEOID, building_count, rps_2011_median
-FROM read_parquet('output/fire/v{version}/vector/regions/blocks/*/*/data.parquet', hive_partitioning = true)
+FROM read_parquet('output/fire/v{version}/vector/regions/blocks/*/*/data.geoparquet', hive_partitioning = true)
 WHERE state_fips = '08' AND county_fips = '013';
 ```
 

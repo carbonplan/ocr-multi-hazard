@@ -104,7 +104,7 @@ def test_write_buildings_then_regions(
     assert meta[b'version'] == b'v2.0.0'
 
     write_regions(OUT, [RegionLevel.BLOCK])
-    files = list((root / 'output/fire/v2.0.0/vector/regions').rglob('*.parquet'))
+    files = list((root / 'output/fire/v2.0.0/vector/regions').rglob('*.geoparquet'))
     assert (
         sum(
             pq.read_table(f, columns=['building_count'])['building_count'].to_numpy().sum()
@@ -144,7 +144,7 @@ def test_bbox_subsets_buildings_and_regions(
     assert all(west[0] <= r['xmin'] and r['xmax'] <= west[2] for r in b)
 
     write_regions(OUT, [RegionLevel.BLOCK])
-    files = list((root / 'output/fire/v2.0.0/vector/regions').rglob('*.parquet'))
+    files = list((root / 'output/fire/v2.0.0/vector/regions').rglob('*.geoparquet'))
     got = {g for f in files for g in pq.read_table(f, columns=['GEOID'])['GEOID'].to_pylist()}
     assert got == {'080130001001000', '080130001001002'}
 
@@ -317,4 +317,4 @@ def test_pipeline_from_store(
     tbl = pq.read_table(root / out.buildings)
     assert 2900 < tbl.num_rows <= 3000
     assert all(tbl[v].null_count == 0 for v in variables if v in tbl.column_names)
-    assert list((root / out.regions).rglob('*.parquet'))
+    assert list((root / out.regions).rglob('*.geoparquet'))
