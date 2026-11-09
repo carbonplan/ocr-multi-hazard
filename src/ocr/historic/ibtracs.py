@@ -18,9 +18,11 @@ zoom from the segments themselves. Rows are in one row group, sorted by storm an
 segments sit together and its attributes compress to almost nothing.
 
 A segment with tropical-storm-force winds but no radii takes the radius recorded closest in time on the
-same storm, within NEAREST_HOURS, the larger on a tie; `r34_source` is `observed` or `nearest`. Such gaps
-are rare (10 segments in the 2026-11-08 source), each at the start or end of a storm's 34 kt stage, on a
-point off the regular 3-hourly times. A gap with no radius that near keeps no R34 and matches no point,
+same storm, within NEAREST_HOURS, the larger on a tie; `r34_source` is `observed` or `nearest`. NHC records
+radii at its 6-hourly analyses while a storm is at least 34 kt, and IBTrACS interpolates them to its other
+points, so a gap falls between an analysis with radii and one below 34 kt. Such gaps are rare (10 segments
+in the 2026-11-08 source), nearly all at or just after a landfall as the storm weakens, where the last
+radius likely overstates reach a little. A gap with no radius that near keeps no R34 and matches no point,
 unless the largest radius in the source would carry it to CONUS, where it could change which storms reached
 a point: then it fails the build.
 Radii describe the largest quadrant, so they bound where those winds reached.
