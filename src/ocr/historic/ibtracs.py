@@ -17,10 +17,12 @@ The file has no overviews. At ~270 KB it is read whole once by the geoparquet-lo
 zoom from the segments themselves. Rows are in one row group, sorted by storm and time, so each storm's
 segments sit together and its attributes compress to almost nothing.
 
-The few later segments without radii take the median observed R34 for their basin and
-Saffir-Simpson category among segments within CLIMATOLOGY_DEG of CONUS; `r34_source` says which. Radii
-describe the largest quadrant, so they bound where those winds reached, and the climatological ones are
-typical, not observed, sizes.
+A segment with tropical-storm-force winds but no radii takes the radius recorded closest in time on the
+same storm, within NEAREST_HOURS, the larger on a tie; `r34_source` is `observed` or `nearest`. Such gaps
+are rare (10 segments in the 2026-11-08 source), each at the start or end of a storm's 34 kt stage, on a
+point off the regular 3-hourly times. A gap with no radius that near keeps no R34 and matches no point;
+within NEAR_CONUS_DEG of CONUS, where it could change which storms reached a point, it fails the build.
+Radii describe the largest quadrant, so they bound where those winds reached.
 
 writes input/historic/ibtracs/<YYYYMMDD>/ibtracs_tracks.parquet, dated by the source's Last-Modified. The
 downloaded zip is mirrored beside it at raw/<sha256[:16]>/<zip name>, content-addressed and never overwritten.
@@ -63,8 +65,11 @@ NMI_TO_M = 1852.0
 M_PER_DEG_LAT = 110_574.0
 M_PER_DEG_LON_EQUATOR = 111_320.0
 FIRST_SEASON = 2004
-# Degrees around CONUS whose segments set the climatological R34.
-CLIMATOLOGY_DEG = 15
+# Hours on the same storm within which a segment without radii takes the nearest recorded one.
+NEAREST_HOURS = 6
+# Degrees around CONUS within which a segment without R34 fails the build: farther out, even the largest
+# radius in the file (~12 degrees) cannot reach CONUS.
+NEAR_CONUS_DEG = 15
 ZSTD_LEVEL = 9
 # pyproject.toml [tool.setuptools_scm] fallback_version: what a build without repository metadata reports.
 SCM_FALLBACK_VERSION = '999'
@@ -111,7 +116,7 @@ def processing_metadata() -> dict[str, str]:
         'ibtracs_ocr_version': ocr_version(),
         'ibtracs_first_season': str(FIRST_SEASON),
         'ibtracs_min_wind_kt': str(TS_WIND_KT),
-        'ibtracs_climatology_deg': str(CLIMATOLOGY_DEG),
+        'ibtracs_nearest_hours': str(NEAREST_HOURS),
     }
 
 
@@ -137,47 +142,56 @@ def reaches_conus_sql(geom: str, r34_nmi: str) -> str:
 def tracks(con: duckdb.DuckDBPyConnection, source: str) -> duckdb.DuckDBPyRelation:
     """Every segment of the storms since FIRST_SEASON whose winds reached CONUS from `source`, a table or table expression with
     the IBTrACS columns and `geom` in EPSG:4326, with R34 (see the module docstring)."""
-    window = (
-        f'ST_MakeEnvelope({CONUS.left - CLIMATOLOGY_DEG}, {CONUS.bottom - CLIMATOLOGY_DEG}, '
-        f'{CONUS.right + CLIMATOLOGY_DEG}, {CONUS.top + CLIMATOLOGY_DEG})'
+    near_conus = (
+        f'ST_MakeEnvelope({CONUS.left - NEAR_CONUS_DEG}, {CONUS.bottom - NEAR_CONUS_DEG}, '
+        f'{CONUS.right + NEAR_CONUS_DEG}, {CONUS.top + NEAR_CONUS_DEG})'
     )
     strong = f'usa_wind >= {TS_WIND_KT}'
     con.sql(
         f"""
         CREATE OR REPLACE TEMP TABLE ibtracs_segments AS
         WITH segs AS (
-            SELECT SID AS sid, NAME AS name, SEASON AS season, BASIN AS basin, ISO_TIME AS iso_time,
-                   NATURE AS nature, USA_WIND AS usa_wind, USA_SSHS AS usa_sshs,
+            SELECT row_number() OVER () AS seg, SID AS sid, NAME AS name, SEASON AS season,
+                   BASIN AS basin, ISO_TIME AS iso_time, NATURE AS nature, USA_WIND AS usa_wind,
+                   USA_SSHS AS usa_sshs,
                    greatest(USA_R34_NE, USA_R34_SE, USA_R34_SW, USA_R34_NW) AS r34_observed,
-                   geom
+                   epoch(CAST(ISO_TIME AS TIMESTAMP)) AS t, geom
             FROM {source}
             WHERE SEASON >= {FIRST_SEASON}
         ),
-        climatology AS (
-            SELECT basin, usa_sshs, median(r34_observed) AS r34_typical
-            FROM segs
-            WHERE {strong} AND r34_observed > 0 AND ST_Intersects(geom, {window})
-            GROUP BY ALL
+        nearest AS (
+            SELECT gap.seg,
+                   arg_min(known.r34_observed, [abs(known.t - gap.t), -known.r34_observed]) AS r34_nearest
+            FROM segs gap
+            JOIN segs known
+              ON known.sid = gap.sid AND known.r34_observed > 0
+             AND abs(known.t - gap.t) <= {NEAREST_HOURS} * 3600
+            WHERE gap.{strong} AND NOT coalesce(gap.r34_observed > 0, false)
+            GROUP BY gap.seg
         ),
         sized AS (
-            SELECT segs.* EXCLUDE (r34_observed, geom),
+            SELECT segs.* EXCLUDE (seg, r34_observed, t, geom),
+                   CAST(CASE WHEN NOT {strong} THEN NULL
+                             WHEN r34_observed > 0 THEN r34_observed ELSE r34_nearest END AS DOUBLE)
+                       AS r34_nmi,
                    CASE WHEN NOT {strong} THEN NULL
-                        WHEN r34_observed > 0 THEN r34_observed ELSE r34_typical END AS r34_nmi,
-                   CASE WHEN NOT {strong} THEN NULL
-                        WHEN r34_observed > 0 THEN 'observed' ELSE 'climatology' END AS r34_source,
+                        WHEN r34_observed > 0 THEN 'observed'
+                        WHEN r34_nearest IS NOT NULL THEN 'nearest' END AS r34_source,
                    geom AS geometry
-            FROM segs LEFT JOIN climatology USING (basin, usa_sshs)
+            FROM segs LEFT JOIN nearest USING (seg)
         )
         SELECT *, {bbox_sql('geometry')} AS bbox FROM sized
         """
     )
     # Checked before storms are picked, since a segment without R34 cannot reach CONUS and could drop its storm.
     missing = con.sql(
-        'SELECT DISTINCT basin, usa_sshs FROM ibtracs_segments '
-        f'WHERE {strong} AND r34_nmi IS NULL AND ST_Intersects(geometry, {window})'
+        'SELECT sid, iso_time FROM ibtracs_segments '
+        f'WHERE {strong} AND r34_nmi IS NULL AND ST_Intersects(geometry, {near_conus}) ORDER BY ALL'
     ).fetchall()
     if missing:
-        raise ValueError(f'no observed R34 to estimate radii for (basin, usa_sshs) {missing}')
+        raise ValueError(
+            f'no R34 within {NEAREST_HOURS} h on the same storm near CONUS for (sid, iso_time) {missing}'
+        )
     return con.sql(
         f"""
         SELECT * FROM ibtracs_segments

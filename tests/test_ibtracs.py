@@ -1,5 +1,5 @@
 import zipfile
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,32 +9,39 @@ import pytest
 from ocr.duck import duckdb_connect
 from ocr.historic import ibtracs
 
-# (sid, basin, wind kt, sshs, R34 quadrants NE/SE/SW/NW in nmi, segment start lon/lat)
+# (sid, basin, wind kt, sshs, R34 quadrants NE/SE/SW/NW in nmi, segment start lon/lat, hours after
+# 2005-08-29 12:00)
 ROWS = [
-    ('observed', 'NA', 25, -1, None, (-30, 15)),
-    ('observed', 'NA', 100, 3, (50, 100, 80, 60), (-90, 27)),
-    ('observed_peer', 'NA', 105, 3, (120, 120, 120, 120), (-91, 27)),
-    ('no_radii', 'NA', 110, 3, None, (-89, 28)),
-    ('depression', 'NA', 30, -1, None, (-90, 29)),
-    ('offshore_reaches', 'NA', 60, 0, (150, 150, 150, 150), (-64, 35)),
-    ('offshore_short', 'NA', 60, 0, (30, 30, 30, 30), (-60, 30)),
+    ('observed', 'NA', 25, -1, None, (-30, 15), 0),
+    ('observed', 'NA', 100, 3, (50, 100, 80, 60), (-90, 27), 3),
+    # far from CONUS, and 9 h from the storm's radius
+    ('observed', 'NA', 40, 0, None, (-30, 16), 12),
+    ('observed_peer', 'NA', 105, 3, (120, 120, 120, 120), (-91, 27), 0),
+    # a gap 3 h after one radius and 4 h before another
+    ('gap', 'NA', 110, 3, (60, 60, 60, 60), (-89, 28), 0),
+    ('gap', 'NA', 112, 3, None, (-88.5, 28), 3),
+    ('gap', 'NA', 105, 3, (100, 100, 100, 100), (-88, 28), 7),
+    ('depression', 'NA', 30, -1, None, (-90, 29), 0),
+    ('offshore_reaches', 'NA', 60, 0, (150, 150, 150, 150), (-64, 35), 0),
+    ('offshore_short', 'NA', 60, 0, (30, 30, 30, 30), (-60, 30), 0),
     # 0.97 and 1.1 R34 east of CONUS at 45N, where a degree of longitude is 78.85 km.
-    ('just_inside', 'NA', 60, 0, (100, 100, 100, 100), (-66 + 0.97 * 185.2 / 78.85, 45)),
-    ('just_outside', 'NA', 60, 0, (100, 100, 100, 100), (-66 + 1.1 * 185.2 / 78.85, 45)),
-    ('west_pacific', 'WP', 100, 3, (100, 100, 100, 100), (140, 20)),
-    ('before_radii', 'NA', 100, 3, (150, 150, 150, 150), (-90, 28)),
+    ('just_inside', 'NA', 60, 0, (100, 100, 100, 100), (-66 + 0.97 * 185.2 / 78.85, 45), 0),
+    ('just_outside', 'NA', 60, 0, (100, 100, 100, 100), (-66 + 1.1 * 185.2 / 78.85, 45), 0),
+    ('west_pacific', 'WP', 100, 3, (100, 100, 100, 100), (140, 20), 0),
+    ('before_radii', 'NA', 100, 3, (150, 150, 150, 150), (-90, 28), 0),
 ]
 SEASONS = {'before_radii': ibtracs.FIRST_SEASON - 1}
-STORMS_REACHING_CONUS = ['just_inside', 'no_radii', 'observed', 'observed_peer', 'offshore_reaches']
+STORMS_REACHING_CONUS = ['gap', 'just_inside', 'observed', 'observed_peer', 'offshore_reaches']
 
 
 def source_sql(rows):
     values = []
-    for sid, basin, wind, sshs, r34, (x, y) in rows:
+    for sid, basin, wind, sshs, r34, (x, y), hours in rows:
         quadrants = ', '.join(str(q) for q in r34) if r34 else 'NULL, NULL, NULL, NULL'
+        time = datetime(2005, 8, 29, 12) + timedelta(hours=hours)
         values.append(
-            f"('{sid}', 'NAME {sid}', {SEASONS.get(sid, 2005)}, '{basin}', '2005-08-29 12:00:00', 'TS', "
-            f'{wind}, {sshs}, '
+            f"('{sid}', 'NAME {sid}', {SEASONS.get(sid, 2005)}, '{basin}', '{time:%Y-%m-%d %H:%M:%S}', "
+            f"'TS', {wind}, {sshs}, "
             f"{quadrants}, ST_GeomFromText('LINESTRING({x} {y}, {x + 0.5} {y})'))"
         )
     return (
@@ -82,16 +89,36 @@ def test_tracks_keep_every_segment_of_storms_whose_winds_reach_conus(con, subtes
     with subtests.test(case='observed_takes_largest_quadrant'):
         assert out[('observed', 100)][2:4] == (100, 'observed')
 
-    # before_radii reaches CONUS, but is dropped, and its radii stay out of the median.
-    with subtests.test(case='missing_radii_take_median_of_same_basin_and_category'):
-        assert out[('no_radii', 110)][2:4] == (110, 'climatology')
+    with subtests.test(case='missing_radii_take_the_storms_nearest_in_time'):
+        assert out[('gap', 112)][2:4] == (60, 'nearest')
+
+    with subtests.test(case='missing_radii_far_from_conus_and_from_a_radius_stay_empty'):
+        assert out[('observed', 40)][2:4] == (None, None)
 
 
-def test_tracks_raise_when_no_radius_can_be_estimated():
-    rows = [('lonely', 'NA', 140, 5, None, (-90, 27))]
+@pytest.mark.parametrize(
+    'rows',
+    [
+        pytest.param(
+            [
+                ('lonely', 'NA', 140, 5, None, (-90, 27), 0),
+                ('neighbour', 'NA', 140, 5, (100, 100, 100, 100), (-90, 27), 0),
+            ],
+            id='only_another_storm_has_a_radius',
+        ),
+        pytest.param(
+            [
+                ('lonely', 'NA', 60, 0, (80, 80, 80, 80), (-90, 27), 0),
+                ('lonely', 'NA', 60, 0, None, (-89.5, 27), 7),
+            ],
+            id='its_radius_is_too_far_in_time',
+        ),
+    ],
+)
+def test_tracks_raise_on_a_gap_near_conus_with_no_radius_to_take(rows):
     with duckdb_connect() as con:
         con.sql(f'CREATE TABLE src AS {source_sql(rows)}')
-        with pytest.raises(ValueError, match=r"\('NA', 5\)"):
+        with pytest.raises(ValueError, match=r"\('lonely', '2005-08-29"):
             ibtracs.tracks(con, 'src')
 
 
@@ -143,7 +170,7 @@ def test_write_local_builds_geoparquet_sorted_by_storm_from_zipped_shapefile(
         )
 
     assert sids == sorted(sids) and sorted(set(sids)) == STORMS_REACHING_CONUS
-    assert (len(sids), sized) == (6, 5)
+    assert (len(sids), sized) == (9, 7)
     assert kv['ibtracs_max_r34_nmi'] == '150.0'
     assert kv['ibtracs_sha256'] == 'beef'
     assert kv['ibtracs_ocr_version']
