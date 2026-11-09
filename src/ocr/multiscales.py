@@ -29,8 +29,11 @@ def write_multiscales(
             del root[name]
         root.attrs.pop('multiscales', None)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
-    if variables is not None:
-        ds = ds[variables]
-    pyramid = create_pyramid(ds.proj.assign_crs(spatial_ref=crs), **pyramid_kwargs)
-    pyramid.write(session.store, mode='a', levels=list(range(1, pyramid.levels)))
+    ds = ds.proj.assign_crs(spatial_ref=crs)
+    # One variable per write: Pyramid.write looks up each variable's array while earlier
+    # variables' writes are in flight, and on an S3 icechunk store that lookup blocks zarr's
+    # event loop (IcechunkStore.__str__) that those writes need, so 2+ variables deadlock.
+    for name in variables if variables is not None else list(ds.data_vars):
+        pyramid = create_pyramid(ds[[name]], **pyramid_kwargs)
+        pyramid.write(session.store, mode='a', levels=list(range(1, pyramid.levels)))
     return session.commit(message)
