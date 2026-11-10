@@ -330,13 +330,11 @@ def score(
 
     repo = icechunk.Repository.create(cfg.icechunk_storage(out.store))
     session = repo.writable_session('main')
+    encoding = {k: v | ds[k].encoding for k, v in recommend_encoding(ds).items()}
+    for k, enc in encoding.items():  # xarray requires dask chunks aligned to the shards
+        ds[k] = ds[k].chunk(dict(zip(ds[k].dims, enc['shards'])))
     ds.to_zarr(
-        session.store,
-        group='0',
-        mode='w',
-        compute=False,
-        consolidated=False,
-        encoding={k: v | ds[k].encoding for k, v in recommend_encoding(ds).items()},
+        session.store, group='0', mode='w', compute=False, consolidated=False, encoding=encoding
     )
     point_template(ds).to_zarr(
         session.store, group=POINT, mode='w', compute=False, consolidated=False

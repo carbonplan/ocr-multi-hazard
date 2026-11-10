@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import dask
 import icechunk
 import numpy as np
 import pytest
@@ -128,17 +129,29 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
 
 
-def test_point_group_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 64 x 96 cells in 8-cell shards, copied in 32-cell blocks with partial edges.
+def _small_shards(ds: xr.Dataset) -> dict:
+    # 64 x 96 cells in 12 x 20 shards, so both ends of each axis are partial
+    lead = {k: (1,) * (v.ndim - 2) for k, v in ds.data_vars.items()}
+    return {k: {'chunks': (*o, 6, 10), 'shards': (*o, 12, 20)} for k, o in lead.items()}
+
+
+def test_score_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(refit, 'recommend_encoding', _small_shards)
+    # point: 8-cell shards, copied in 32-cell blocks with partial edges
     monkeypatch.setattr(refit, 'POINT_SHARD', 8)
     monkeypatch.setattr(refit, 'POINT_CHUNK', 4)
     _write_run(root)
-    _score()
+    with dask.config.set({'array.chunk-size': '4KiB'}):  # template chunks unaligned to shards
+        _score()
     ds = _open()
+    assert ds[CONTRIBUTION].encoding['shards'] == (1, 12, 20)
+    assert ds[DOMINANT].encoding['shards'] == (12, 20)
     point = _open(POINT)[VALUES]
     assert point.encoding['shards'] == (5, 8, 8) and point.encoding['chunks'] == (5, 4, 4)
     layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
     np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
+    dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(ds[FDP].notnull())
+    np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
 
 
 def test_score_refuses_existing_store(root: Path) -> None:
