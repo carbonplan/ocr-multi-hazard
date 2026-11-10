@@ -6,10 +6,11 @@ import numpy as np
 import pytest
 import rasterio
 import xarray as xr
+import zarr
 
 from ocr import stages
 from ocr.config import OutputPaths, Risk, StorageConfig
-from ocr.risks.flood.refit import FDP, RUNS, SE, contribution, score
+from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, RUNS, SE, score
 
 DRIVERS = ['floodplain', 'hand', 'roads']
 NODATA = -32768
@@ -81,7 +82,7 @@ def test_score_reads_only_the_hucs_given(root: Path) -> None:
     _write_run(root)
     score(OUT, run='test-run', hucs=('05',))
     ds = _open()
-    assert ds.attrs['hucs'] == ['05'] and dict(ds.sizes) == {'y': 44, 'x': 56}
+    assert ds.attrs['hucs'] == ['05'] and dict(ds.sizes) == {'driver': 3, 'y': 44, 'x': 56}
 
 
 def _open() -> xr.Dataset:
@@ -94,9 +95,12 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     _write_run(root)
     _score()
     ds = _open()
-    assert dict(ds.sizes) == {'y': 64, 'x': 96}
-    assert set(ds.data_vars) == {FDP, SE, *map(contribution, DRIVERS)}
-    assert all(ds[v].dtype == np.float32 for v in ds.data_vars)
+    assert dict(ds.sizes) == {'driver': 3, 'y': 64, 'x': 96}
+    assert set(ds.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
+    assert ds.driver.attrs['flag_meanings'] == ' '.join(DRIVERS)
+    assert ds[CONTRIBUTION].dims == ('driver', 'y', 'x')
+    assert ds[CONTRIBUTION].encoding['dtype'] == 'int16'
+    assert ds[DOMINANT].encoding['dtype'] == 'uint8'
     assert ds.odc.crs == 'EPSG:5070'
     assert ds.attrs['drivers'] == DRIVERS and ds.attrs['baselines'] == BASELINES
     assert ds.attrs['run'] == 'test-run' and ds.attrs['hucs'] == ['03', '05']
@@ -104,13 +108,17 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     np.testing.assert_allclose(ds.y[:2], [Y0 - 50, Y0 - 150])
 
     fdp = ds[FDP].values
-    assert np.isnan(fdp[0, 0]) and np.isnan(fdp[63, 0])  # nodata, and outside both windows
-    contrib = sum(ds[contribution(d)].values.astype('float64') for d in DRIVERS)
+    # nodata, and outside both windows
+    for v in ds.data_vars:
+        assert ds[v][..., 0, 0].isnull().all() and ds[v][..., 63, 0].isnull().all()
+    contrib = ds[CONTRIBUTION].sum('driver', skipna=False).values
     in_03 = np.zeros(fdp.shape, bool)
     in_03[:40, :50] = True
     baseline = np.where(in_03, 0.4, 0.6)
     np.testing.assert_allclose(fdp, baseline + contrib, atol=len(DRIVERS) * SCALE)
     np.testing.assert_array_equal(np.isfinite(ds[SE].values), np.isfinite(fdp))
+    dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(np.isfinite(fdp))
+    np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
 
 
 def test_score_refuses_existing_store(root: Path) -> None:
@@ -164,5 +172,10 @@ def test_pyramid_stage_on_refit_store(root: Path) -> None:
     repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
     session = repo.readonly_session('main')
     level1 = xr.open_zarr(session.store, group='1', consolidated=False, chunks=None)
-    assert dict(level1.sizes) == {'y': 32, 'x': 48}
-    assert set(level1.data_vars) == {FDP, SE, *map(contribution, DRIVERS)}
+    assert dict(level1.sizes) == {'driver': 3, 'y': 32, 'x': 48}
+    assert set(level1.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
+    assert zarr.open_group(session.store, path='1', mode='r')[CONTRIBUTION].dtype == 'int16'
+    # from level 1's own averaged contributions
+    valid = level1[CONTRIBUTION].notnull().all('driver')
+    dominant = level1[CONTRIBUTION].fillna(0).argmax('driver').where(valid)
+    np.testing.assert_array_equal(level1[DOMINANT].values, dominant.values)

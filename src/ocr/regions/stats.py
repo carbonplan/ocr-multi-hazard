@@ -57,6 +57,7 @@ def write_region_stats(
     hists: Sequence[Hist],
     out: str | Path,
     regions: str | Path | None = None,
+    skip: Sequence[str] = (),
 ) -> None:
     """Write to `out` per-region building_count, mean, median and missing count of every building value
     column, hist of each `hists` var, plus the region's columns.
@@ -65,8 +66,9 @@ def write_region_stats(
     NOT_VALUES. Each building rolls up from its block GEOID by prefix (`level.group_key`), so levels
     nest and a building counts once per level, the same lookup the web does. `regions` (default
     `level.uri`) needs GEOID, geometry and bbox; its other columns (NAME, STUSPS) are kept. Buildings
-    with no block and regions with no buildings are dropped. NaN counts as missing. Metadata: the
-    buildings' own, plus bins and TIGER vintage.
+    with no block and regions with no buildings are dropped. NaN counts as missing. `skip` names
+    columns not to summarise, such as class codes. Metadata: the buildings' own, plus bins and
+    TIGER vintage.
     """
     hist_vars = [v for h in hists for v in h.variables]
     if len(set(hist_vars)) != len(hist_vars):
@@ -77,7 +79,7 @@ def write_region_stats(
         columns = con.sql(
             'SELECT * FROM read_parquet($b) LIMIT 0', params={'b': params['buildings']}
         ).columns
-        variables = [c for c in columns if c not in NOT_VALUES]
+        variables = [c for c in columns if c not in (*NOT_VALUES, *skip)]
         if missing := set(hist_vars) - set(variables):
             raise ValueError(f'Hist variables not in buildings: {sorted(missing)}')
         values = ''.join(f', nullif("{v}"::DOUBLE, \'NaN\'::DOUBLE) AS "{v}"' for v in variables)

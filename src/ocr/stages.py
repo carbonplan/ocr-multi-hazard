@@ -3,7 +3,7 @@
 import importlib
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from inspect import signature
 from pathlib import Path
 from typing import Any, get_type_hints
@@ -50,12 +50,20 @@ class RiskSpec:
     # Writes store.icechunk group "0", called as score(out, **kwargs); a 'module:function' path is
     # imported on use, so a risk's extra deps load only when it runs. None -> its own ETL writes it.
     score: Callable[..., None] | str | None = None
+    # Class-code variables computed from a store level's other variables: name -> 'module:function'
+    # that writes it into a level's zarr group. Score writes them on level 0, the pyramid on each
+    # level it adds, and region stats skip them.
+    derived: Mapping[str, str] = field(default_factory=dict)
+
+
+def _load(path: str) -> Callable[..., Any]:
+    module, name = path.split(':')
+    return getattr(importlib.import_module(module), name)
 
 
 def score_fn(spec: RiskSpec) -> Callable[..., None]:
     if isinstance(spec.score, str):
-        module, name = spec.score.split(':')
-        return getattr(importlib.import_module(module), name)
+        return _load(spec.score)
     assert spec.score is not None  # `preflight`
     return spec.score
 
@@ -74,6 +82,7 @@ RISKS = {
         lod_carry=[('fdp', 'halffloat')],
         crs='EPSG:5070',
         score='ocr.risks.flood.refit:score',
+        derived={'dominant_driver': 'ocr.risks.flood.refit:write_dominant'},
     ),
     # TODO: hurricane bins, shown predicate and carried columns; empty hists write building_count only.
     Risk.HURRICANE: RiskSpec(hists=[], lod_shown='true', lod_carry=[]),
@@ -131,14 +140,14 @@ def write_regions(
     web layout (`ocr.regions.layout`) under `out.regions`, with `out.risk`'s hists.
     `temp_dir` holds the staged stats and layout files (on Coiled, a large volume).
     """
-    hists = RISKS[out.risk].hists
+    hists, skip = RISKS[out.risk].hists, list(RISKS[out.risk].derived)
     buildings = StorageConfig().uri(out.buildings)
     shown = [f'{v}_{s}' for h in hists for v in h.variables for s in ('median', 'hist')]
     # ponytail: one buildings scan per level, needed for exact medians; approx_quantile on one block pass rolled up if too slow.
     with tempfile.TemporaryDirectory(dir=temp_dir) as tmp:
         for level in levels:
             stats = Path(tmp) / f'{level}.parquet'
-            write_region_stats(buildings, level, hists, stats)
+            write_region_stats(buildings, level, hists, stats, skip=skip)
             write_level(stats, level, out.regions, shown, temp_dir=tmp)
             stats.unlink()
 
@@ -176,7 +185,8 @@ def pyramid(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> Non
     assert spec.crs is not None
     if 'levels' not in kw and 'factors' not in kw:
         kw['levels'] = 'auto'  # create_pyramid requires one of them
-    write_multiscales(_store(out), spec.crs, overwrite=overwrite, **kw)
+    derived = {name: _load(fn) for name, fn in spec.derived.items()}
+    write_multiscales(_store(out), spec.crs, overwrite=overwrite, derived=derived, **kw)
 
 
 def buildings(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
@@ -266,8 +276,9 @@ def stage_kwargs(stage: str, kw: Mapping[str, Any], spec: RiskSpec | None = None
         hints = get_type_hints(fn, include_extras=True)
         for p in signature(fn).parameters.values():
             # overwrite is the stage's own flag (--overwrite); metadata and log are passed by the
-            # calling util (write_buildings), so a user value would collide.
-            if p.name in {'overwrite', 'metadata', 'log'}:
+            # calling util (write_buildings) and derived by the stage (`RiskSpec.derived`), so a
+            # user value would collide.
+            if p.name in {'overwrite', 'metadata', 'log', 'derived'}:
                 continue
             if p.default is not p.empty and p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD):
                 fields.setdefault(p.name, (hints.get(p.name, Any), p.default))

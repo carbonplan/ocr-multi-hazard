@@ -155,12 +155,14 @@ The ocr-web branch `Shane98c/fdp-retrained` reads an earlier HUC 03 mosaic at
 
 The flood pipeline's `score` stage (`ocr.risks.flood.refit`) mosaics the
 watersheds of the run it pins (`RUN`, `DISTANCE`) into group "0" of
-`output/flood/<version>/store.icechunk` as flat 2D float32 layers: `fdp`,
-`fdp_se` and `contribution_<driver>`, NaN for no data. It reads one band of one
-watershed at a time, so it needs no large VM, and checks the sum identity at
-sampled cells of each watershed before committing. `pyramid`, `buildings` and
-`regions` then run as for any risk; `dominant_driver` is left out, since the
-mean pyramid would average its codes:
+`output/flood/<version>/store.icechunk` in the layout that branch reads: `fdp`
+and `fdp_se` (float32, NaN for no data), `contribution(driver, y, x)` (int16,
+`scale_factor` 1e-4, fill -32768) and `dominant_driver` (uint8, the argmax of
+`contribution`, 255 for no data). It reads one band of one watershed at a time,
+so it needs no large VM, and checks the sum identity and dominant driver at
+sampled cells of each watershed before committing. `pyramid` averages the
+others and recomputes `dominant_driver` on each level; `buildings` and
+`regions` then run as for any risk:
 
 ```bash
 ocr run runs/flood/v2.0.0.toml

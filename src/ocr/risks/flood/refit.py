@@ -6,13 +6,17 @@ each watershed's probability (`fdp.tif`), standard error (`se.tif`) and per-driv
 RUN's watersheds into group "0" of the flood store, on their shared EPSG:5070 100 m grid cropped
 to their union:
 
-    fdp                   probability of flood damage
-    fdp_se                standard error of fdp (infinitesimal jackknife)
-    contribution_<driver> change in fdp credited to the driver; per cell, the
-                          watershed's baseline + the sum over drivers = fdp
+    fdp              (y, x)          float32  probability of flood damage
+    fdp_se           (y, x)          float32  standard error of fdp (infinitesimal jackknife)
+    contribution     (driver, y, x)  int16    change in fdp credited to each driver, in steps
+                                              of scale_factor; per cell, the watershed's
+                                              baseline + the sum over drivers = fdp
+    dominant_driver  (y, x)          uint8    driver with the largest contribution
 
-NaN is no data. Group attributes carry the driver order, each watershed's baseline and the run.
-One band of one watershed is in memory at a time, so CONUS fits a small VM.
+The `driver` coordinate is the driver's index; its flag_meanings name them in order. Missing
+data is NaN in the floats and _FillValue in the integers. Group attributes carry the driver
+order, each watershed's baseline and the run. One band of one watershed is in memory at a time,
+so CONUS fits a small VM.
 """
 
 import json
@@ -41,11 +45,11 @@ SOURCE = 'https://doi.org/10.5066/P954TTQN'
 
 FDP = 'fdp'
 SE = 'fdp_se'
+CONTRIBUTION = 'contribution'
+DOMINANT = 'dominant_driver'
+NODATA = -32768  # contributions.tif's nodata, kept as contribution's fill
+NO_DRIVER = 255
 CHECK_CELLS = 1000  # per watershed, read back from the store for the sum identity
-
-
-def contribution(driver: str) -> str:
-    return f'contribution_{driver}'
 
 
 @dataclass(frozen=True)
@@ -103,24 +107,34 @@ def union_grid(sheds: list[Watershed]) -> Grid:
 
 
 def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.Dataset:
-    """All-NaN dataset on `grid`, lazily, so writing it stores only metadata and coordinates."""
+    """All-missing dataset on `grid`, lazily, so writing it stores only metadata and coordinates.
+    Its encoding packs contribution as contributions.tif does."""
     drivers = sheds[0].meta['drivers']
     if any(s.meta['drivers'] != drivers for s in sheds):
         raise ValueError('watersheds disagree on driver order')
+    scale = sheds[0].meta['scale']
+    if any((s.meta['scale'], s.meta['nodata']) != (scale, NODATA) for s in sheds):
+        raise ValueError(f'watersheds disagree on contribution scale or nodata ({NODATA})')
     t, (ny, nx) = grid.transform, grid.shape
 
-    def empty(attrs: dict) -> tuple:
-        return ('y', 'x'), dask.array.full((ny, nx), np.nan, dtype='float32'), attrs
+    def empty(dims: tuple[str, ...], attrs: dict) -> tuple:
+        shape = tuple({'driver': len(drivers), 'y': ny, 'x': nx}[d] for d in dims)
+        return dims, dask.array.full(shape, np.nan, dtype='float32'), attrs
 
-    data = {
-        FDP: empty({'long_name': 'probability of flood damage'}),
-        SE: empty({'long_name': 'standard error of fdp', 'method': 'infinitesimal jackknife'}),
-    }
-    for d in drivers:
-        data[contribution(d)] = empty({'long_name': f'contribution of {d} to fdp'})
     ds = xr.Dataset(
-        data,
-        coords={'x': t.c + t.a * (np.arange(nx) + 0.5), 'y': t.f + t.e * (np.arange(ny) + 0.5)},
+        {
+            FDP: empty(('y', 'x'), {'long_name': 'probability of flood damage'}),
+            SE: empty(
+                ('y', 'x'),
+                {'long_name': 'standard error of fdp', 'method': 'infinitesimal jackknife'},
+            ),
+            CONTRIBUTION: empty(('driver', 'y', 'x'), {'long_name': 'contribution to fdp'}),
+        },
+        coords={
+            'x': t.c + t.a * (np.arange(nx) + 0.5),
+            'y': t.f + t.e * (np.arange(ny) + 0.5),
+            'driver': ('driver', np.arange(len(drivers), dtype='int8'), _driver_flags(drivers)),
+        },
         attrs={
             'title': 'CarbonPlan refit of the USGS Flood Damage Probability model',
             'source': SOURCE,
@@ -132,55 +146,105 @@ def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.
             'attribution': sheds[0].meta['method'],
         },
     )
+    ds[CONTRIBUTION].encoding = {
+        'dtype': 'int16',
+        'scale_factor': scale,
+        '_FillValue': NODATA,
+        'fill_value': NODATA,  # zarr's, for chunks never written
+    }
     return attach_geozarr_metadata(ds.proj.assign_crs(spatial_ref=CRS).proj.write_crs_info())
 
 
-def _read_band(cfg: StorageConfig, s: Watershed, file: str, band: int, scale: float) -> np.ndarray:
-    """One band of a watershed's raster, NaN for nodata. Errors unless it is on fdp.tif's grid."""
+def _driver_flags(drivers: list[str]) -> dict:
+    return {'flag_values': list(range(len(drivers))), 'flag_meanings': ' '.join(drivers)}
+
+
+def write_dominant(group: zarr.Group) -> None:
+    """(Re)write `group`'s dominant_driver: per cell, the index of the driver with the largest
+    `contribution`, or NO_DRIVER where a contribution is missing. A pyramid level's averaged
+    contributions give that level's own dominant driver."""
+    contrib, like = group[CONTRIBUTION], group[FDP]
+    drivers = group['driver'].attrs['flag_meanings'].split()
+    out = group.create_array(
+        DOMINANT,
+        shape=like.shape,
+        dtype='uint8',
+        chunks=like.chunks,
+        shards=like.shards,
+        fill_value=NO_DRIVER,
+        dimension_names=('y', 'x'),
+        attributes={
+            'long_name': 'driver with the largest contribution',
+            '_FillValue': NO_DRIVER,
+            **_driver_flags(drivers),
+        },
+        overwrite=True,
+    )
+    (ny, nx), (bh, bw) = like.shape, like.shards or like.chunks
+    for r in range(0, ny, bh):
+        for c in range(0, nx, bw):
+            block = contrib[:, r : r + bh, c : c + bw]
+            valid = (block != contrib.fill_value).all(axis=0)
+            if valid.any():
+                out[r : r + bh, c : c + bw] = np.where(valid, block.argmax(axis=0), NO_DRIVER)
+
+
+def _read_band(cfg: StorageConfig, s: Watershed, file: str, band: int) -> np.ma.MaskedArray:
+    """One band of a watershed's raster, masked at nodata. Errors unless it is on fdp.tif's grid."""
     with rasterio.open(s.uri(cfg, file)) as src:
         if (src.crs, src.transform, src.shape) != (CRS, s.transform, s.shape):
             raise ValueError(f'HUC {s.huc}: {file} is not on the grid of its fdp.tif')
-        values = src.read(band, masked=True).astype('float32')
-    return (values * np.float32(scale)).filled(np.nan)
+        return src.read(band, masked=True)
 
 
-def _sample_cells(values: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    valid = np.flatnonzero(np.isfinite(values))
-    pick = rng.choice(valid, size=min(CHECK_CELLS, valid.size), replace=False)
-    return np.unravel_index(np.sort(pick), values.shape)
+def _is_set(values: np.ndarray, fill) -> np.ndarray:
+    return np.isfinite(values) if np.isnan(fill) else values != fill
 
 
-def _merge(arr: zarr.Array, offset: tuple[int, int], values: np.ndarray, huc: str) -> None:
-    """Write the valid cells of `values` into `arr`, keeping what other watersheds wrote."""
-    (r, c), (h, w) = offset, values.shape
-    win = (slice(r, r + h), slice(c, c + w))
-    valid = np.isfinite(values)
+def _sample_cells(valid: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    cells = np.flatnonzero(valid)
+    pick = rng.choice(cells, size=min(CHECK_CELLS, cells.size), replace=False)
+    return np.unravel_index(np.sort(pick), valid.shape)
+
+
+def _merge(
+    arr: zarr.Array, key: tuple, offset: tuple[int, int], band: np.ma.MaskedArray, huc: str
+) -> None:
+    """Write the unmasked cells of `band` into `arr[*key, window]`, keeping what other watersheds
+    wrote."""
+    (r, c), (h, w) = offset, band.shape
+    win = (*key, slice(r, r + h), slice(c, c + w))
+    valid = ~np.ma.getmaskarray(band)
     current = arr[win]
-    if np.isfinite(current[valid]).any():
+    if _is_set(current[valid], arr.fill_value).any():
         raise ValueError(f'HUC {huc}: {arr.basename} overlaps a watershed already written')
-    current[valid] = values[valid]
+    current[valid] = band.data[valid]
     arr[win] = current
 
 
 def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray]) -> list[str]:
-    """Per watershed, at `cells` (rows, cols): every layer is set and baseline + contributions = fdp."""
-    drivers = sheds[0].meta['drivers']
+    """Per watershed, at `cells` (rows, cols): every layer is set, baseline + contributions = fdp
+    and dominant_driver is the largest contribution."""
+    contrib = group[CONTRIBUTION]
+    n, scale = contrib.shape[0], contrib.attrs['scale_factor']
     fails = []
     for s in sheds:
         rows, cols = cells[s.huc]
         p = group[FDP].vindex[rows, cols]
         se = group[SE].vindex[rows, cols]
-        c = np.stack([group[contribution(d)].vindex[rows, cols] for d in drivers])
-        if not (np.isfinite(se).all() and np.isfinite(c).all()):
+        raw = contrib.vindex[np.arange(n)[:, None], rows[None], cols[None]]
+        dominant = group[DOMINANT].vindex[rows, cols]
+        if not (np.isfinite(se).all() and (raw != NODATA).all()):
             fails.append(f'HUC {s.huc}: fdp_se or a contribution missing where fdp is set')
             continue
         # se_fdp.R floors the calibrated variance at 0 and has no upper bound
         if se.min() < 0:
             fails.append(f'HUC {s.huc}: negative fdp_se')
-        residual = np.abs(p - s.meta['baseline'] - c.sum(axis=0, dtype='float64')).max()
-        # contributions.tif stores each driver in steps of `scale`
-        if residual > len(drivers) * s.meta['scale'] + 1e-6:
+        residual = np.abs(p - s.meta['baseline'] - raw.sum(axis=0, dtype='float64') * scale).max()
+        if residual > n * scale + 1e-6:
             fails.append(f'HUC {s.huc}: baseline + contributions off fdp by {residual:.1e}')
+        if (dominant != raw.argmax(axis=0)).any():
+            fails.append(f'HUC {s.huc}: dominant_driver is not the largest contribution')
     return fails
 
 
@@ -206,26 +270,25 @@ def score(
         mode='w',
         compute=False,
         consolidated=False,
-        encoding=recommend_encoding(ds),
+        encoding={k: v | ds[k].encoding for k, v in recommend_encoding(ds).items()},
     )
     group = zarr.open_group(session.store, path='0', mode='r+')
 
     rng = np.random.default_rng(0)
     cells = {}
-    layers = [(FDP, 'fdp.tif', 1, False), (SE, 'se.tif', 1, False)]
-    layers += [
-        (contribution(d), 'contributions.tif', i, True)
-        for i, d in enumerate(sheds[0].meta['drivers'], 1)
-    ]
-    for name, file, band, scaled in layers:
-        print(f'{name}: {len(sheds)} watersheds')
+    layers = [(FDP, (), 'fdp.tif', 1), (SE, (), 'se.tif', 1)]
+    layers += [(CONTRIBUTION, (i,), 'contributions.tif', i + 1) for i in range(ds.sizes['driver'])]
+    for name, key, file, band in layers:
+        print(f'{name}{list(key)}: {len(sheds)} watersheds')
         for s in sheds:
-            values = _read_band(cfg, s, file, band, s.meta['scale'] if scaled else 1.0)
+            values = _read_band(cfg, s, file, band)
             if name == FDP:
-                r, c = _sample_cells(values, rng)
+                r, c = _sample_cells(~np.ma.getmaskarray(values), rng)
                 cells[s.huc] = (r + grid.offsets[s.huc][0], c + grid.offsets[s.huc][1])
-            _merge(group[name], grid.offsets[s.huc], values, s.huc)
+            _merge(group[name], key, grid.offsets[s.huc], values, s.huc)
             del values
+    print(DOMINANT)
+    write_dominant(group)
 
     if fails := check(group, sheds, cells):
         raise ValueError('refit check failed:\n  ' + '\n  '.join(fails))
