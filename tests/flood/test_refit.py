@@ -45,7 +45,7 @@ def _write_run(root: Path, sheds=SHEDS, baselines=BASELINES, disjoint: bool = Tr
     for huc, (row, col, h, w) in sheds.items():
         out = root / RUNS / 'test-run' / 'planar' / f'huc{huc}'
         out.mkdir(parents=True)
-        c = rng.integers(-2000, 2000, size=(len(DRIVERS), h, w)).astype('int16')
+        c = rng.integers(-1000, 1000, size=(len(DRIVERS), h, w)).astype('int16')
         fdp = (baselines[huc] + c.sum(axis=0, dtype='float64') * SCALE).astype('float32')
         outside = np.zeros((h, w), bool)
         outside[:3, :3] = True
@@ -99,7 +99,7 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     assert set(ds.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
     assert ds.driver.attrs['flag_meanings'] == ' '.join(DRIVERS)
     assert ds[CONTRIBUTION].dims == ('driver', 'y', 'x')
-    assert ds[CONTRIBUTION].encoding['dtype'] == 'int16'
+    assert all(ds[v].encoding['dtype'] == 'int16' for v in (FDP, SE, CONTRIBUTION))
     assert ds[DOMINANT].encoding['dtype'] == 'uint8'
     assert ds.odc.crs == 'EPSG:5070'
     assert ds.attrs['drivers'] == DRIVERS and ds.attrs['baselines'] == BASELINES
@@ -115,7 +115,7 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     in_03 = np.zeros(fdp.shape, bool)
     in_03[:40, :50] = True
     baseline = np.where(in_03, 0.4, 0.6)
-    np.testing.assert_allclose(fdp, baseline + contrib, atol=len(DRIVERS) * SCALE)
+    np.testing.assert_allclose(fdp, baseline + contrib, atol=(len(DRIVERS) + 0.5) * SCALE)
     np.testing.assert_array_equal(np.isfinite(ds[SE].values), np.isfinite(fdp))
     dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(np.isfinite(fdp))
     np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)

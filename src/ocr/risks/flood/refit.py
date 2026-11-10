@@ -6,16 +6,15 @@ each watershed's probability (`fdp.tif`), standard error (`se.tif`) and per-driv
 RUN's watersheds into group "0" of the flood store, on their shared EPSG:5070 100 m grid cropped
 to their union:
 
-    fdp              (y, x)          float32  probability of flood damage
-    fdp_se           (y, x)          float32  standard error of fdp (infinitesimal jackknife)
-    contribution     (driver, y, x)  int16    change in fdp credited to each driver, in steps
-                                              of scale_factor; per cell, the watershed's
-                                              baseline + the sum over drivers = fdp
-    dominant_driver  (y, x)          uint8    driver with the largest contribution
+    fdp              (y, x)          int16  probability of flood damage
+    fdp_se           (y, x)          int16  standard error of fdp (infinitesimal jackknife)
+    contribution     (driver, y, x)  int16  change in fdp credited to each driver; per cell,
+                                            the watershed's baseline + the sum over drivers = fdp
+    dominant_driver  (y, x)          uint8  driver with the largest contribution
 
-The `driver` coordinate is the driver's index; its flag_meanings name them in order. Missing
-data is NaN in the floats and _FillValue in the integers. Group attributes carry the driver
-order, each watershed's baseline and the run. One band of one watershed is in memory at a time,
+The first three are packed in steps of STEP (scale_factor), with fill NODATA. The `driver` coordinate is the
+driver's index; its flag_meanings name them in order. Missing data is each array's _FillValue.
+Group attributes carry the driver order, each watershed's baseline and the run. One band of one watershed is in memory at a time,
 so CONUS fits a small VM.
 """
 
@@ -47,8 +46,15 @@ FDP = 'fdp'
 SE = 'fdp_se'
 CONTRIBUTION = 'contribution'
 DOMINANT = 'dominant_driver'
-NODATA = -32768  # contributions.tif's nodata, kept as contribution's fill
+STEP = 1e-4  # contributions.tif's scale
+NODATA = -32768  # contributions.tif's nodata
 NO_DRIVER = 255
+PACKED = {
+    'dtype': 'int16',
+    'scale_factor': STEP,
+    '_FillValue': NODATA,
+    'fill_value': NODATA,  # zarr's, for chunks never written
+}
 CHECK_CELLS = 1000  # per watershed, read back from the store for the sum identity
 
 
@@ -108,13 +114,12 @@ def union_grid(sheds: list[Watershed]) -> Grid:
 
 def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.Dataset:
     """All-missing dataset on `grid`, lazily, so writing it stores only metadata and coordinates.
-    Its encoding packs contribution as contributions.tif does."""
+    Its encoding packs fdp, fdp_se and contribution as contributions.tif does."""
     drivers = sheds[0].meta['drivers']
     if any(s.meta['drivers'] != drivers for s in sheds):
         raise ValueError('watersheds disagree on driver order')
-    scale = sheds[0].meta['scale']
-    if any((s.meta['scale'], s.meta['nodata']) != (scale, NODATA) for s in sheds):
-        raise ValueError(f'watersheds disagree on contribution scale or nodata ({NODATA})')
+    if any((s.meta['scale'], s.meta['nodata']) != (STEP, NODATA) for s in sheds):
+        raise ValueError(f'contributions.tif scale or nodata is not {STEP} or {NODATA}')
     t, (ny, nx) = grid.transform, grid.shape
 
     def empty(dims: tuple[str, ...], attrs: dict) -> tuple:
@@ -146,12 +151,8 @@ def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.
             'attribution': sheds[0].meta['method'],
         },
     )
-    ds[CONTRIBUTION].encoding = {
-        'dtype': 'int16',
-        'scale_factor': scale,
-        '_FillValue': NODATA,
-        'fill_value': NODATA,  # zarr's, for chunks never written
-    }
+    for name in (FDP, SE, CONTRIBUTION):
+        ds[name].encoding = PACKED
     return attach_geozarr_metadata(ds.proj.assign_crs(spatial_ref=CRS).proj.write_crs_info())
 
 
@@ -197,6 +198,17 @@ def _read_band(cfg: StorageConfig, s: Watershed, file: str, band: int) -> np.ma.
         return src.read(band, masked=True)
 
 
+def _pack(values: np.ma.MaskedArray, name: str, huc: str) -> np.ma.MaskedArray:
+    """fdp or fdp_se in int16 steps of STEP."""
+    values = np.ma.masked_invalid(values)
+    steps = np.ma.round(values.astype('float64') / STEP)
+    top = np.iinfo('int16').max
+    # se_fdp.R floors the calibrated variance at 0 and has no upper bound
+    if steps.count() and (steps.min() < 0 or steps.max() > top):
+        raise ValueError(f'HUC {huc}: {name} outside [0, {top * STEP:g}]')
+    return np.ma.array(steps.filled(NODATA).astype('int16'), mask=np.ma.getmaskarray(steps))
+
+
 def _is_set(values: np.ndarray, fill) -> np.ndarray:
     return np.isfinite(values) if np.isnan(fill) else values != fill
 
@@ -226,22 +238,20 @@ def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray
     """Per watershed, at `cells` (rows, cols): every layer is set, baseline + contributions = fdp
     and dominant_driver is the largest contribution."""
     contrib = group[CONTRIBUTION]
-    n, scale = contrib.shape[0], contrib.attrs['scale_factor']
+    n = contrib.shape[0]
     fails = []
     for s in sheds:
         rows, cols = cells[s.huc]
-        p = group[FDP].vindex[rows, cols]
+        p = group[FDP].vindex[rows, cols] * STEP
         se = group[SE].vindex[rows, cols]
         raw = contrib.vindex[np.arange(n)[:, None], rows[None], cols[None]]
         dominant = group[DOMINANT].vindex[rows, cols]
-        if not (np.isfinite(se).all() and (raw != NODATA).all()):
+        if (se == NODATA).any() or (raw == NODATA).any():
             fails.append(f'HUC {s.huc}: fdp_se or a contribution missing where fdp is set')
             continue
-        # se_fdp.R floors the calibrated variance at 0 and has no upper bound
-        if se.min() < 0:
-            fails.append(f'HUC {s.huc}: negative fdp_se')
-        residual = np.abs(p - s.meta['baseline'] - raw.sum(axis=0, dtype='float64') * scale).max()
-        if residual > n * scale + 1e-6:
+        residual = np.abs(p - s.meta['baseline'] - raw.sum(axis=0, dtype='float64') * STEP).max()
+        # each contribution and fdp are rounded to their steps
+        if residual > (n + 0.5) * STEP + 1e-6:
             fails.append(f'HUC {s.huc}: baseline + contributions off fdp by {residual:.1e}')
         if (dominant != raw.argmax(axis=0)).any():
             fails.append(f'HUC {s.huc}: dominant_driver is not the largest contribution')
@@ -282,6 +292,8 @@ def score(
         print(f'{name}{list(key)}: {len(sheds)} watersheds')
         for s in sheds:
             values = _read_band(cfg, s, file, band)
+            if name in (FDP, SE):
+                values = _pack(values, name, s.huc)
             if name == FDP:
                 r, c = _sample_cells(~np.ma.getmaskarray(values), rng)
                 cells[s.huc] = (r + grid.offsets[s.huc][0], c + grid.offsets[s.huc][1])
