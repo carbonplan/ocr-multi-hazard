@@ -13,7 +13,6 @@ coiled run --vm-type r8g.4xlarge --region us-west-2 --no-credential-forwarding p
 """
 
 import hashlib
-import json
 import tempfile
 import urllib.request
 from collections.abc import Mapping
@@ -26,7 +25,6 @@ import duckdb
 import geoparquet_lod
 import obstore
 import typer
-from geoparquet_lod.thinning import describe
 
 from ocr.buildings import CONUS
 from ocr.config import StorageConfig
@@ -44,16 +42,12 @@ LICENSE = 'Public domain (US Government work)'
 # Past z11 the writer makes millions of copies of polygons that straddle tile edges.
 ZOOMS = list(range(12))
 # Zoom from which every row is shown, whatever the thinning says. 4 is what 'auto' picked on the real data, but
-# only an explicit int forces it (with importance() thinning, auto still thinned rows below z9). Provisional
-# until the thinning is chosen.
+# only an explicit int forces it. geoparquet-lod doesn't record it, so processing_metadata does.
 COMPLETE_FROM = 4
 # tippecanoe's --drop-smallest-as-needed, which the old PMTiles pipeline used. Swap it here.
 THINNING = geoparquet_lod.drop_smallest()
-# describe() only exposes the function's name ('thin'), so name the strategy here; keep it in step with THINNING.
-THINNING_LABEL = 'drop_smallest()'
-# The same fields the old PMTiles carried, so the web port is a format swap. The writer carries only
-# integers, floats, bools and strings, which is why ig_date stays the published string.
-CARRY = ['event_id', 'incid_name', 'incid_type', 'ig_date', 'year', 'burnbndac', 'asmnt_type']
+# Fields copied into the overviews for styling; the web reads the rest from the rows.
+CARRY = ['year']
 # pyproject.toml [tool.setuptools_scm] fallback_version: what a build without repository metadata reports.
 SCM_FALLBACK_VERSION = '999'
 # 1e-6 degrees is ~0.1 m.
@@ -90,29 +84,18 @@ def source_metadata(
     }
 
 
-def lod_revision() -> str:
-    """Commit geoparquet-lod was installed from; marked unknown (with its version) when pip recorded none."""
-    dist = importlib_metadata.distribution('geoparquet-lod')
-    direct_url = dist.read_text('direct_url.json')
-    commit = json.loads(direct_url).get('vcs_info', {}).get('commit_id') if direct_url else None
-    return commit or f'unknown (version {dist.version})'
-
-
 def ocr_version() -> str:
+    """The ocr version, whose commit also pins geoparquet-lod in pyproject.toml."""
     version = importlib_metadata.version('ocr')
     return f'unknown ({version})' if version == SCM_FALLBACK_VERSION else version
 
 
 def processing_metadata() -> dict[str, str]:
-    """The settings and code versions that shaped the output, so a file is self-describing"""
+    """What shaped the output that geoparquet-lod doesn't already record (it writes zooms, carried fields and thinning)."""
     return {
         'mtbs_ocr_version': ocr_version(),
-        'mtbs_geoparquet_lod_rev': lod_revision(),
         'mtbs_simplify_tolerance': str(SIMPLIFY_TOLERANCE),
-        'mtbs_zooms': f'{ZOOMS[0]}-{ZOOMS[-1]}',
         'mtbs_complete_from': str(COMPLETE_FROM),
-        'mtbs_thinning': json.dumps({'label': THINNING_LABEL} | describe(THINNING)),
-        'mtbs_carry': json.dumps(CARRY),
     }
 
 
@@ -137,7 +120,7 @@ def perimeters(con: duckdb.DuckDBPyConnection, source: str) -> duckdb.DuckDBPyRe
         f"""
         SELECT *, {bbox_sql('geometry')} AS bbox FROM (
             SELECT event_id, incid_name, incid_type,
-                   ig_date,
+                   ig_date,  -- the published string, as in the old PMTiles
                    year(CAST(ig_date AS DATE)) AS year,
                    burnbndac, asmnt_type,
                    {geometry} AS geometry

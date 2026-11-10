@@ -162,34 +162,7 @@ def test_output_key_dated_from_last_modified_else_today(subtests):
             assert mtbs.key_for(mtbs.source_date(header, today=today)) == expected
 
 
-def test_processing_metadata_records_code_versions(monkeypatch, subtests):
-    meta = mtbs.processing_metadata()
-    for key in ('mtbs_ocr_version', 'mtbs_geoparquet_lod_rev'):
-        with subtests.test(case=key):
-            assert meta[key]
-
-    class Dist:
-        version = '0.1.0'
-
-        def __init__(self, direct_url):
-            self.direct_url = direct_url
-
-        def read_text(self, name):
-            return self.direct_url
-
-    vcs = '{"url": "u", "vcs_info": {"vcs": "git", "commit_id": "abc123"}}'
-    cases = {
-        'vcs_commit': (vcs, 'abc123'),
-        'no_direct_url': (None, 'unknown (version 0.1.0)'),
-        'no_vcs_info': ('{"url": "file:///x"}', 'unknown (version 0.1.0)'),
-    }
-    for case, (direct_url, expected) in cases.items():
-        monkeypatch.setattr(
-            mtbs.importlib_metadata, 'distribution', lambda name, d=direct_url: Dist(d)
-        )
-        with subtests.test(case=case):
-            assert mtbs.lod_revision() == expected
-
+def test_ocr_version_marked_unknown_on_scm_fallback(monkeypatch, subtests):
     versions = {
         'scm_hash': ('1.1.0.post31+ga48e41f94.d20261105', '1.1.0.post31+ga48e41f94.d20261105'),
         'scm_fallback': ('999', 'unknown (999)'),
@@ -264,23 +237,13 @@ def test_write_local_builds_geoparquet_and_overviews_from_zipped_shapefile(shape
     lod_meta = json.loads(kv['geo'])[geoparquet_lod.LOD_KEY]
     assert {t for (t,) in types} <= {'POLYGON', 'MULTIPOLYGON'}
     assert kv['mtbs_sha256'] == 'deadbeef'
-    assert kv['mtbs_ocr_version'] and kv['mtbs_geoparquet_lod_rev']
-    assert (kv['mtbs_simplify_tolerance'], kv['mtbs_zooms'], kv['mtbs_complete_from']) == (
-        '1e-06',
-        '0-11',
-        str(mtbs.COMPLETE_FROM),
-    )
-    assert json.loads(kv['mtbs_carry']) == mtbs.CARRY
-    assert json.loads(kv['mtbs_thinning'])['label'] == mtbs.THINNING_LABEL
-    assert [a['name'] for a in lod_meta['attributes']] == [
-        'event_id',
-        'incid_name',
-        'incid_type',
-        'ig_date',
-        'year',
-        'burnbndac',
-        'asmnt_type',
-    ]
+    assert {k: v for k, v in kv.items() if k.startswith('mtbs_') and k != 'mtbs_sha256'} == {
+        'mtbs_ocr_version': mtbs.ocr_version(),
+        'mtbs_simplify_tolerance': '1e-06',
+        'mtbs_complete_from': str(mtbs.COMPLETE_FROM),
+    }
+    assert [a['name'] for a in lod_meta['attributes']] == ['year']
+    assert lod_meta['thinning']['name'].startswith('drop_smallest(')
     assert lod_meta['zooms'][-1] == 11
 
 
