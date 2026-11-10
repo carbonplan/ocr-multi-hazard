@@ -21,7 +21,8 @@ def write_multiscales(
 ) -> str:
     """Write multiscale levels 1..N over the base raster in group "0" and commit.
 
-    `overwrite` first drops the existing levels (every group but "0"), so settings can change.
+    `overwrite` first drops the existing levels (numbered groups but "0"), so settings can
+    change; other groups are kept.
     `derived` maps variables computed from a level's others to the function that writes one
     into a level group; those in group "0" are not coarsened, but written on each new level from
     its coarsened variables. Extra kwargs go to `topozarr.create_pyramid`. Returns the snapshot id.
@@ -29,7 +30,7 @@ def write_multiscales(
     session = repo.writable_session(branch)
     if overwrite:
         root = zarr.open_group(session.store, mode='r+')
-        for name in [n for n in root.group_keys() if n != '0']:
+        for name in [n for n in root.group_keys() if n.isdigit() and n != '0']:
             del root[name]
         root.attrs.pop('multiscales', None)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)

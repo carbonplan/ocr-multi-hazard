@@ -10,7 +10,7 @@ import zarr
 
 from ocr import stages
 from ocr.config import OutputPaths, Risk, StorageConfig
-from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, RUNS, SE, score
+from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, POINT, RUNS, SE, VALUES, score
 
 DRIVERS = ['floodplain', 'hand', 'roads']
 NODATA = -32768
@@ -85,10 +85,10 @@ def test_score_reads_only_the_hucs_given(root: Path) -> None:
     assert ds.attrs['hucs'] == ['05'] and dict(ds.sizes) == {'driver': 3, 'y': 44, 'x': 56}
 
 
-def _open() -> xr.Dataset:
+def _open(group: str = '0') -> xr.Dataset:
     repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
     session = repo.readonly_session('main')
-    return xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
+    return xr.open_zarr(session.store, group=group, consolidated=False, chunks=None)
 
 
 def test_score_mosaics_watersheds(root: Path) -> None:
@@ -119,6 +119,12 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     np.testing.assert_array_equal(np.isfinite(ds[SE].values), np.isfinite(fdp))
     dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(np.isfinite(fdp))
     np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
+
+    point = _open(POINT)[VALUES]
+    names = [FDP, SE, *(f'{CONTRIBUTION}_{d}' for d in DRIVERS)]
+    assert point.layer.attrs['flag_meanings'].split() == names
+    layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
+    np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
 
 
 def test_score_refuses_existing_store(root: Path) -> None:
@@ -168,10 +174,11 @@ def test_shifted_ancillary_raster_fails(root: Path) -> None:
 def test_pyramid_stage_on_refit_store(root: Path) -> None:
     _write_run(root)
     _score()
-    stages.pyramid(stages.RISKS[Risk.FLOOD], OUT, overwrite=False, levels=3)
+    stages.pyramid(stages.RISKS[Risk.FLOOD], OUT, overwrite=True, levels=3)
     repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
     session = repo.readonly_session('main')
     level1 = xr.open_zarr(session.store, group='1', consolidated=False, chunks=None)
+    assert POINT in zarr.open_group(session.store, mode='r')  # overwrite drops levels only
     assert dict(level1.sizes) == {'driver': 3, 'y': 32, 'x': 48}
     assert set(level1.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
     assert zarr.open_group(session.store, path='1', mode='r')[CONTRIBUTION].dtype == 'int16'

@@ -160,8 +160,12 @@ watersheds of the run it pins (`RUN`, `DISTANCE`) into group "0" of
 `scale_factor` 1e-4, fill -32768) and `dominant_driver` (uint8, the argmax of
 `contribution`, 255 for no data). It reads one band of one watershed at a time,
 so it needs no large VM, and checks the sum identity and dominant driver at
-sampled cells of each watershed before committing. `pyramid` averages the
-others and recomputes `dominant_driver` on each level; `buildings` and
+sampled cells of each watershed before committing. Group `point` repeats all
+13 layers at full resolution as one `values(layer, y, x)` int16 array in
+13 x 32 x 32 chunks, so a click on any point reads every layer in one small
+request; the map tiles read group "0" and the pyramid levels. `pyramid`
+averages group "0"'s layers but recomputes `dominant_driver` on each level;
+`buildings` and
 `regions` then run as for any risk:
 
 ```bash
