@@ -69,9 +69,9 @@ graph TB
 
 ## Raster (tensor) datasets
 
-Raster datasets are gridded geospatial layers stored at 30m resolution in EPSG:4326 (WGS84) projection. These datasets are organized by region and stored in the Icechunk format.
+Raster datasets are gridded geospatial layers stored in the Icechunk format. Fire's are at 30m resolution in EPSG:4326 (WGS84), organized by region; flood's are [below](#flood-risk-variables).
 
-### Spatial characteristics
+### Fire spatial characteristics
 
 | Property           | Value                  |
 | ------------------ | ---------------------- |
@@ -126,7 +126,73 @@ The `wind_direction` coordinate contains 8 direction labels: `['N', 'NE', 'E', '
 - Values sum to 1.0 for all pixels (normalized probability distribution)
 - Derived from CONUS404 data (Rasmussen et al, 2023) using 99th percentile Fosberg Fire Weather Index (FFWI) as threshold
 
-### Data processing flow
+### Flood risk variables
+
+Flood risk is CarbonPlan's refit of the USGS Flood Damage Probability (FDP) model ([USGS data release](https://doi.org/10.5066/P954TTQN)), one random forest per HUC-2 watershed, mosaicked into one store.
+
+| Property           | Value                                               |
+| ------------------ | --------------------------------------------------- |
+| **Resolution**     | 100m                                                |
+| **Projection**     | EPSG:5070 (NAD83 / CONUS Albers)                    |
+| **Extent**         | CONUS (HUC-2 watersheds 01–18)                      |
+| **Storage Format** | Icechunk (Zarr-based), `output/flood/v{version}/store.icechunk` |
+
+#### Groups
+
+| Group       | Contents                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| `0`         | Full-resolution variables, chunked for map tiles                                                              |
+| `1` ... `N` | The same variables averaged 2× per level for the map; `dominant_driver` is recomputed from each level's `contribution` |
+| `point`     | Every variable at full resolution in one array, chunked for reading one location                             |
+
+#### Core risk variables
+
+`fdp`, `fdp_se` and `contribution` are stored as int16 with `scale_factor` 1e-4 and `_FillValue` -32768; xarray decodes them to floats with NaN.
+
+| Variable          | Type  | Dimensions     | Units         | Description                                                                                                                 |
+| ----------------- | ----- | -------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `fdp`             | int16 | (y, x)         | dimensionless | Probability of flood damage                                                                                                 |
+| `fdp_se`          | int16 | (y, x)         | dimensionless | Standard error of `fdp` (infinitesimal jackknife)                                                                           |
+| `contribution`    | int16 | (driver, y, x) | dimensionless | Change in `fdp` credited to each driver (Saabas attribution). Per cell, the watershed's baseline + the sum over drivers = `fdp` |
+| `dominant_driver` | uint8 | (y, x)         | -             | Index of the driver with the largest `contribution`; 255 where missing                                                      |
+
+#### Drivers
+
+The `driver` coordinate indexes the model's predictors; its `flag_meanings` attribute and the group's `drivers` attribute name them in order.
+
+| Index | Name         | Description                    |
+| ----- | ------------ | ------------------------------ |
+| 0     | `floodplain` | Within the 100-year floodplain |
+| 1     | `distwater`  | Distance to stream             |
+| 2     | `elevation`  | Elevation                      |
+| 3     | `hand`       | Height above nearest drainage  |
+| 4     | `nlcd`       | Land cover                     |
+| 5     | `pcurv`      | Profile curvature              |
+| 6     | `hydric`     | Hydric soils                   |
+| 7     | `twi`        | Topographic wetness index      |
+| 8     | `channel`    | Channelization                 |
+| 9     | `roads`      | Road density                   |
+| 10    | `m3dp`       | Maximum 3-day precipitation    |
+
+#### Point group
+
+| Variable | Type  | Dimensions    | Description                                                                                                                   |
+| -------- | ----- | ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `values` | int16 | (layer, y, x) | `fdp`, `fdp_se`, then `contribution_{driver}` for each driver, packed as above; the `layer` coordinate's `flag_meanings` names them |
+
+Chunks are 13 × 32 × 32, so reading every value at one location fetches a single ~26 KB chunk.
+
+#### Group attributes
+
+| Attribute     | Description                                                      |
+| ------------- | ---------------------------------------------------------------- |
+| `drivers`     | Driver names, in `driver` order                                  |
+| `baselines`   | Each watershed's baseline probability, keyed by HUC-2 code       |
+| `hucs`        | Watersheds in the store                                          |
+| `run`         | Model run, e.g. `noaa-200612-202512` (NOAA reports, Dec 2006–Dec 2025) |
+| `attribution` | Attribution method                                               |
+
+### Fire data processing flow
 
 ```mermaid
 %%{init: {'theme':'neutral', 'themeVariables': {'primaryColor':'#2563eb','primaryTextColor':'#1f2937','primaryBorderColor':'#3b82f6','lineColor':'#6b7280','secondaryColor':'#7c3aed','tertiaryColor':'#10b981','background':'#ffffff','mainBkg':'#f3f4f6','secondBkg':'#e5e7eb','tertiaryBkg':'#d1d5db','primaryTextColor':'#111827','lineColor':'#6b7280','textColor':'#374151','mainContrastColor':'#1f2937','darkMode':false}}}%%
@@ -184,7 +250,7 @@ Vector datasets contain building-level risk samples stored as a consolidated Geo
 
 #### Risk attribute columns
 
-Vector datasets contain the same risk variables as raster datasets, sampled at each building location:
+Vector datasets contain the same risk variables as raster datasets, sampled at each building location. Fire:
 
 | Column          | Type    | Description                                                                        |
 | --------------- | ------- | ---------------------------------------------------------------------------------- |
@@ -196,6 +262,15 @@ Vector datasets contain the same risk variables as raster datasets, sampled at e
 | `crps_scott`    | float32 | Conditional risk to potential structures (Scott et al., 2024) at building location |
 | `bp_2011_riley` | float32 | Annual burn probability ~2011 (Riley et al, 2025) at building location             |
 | `bp_2047_riley` | float32 | Annual burn probability ~2047 (Riley et al, 2025) at building location             |
+
+Flood:
+
+| Column                  | Type    | Description                                                                          |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `fdp`                   | float32 | Probability of flood damage at building location                                     |
+| `fdp_se`                | float32 | Standard error of `fdp` at building location                                         |
+| `contribution_{driver}` | float32 | One column per [driver](#drivers): change in `fdp` credited to it at building location |
+| `dominant_driver`       | uint8   | Index of the driver with the largest contribution at building location               |
 
 #### Region column
 
@@ -214,7 +289,7 @@ still filter on `bbox` without selecting it.
 | --------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `bbox`    | struct | Bounding box covering (float32, rounded outward), with page statistics                                                                 |
 | `hilbert` | int64  | Hilbert index of each building's tile, the file's sort order                                                                           |
-| `lod`     | struct | Simplified geometry for each overview zoom, with `rps_2011` and `rps_2047` at half precision, in the [geoparquet-lod][lod] packed form |
+| `lod`     | struct | Simplified geometry for each overview zoom, with `rps_2011` and `rps_2047` (flood: `fdp`) at half precision, in the [geoparquet-lod][lod] packed form |
 
 [lod]: https://github.com/Shane98c/geoparquet-lod
 
@@ -252,7 +327,7 @@ This single-file format enables:
 
 Regional statistics are published as GeoParquet, one dataset per region level, with each region's full
 TIGER geometry. Each region gets `building_count`, plus `{var}_mean`, `{var}_median` and `{var}_missing`
-(NULL or NaN count) for every building value and `{var}_hist` for the risk's histogram variables.
+(NULL or NaN count) for every building value except class codes (flood's `dominant_driver`), and `{var}_hist` for the risk's histogram variables.
 Buildings roll up from their block `GEOID`, so levels nest. The web map reads its region statistics from these files.
 
 ### Layout
@@ -314,6 +389,9 @@ Overture release.
 | Conditional risk to potential structures (cRPS) | [0, 100]       | Risk of loss [%] to a hypothetical structure if it were to burn                                  |
 | Burn probability (BP)                           | [0, 1]         | Annual likelihood [-] of a pixel burning                                                         |
 | Wind Distribution                               | [0, 1]         | Sums to 1.0 per pixel (normalized probability distribution across 8 cardinal/ordinal directions) |
+| Flood damage probability (FDP)                  | [0, 1]         | Likelihood [-] that a location has had flood damage                                              |
+| FDP standard error                              | >= 0           | No upper bound from the model; the store holds up to 3.2767 and score fails above it             |
+| Driver contribution                             | [-1, 1]        | Baseline + contributions = FDP within 1.15e-3 (11 drivers + FDP, each rounded to 1e-4)           |
 
 ### Quality checks
 
