@@ -10,6 +10,7 @@ import zarr
 
 from ocr import stages
 from ocr.config import OutputPaths, Risk, StorageConfig
+from ocr.risks.flood import refit
 from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, POINT, RUNS, SE, VALUES, score
 
 DRIVERS = ['floodplain', 'hand', 'roads']
@@ -123,6 +124,19 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     point = _open(POINT)[VALUES]
     names = [FDP, SE, *(f'{CONTRIBUTION}_{d}' for d in DRIVERS)]
     assert point.layer.attrs['flag_meanings'].split() == names
+    layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
+    np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
+
+
+def test_point_group_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 64 x 96 cells in 8-cell shards, copied in 32-cell blocks with partial edges.
+    monkeypatch.setattr(refit, 'POINT_SHARD', 8)
+    monkeypatch.setattr(refit, 'POINT_CHUNK', 4)
+    _write_run(root)
+    _score()
+    ds = _open()
+    point = _open(POINT)[VALUES]
+    assert point.encoding['shards'] == (5, 8, 8) and point.encoding['chunks'] == (5, 4, 4)
     layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
     np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
 
