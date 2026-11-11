@@ -9,8 +9,11 @@ from upath import UPath
 from ocr.duck import duckdb_connect
 
 
-def write_geoparquet(tbl: pa.Table | pa.RecordBatchReader, out: str | Path) -> None:
-    """Save `tbl` as GeoParquet (local path or s3://), keeping its metadata. A reader streams."""
+def write_geoparquet(
+    tbl: pa.Table | pa.RecordBatchReader, out: str | Path, *, zstd_level: int | None = None
+) -> None:
+    """Save `tbl` as GeoParquet (local path or s3://), keeping its metadata. A reader streams.
+    `zstd_level` compresses with zstd at that level; DuckDB's default otherwise."""
     meta = {k.decode(): v.decode() for k, v in (tbl.schema.metadata or {}).items()}
     upath = UPath(out)
     local = upath.protocol in ('', 'file')
@@ -23,19 +26,28 @@ def write_geoparquet(tbl: pa.Table | pa.RecordBatchReader, out: str | Path) -> N
         con.register('tbl', tbl)
         # KV_METADATA needs a non-empty STRUCT; {} binds as a MAP and errors.
         kv = ', KV_METADATA $meta' if meta else ''
+        zstd = f', COMPRESSION zstd, COMPRESSION_LEVEL {int(zstd_level)}' if zstd_level else ''
         con.execute(
-            f"COPY tbl TO $out (FORMAT parquet, GEOPARQUET_VERSION 'V2'{kv})",
+            f"COPY tbl TO $out (FORMAT parquet, GEOPARQUET_VERSION 'V2'{kv}{zstd})",
             {'out': str(dest)} | ({'meta': meta} if meta else {}),
         )
     if local:
         dest.replace(upath.path)
 
 
-def write_relation(rel: duckdb.DuckDBPyRelation, meta: dict[str, str], out: str | Path) -> None:
+def write_relation(
+    rel: duckdb.DuckDBPyRelation,
+    meta: dict[str, str],
+    out: str | Path,
+    *,
+    zstd_level: int | None = None,
+) -> None:
     """Stream `rel` to GeoParquet with `meta`. Call inside its connection: the reader dies when it closes."""
     reader = rel.to_arrow_reader()
     write_geoparquet(
-        pa.RecordBatchReader.from_batches(reader.schema.with_metadata(meta), reader), out
+        pa.RecordBatchReader.from_batches(reader.schema.with_metadata(meta), reader),
+        out,
+        zstd_level=zstd_level,
     )
 
 
