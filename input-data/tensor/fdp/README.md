@@ -18,9 +18,8 @@ see [the validation and rerun specification](RERUN_SPEC.md);
 [Retraining](#retraining) refits the model.
 
 The executed [local validation notebook](validation-2026-10-15/validation.ipynb)
-compares the frozen raster with June 2020–December 2025 NOAA reports. An
-[HTML version](validation-2026-10-15/validation.html) and a
-[run record](validation-2026-10-15/README.md) accompany the results, limitations,
+compares the frozen raster with June 2020–December 2025 NOAA reports. A
+[run record](validation-2026-10-15/README.md) accompanies the results, limitations,
 input hashes and reproducible local validation script.
 
 ## Retraining
