@@ -1,0 +1,460 @@
+"""CHAZ forcing from ERA5, one year at a time: the files CHAZ's downscaling reads.
+
+Ports the CHAZ pre-processing tutorial (github.com/cl3225/CHAZ, Tutorial_chaz_pre.ipynb) and
+writes its file layout, on the tutorial's 2-degree grid (cell centres on odd latitudes):
+
+    TCGI_CRH_PI_{year}.nc, TCGI_SD_PI_{year}.nc   genesis index and its inputs (tcgi.py)
+    PI_{year}.nc                                  potential intensity (vmax)
+    I_MLR_{year}.nc                               intensity predictors: 250/850 hPa winds, mean
+                                                  relative humidity at 500/700/850 hPa, PI
+    Cov_{year}_2deg.nc                            covariance of daily 250/850 hPa wind anomalies
+    A_{year}{month}.nc                            its Cholesky factor, interpolated to each day
+
+Raw ERA5 goes under S3_ROOT/inputs/era5/{year}/ with the CDS request beside each file
+(`<file>.request.json`); forcing goes under S3_ROOT/forcing/era5/{year}/.
+
+    fetch    ERA5 for a year into the cache: from S3 when it is there, else from the CDS
+    build    the forcing files for a year, from the cached ERA5
+    task      fetch, build and push one year (what each Coiled job runs; year from
+              $COILED_BATCH_TASK_INPUT)
+    launch    one Coiled batch task per year
+    manifest  merge the jobs' manifest fragments into manifest.json, on Coiled
+
+Launching needs only a Coiled login: Coiled uploads the scripts, and the VMs use the workspace's
+AWS access.
+
+Run in the `chaz` pixi environment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import calendar
+import json
+import os
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+import numpy as np
+import tcgi
+import xarray as xr
+from scipy.interpolate import interp1d
+
+HERE = Path(__file__).resolve().parent
+RAW = tcgi.ERA5
+OUT = 'forcing/era5'
+LAT = np.arange(-89.0, 90.0, 2.0)
+LON = np.arange(0.0, 360.0, 2.0)
+DAILY_TIMES = ['00:00', '06:00', '12:00', '18:00']  # daily means of 6-hourly analyses
+COV_PAIRS = [
+    'u250pu250p',
+    'u250pv250p',
+    'u250pu850p',
+    'u250pv850p',
+    'v250pv250p',
+    'v250pu850p',
+    'v250pv850p',
+    'u850pu850p',
+    'u850pv850p',
+    'v850pv850p',
+]
+
+
+def grid() -> xr.Dataset:
+    return xr.Dataset(coords={'lat': LAT, 'lon': LON})
+
+
+# --- fetch -------------------------------------------------------------------------------------
+
+
+def requests(year: int) -> dict[str, tuple[str, dict]]:
+    base = {'year': [str(year)], 'data_format': 'netcdf', 'download_format': 'unarchived'}
+    monthly = {
+        **base,
+        'product_type': ['monthly_averaged_reanalysis'],
+        'month': [f'{m:02d}' for m in range(1, 13)],
+        'time': ['00:00'],
+    }
+    pl, sl = (
+        'reanalysis-era5-pressure-levels-monthly-means',
+        'reanalysis-era5-single-levels-monthly-means',
+    )
+    out = {
+        f'{RAW}/{year}/pl_wind_025.nc': (
+            pl,
+            {
+                **monthly,
+                'pressure_level': ['250', '850'],
+                'variable': ['u_component_of_wind', 'v_component_of_wind'],
+            },
+        ),
+        f'{RAW}/{year}/sl_025.nc': (
+            sl,
+            {
+                **monthly,
+                'variable': [
+                    'sea_surface_temperature',
+                    'mean_sea_level_pressure',
+                    'surface_pressure',
+                    'total_column_water_vapour',
+                    'land_sea_mask',
+                ],
+            },
+        ),
+        f'{RAW}/{year}/pl_tq_1deg.nc': (
+            pl,
+            {
+                **monthly,
+                'variable': ['temperature', 'specific_humidity'],
+                'pressure_level': [str(p) for p in tcgi.ERA5_LEVELS],
+                'grid': ['1.0', '1.0'],
+            },
+        ),
+        f'{RAW}/{year}/pl_rh_025.nc': (
+            pl,
+            {**monthly, 'variable': ['relative_humidity'], 'pressure_level': ['500', '700', '850']},
+        ),
+    }
+    for m in range(1, 13):  # one month per request keeps each under the CDS size limit
+        out[f'{RAW}/{year}/uv_daily_2deg_{m:02d}.nc'] = (
+            'reanalysis-era5-pressure-levels',
+            {
+                **base,
+                'product_type': ['reanalysis'],
+                'month': [f'{m:02d}'],
+                'day': [f'{d:02d}' for d in range(1, calendar.monthrange(year, m)[1] + 1)],
+                'time': DAILY_TIMES,
+                'pressure_level': ['250', '850'],
+                'variable': ['u_component_of_wind', 'v_component_of_wind'],
+                'area': [89, 0, -89, 358],
+                'grid': ['2.0', '2.0'],
+            },
+        )
+    return out
+
+
+def _on_s3(key: str) -> bool:
+    return tcgi._s3().exists(f'{tcgi.S3_ROOT}/{key}')
+
+
+def fetch(year: int, workers: int = 4) -> None:
+    """Cache every raw file for `year`: from S3 if it is there, else from the CDS, with its
+    request saved beside it."""
+    import cdsapi
+
+    todo = requests(year)
+
+    def get(key):
+        local = tcgi.CACHE / key
+        if local.exists():
+            return key, 'cached'
+        if _on_s3(key):
+            tcgi.path(key)
+            return key, 's3'
+        dataset, req = todo[key]
+        local.parent.mkdir(parents=True, exist_ok=True)
+        part = local.with_name(local.name + '.part')
+        cdsapi.Client(quiet=True).retrieve(dataset, req, str(part))
+        part.rename(local)
+        local.with_name(local.name + '.request.json').write_text(
+            json.dumps(
+                {'dataset': dataset, 'request': req, 'retrieved': datetime.now(UTC).isoformat()},
+                indent=1,
+            )
+        )
+        return key, 'cds'
+
+    with ThreadPoolExecutor(workers) as pool:
+        for key, how in pool.map(get, todo):
+            print(f'{how:6s} {key}', flush=True)
+
+
+# --- build -------------------------------------------------------------------------------------
+
+
+def _monthly_winds(year: int) -> xr.Dataset:
+    w = tcgi._era5(tcgi.path(f'{RAW}/{year}/pl_wind_025.nc')).sel(lat=LAT, lon=LON)
+    return xr.Dataset(
+        {f'{c}{lev}': w[c].sel(level=lev, drop=True) for c in ('u', 'v') for lev in (250, 850)}
+    )
+
+
+def _daily_winds(year: int) -> xr.Dataset:
+    months = [tcgi._era5(tcgi.path(f'{RAW}/{year}/uv_daily_2deg_{m:02d}.nc')) for m in range(1, 13)]
+    w = xr.concat(months, 'time').sortby('time').sortby('lat').sel(lat=LAT, lon=LON)
+    w = w.resample(time='1D').mean()
+    return xr.Dataset(
+        {f'{c}{lev}': w[c].sel(level=lev, drop=True) for c in ('u', 'v') for lev in (250, 850)}
+    )
+
+
+def covariance(year: int, daily: xr.Dataset, monthly: xr.Dataset) -> xr.Dataset:
+    """Per-month covariance of daily wind anomalies from the monthly means interpolated to each day
+    (the tutorial's cell 13)."""
+    ndays = daily.sizes['time']
+    mid, start = [], 0
+    for m in range(1, 13):
+        n = calendar.monthrange(year, m)[1]
+        mid.append(int(n / 2 + start) - 1)
+        start += n
+    d = np.arange(ndays)
+    anom = {}
+    for v in ('u250', 'v250', 'u850', 'v850'):
+        clim = interp1d(
+            mid, monthly[v].values, bounds_error=False, fill_value='extrapolate', axis=0
+        )(d)
+        anom[f'{v}p'] = daily[v].values - clim
+    month = daily['time.month'].values
+    cov = {}
+    for pair in COV_PAIRS:
+        x, y = anom[pair[:5]], anom[pair[5:]]
+        out = np.empty((12,) + x.shape[1:])
+        for m in range(1, 13):
+            xm, ym = x[month == m], y[month == m]
+            n = xm.shape[0]
+            out[m - 1] = (np.mean(xm * ym, 0) - np.mean(xm, 0) * np.mean(ym, 0)) * n / (n - 1)
+        cov[pair] = (('month', 'lat', 'lon'), out)
+    ds = xr.Dataset(cov, coords={'month': np.arange(1, 13), 'lat': LAT, 'lon': LON})
+    for v in COV_PAIRS:
+        ds[v].attrs['units'] = '(m/s)^2'
+    return ds
+
+
+def _to_day(field: np.ndarray, day: date) -> np.ndarray:
+    """A monthly field at `day`, linear between mid-months (the tutorial's date_interpolation)."""
+    if day.day >= 15:
+        if day.month == 12:
+            return field[11]
+        d0, d1, i0 = (
+            datetime(day.year, day.month, 15),
+            datetime(day.year, day.month + 1, 15),
+            day.month - 1,
+        )
+    else:
+        if day.month == 1:
+            return field[0]
+        d0, d1, i0 = (
+            datetime(day.year, day.month - 1, 15),
+            datetime(day.year, day.month, 15),
+            day.month - 2,
+        )
+    r = np.interp((datetime(day.year, day.month, day.day) - d0).days, [0, (d1 - d0).days], [0, 1])
+    return field[i0] * (1 - r) + field[i0 + 1] * r
+
+
+def a_matrices(year: int, cov: xr.Dataset) -> dict[int, np.ndarray]:
+    """Lower Cholesky factors of each day's covariance, as the 10 lower-triangle entries CHAZ reads,
+    shape (10, day, lat, lon) per month (the tutorial's cell 14). The tutorial's published A files
+    hold the lower factor; its notebook code as written transposes it, zeroing the off-diagonals."""
+    c = {}
+    for v in COV_PAIRS:
+        a = cov[v].values.copy()
+        a[:, 0, :] = a[:, 1, :]
+        a[:, -1, :] = a[:, -2, :]
+        c[v] = a
+    upper = list(zip(*np.triu_indices(4)))  # COV_PAIRS order over (u250, v250, u850, v850)
+    lower = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (3, 3)]
+    out = {}
+    for m in range(1, 13):
+        days = [date(year, m, d) for d in range(1, calendar.monthrange(year, m)[1] + 1)]
+        stack = np.stack(
+            [np.stack([_to_day(c[v], d) for d in days]) for v in COV_PAIRS]
+        )  # (10, day, lat, lon)
+        mat = np.zeros(stack.shape[1:] + (4, 4))
+        for k, (i, j) in enumerate(upper):
+            mat[..., i, j] = mat[..., j, i] = stack[k]
+        chol = np.zeros_like(mat)
+        ok = np.isfinite(mat).all(axis=(-2, -1))
+        chol[ok] = np.linalg.cholesky(mat[ok])
+        out[m] = np.stack([chol[..., i, j] for i, j in lower]).astype('float32')
+    return out
+
+
+def predictors(year: int, monthly: xr.Dataset, pi: xr.DataArray) -> xr.Dataset:
+    """The intensity model's monthly predictors (the tutorial's cell 17)."""
+    rh = tcgi._era5(tcgi.path(f'{RAW}/{year}/pl_rh_025.nc')).sel(lat=LAT, lon=LON)
+    ds = monthly.copy()
+    ds['hur'] = rh['r'].sel(level=[500, 700, 850]).mean('level')
+    ds['PI'] = pi
+    return ds.drop_vars('level', errors='ignore').transpose('time', 'lat', 'lon')
+
+
+def build(year: int) -> list[str]:
+    out = tcgi.CACHE / OUT / str(year)
+    out.mkdir(parents=True, exist_ok=True)
+    x = tcgi.era5_inputs(year, grid())
+    written = []
+
+    def save(ds: xr.Dataset, name: str, **kw) -> None:
+        part = out / f'{name}.part'
+        ds.to_netcdf(part, **kw)
+        part.rename(out / name)
+        written.append(f'{OUT}/{year}/{name}')
+
+    for kind in ('CRH', 'SD'):
+        g = tcgi.tcgi(x['avor'], x[kind], x['PI'], x['vws'], kind).where(x['ocean'])
+        ds = xr.Dataset(
+            {'avor': x['avor'], 'vws': x['vws'], 'CRH': x['CRH'], 'SD': x['SD'], 'TCGI': g}
+        )
+        save(ds.drop_vars('ocean', errors='ignore'), f'TCGI_{kind}_PI_{year}.nc')
+    # PI is 0 wherever the tutorial's bilinear regrid touches land or missing SST, as TCGI is undefined
+    x['PI'] = x['PI'].where(x['ocean'], 0.0)
+    save(x[['PI']].rename(PI='vmax'), f'PI_{year}.nc')
+    monthly = _monthly_winds(year)
+    save(predictors(year, monthly, x['PI']), f'I_MLR_{year}.nc')
+    cov = covariance(year, _daily_winds(year), monthly)
+    save(cov, f'Cov_{year}_2deg.nc')
+    for m, a in a_matrices(year, cov).items():
+        ds = xr.Dataset(
+            {'A': (('Adim', 'days', 'latitude', 'longitude'), a)},
+            coords={
+                'latitude': LAT.astype('float32'),
+                'longitude': LON.astype('float32'),
+                'days': np.arange(a.shape[1], dtype='int32'),
+                'Adim': np.arange(10, dtype='int32'),
+            },
+        )
+        save(ds, f'A_{year}{m:02d}.nc', format='NETCDF3_CLASSIC')
+    return written
+
+
+# --- Coiled ------------------------------------------------------------------------------------
+
+CODE = ['tcgi.py', 'forcing.py', 'chaz_run.py']
+
+
+def task(year: int) -> None:
+    fetch(year)
+    build(year)
+    raw, forcing = (
+        tcgi.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
+        tcgi.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing'),
+    )
+    print(f'{year}: {len(raw)} raw and {len(forcing)} forcing files on S3', flush=True)
+
+
+def coiled_batch(
+    name: str,
+    script: str,
+    args: list[str],
+    years: list[int] | None = None,
+    vm_type: str = 'm8g.xlarge',
+    max_workers: int = 1,
+    spot: bool = True,
+    secrets: dict[str, str] | None = None,
+) -> list[str]:
+    """`coiled batch run <script> <args>`, mapping over `years` if given. Run from this directory
+    (run_quietly does): Coiled uploads the script and, through its API, the files the script
+    names, so the other scripts in CODE travel with it. The VMs read and write S3 with the Coiled
+    workspace's AWS access, so launching needs only a Coiled login. The scheduler gets the
+    workers' VM type, since Coiled refuses clusters that mix ARM and x86."""
+    cmd = [
+        'coiled',
+        'batch',
+        'run',
+        '--name',
+        name,
+        '--region',
+        'us-west-2',
+        '--vm-type',
+        vm_type,
+        '--scheduler-vm-type',
+        vm_type,
+        '--tag',
+        'Project=OCR',
+        '--spot-policy',
+        'spot_with_fallback' if spot else 'on-demand',
+        '--max-workers',
+        str(max_workers),
+    ]
+    if years:
+        cmd += ['--map-over-values', ','.join(map(str, years))]
+    for k, v in (secrets or {}).items():
+        cmd += ['--secret-env', f'{k}={v}']
+    return cmd + ['--', 'python', script, *args]
+
+
+def run_quietly(cmd: list[str]) -> None:
+    """Run a command with secret values redacted from the echo, and without echoing its arguments
+    on failure (CalledProcessError would)."""
+    shown = ' '.join(
+        c.split('=', 1)[0] + '=<redacted>' if c.startswith('CDSAPI_KEY=') else c for c in cmd
+    )
+    print(shown, flush=True)
+    rc = subprocess.run(cmd, cwd=HERE).returncode
+    if rc:
+        raise SystemExit(f'{cmd[0]} {cmd[1]} {cmd[2]} exited with {rc}')
+
+
+def parse_years(spec: str) -> list[int]:
+    years = []
+    for part in spec.split(','):
+        lo, _, hi = part.partition('-')
+        years.extend(range(int(lo), int(hi or lo) + 1))
+    return years
+
+
+def launch(years: list[int], vm_type: str, max_workers: int, spot: bool = True) -> None:
+    """One Coiled batch task per year; the CDS key goes as secret env vars."""
+    cds = dict(
+        line.split(':', 1)
+        for line in Path('~/.cdsapirc').expanduser().read_text().splitlines()
+        if ':' in line
+    )
+    secrets = {'CDSAPI_URL': cds['url'].strip(), 'CDSAPI_KEY': cds['key'].strip()}
+    run_quietly(
+        coiled_batch(
+            f'chaz-forcing-era5-{years[0]}-{years[-1]}',
+            'forcing.py',
+            ['task'],
+            years,
+            vm_type,
+            max_workers,
+            spot,
+            secrets,
+        )
+    )
+
+
+def launch_manifest() -> None:
+    """Merge the parallel jobs' manifest fragments, on a small Coiled VM."""
+    run_quietly(
+        coiled_batch('chaz-manifest', 'tcgi.py', ['manifest'], vm_type='m8g.medium', spot=False)
+    )
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sub = p.add_subparsers(dest='cmd', required=True)
+    for name in ('fetch', 'build'):
+        s = sub.add_parser(name)
+        s.add_argument('--year', type=int, nargs='+', required=True)
+    t = sub.add_parser('task')
+    t.add_argument('--year', type=int, default=None)
+    la = sub.add_parser('launch')
+    la.add_argument('--years', default='1981-2019')
+    la.add_argument('--vm-type', default='m8g.xlarge')
+    la.add_argument('--max-workers', type=int, default=8)
+    la.add_argument('--on-demand', action='store_true', help='on-demand VMs instead of spot')
+    sub.add_parser('manifest', help='merge manifest fragments on Coiled')
+    a = p.parse_args()
+    if a.cmd == 'fetch':
+        for y in a.year:
+            fetch(y)
+    elif a.cmd == 'build':
+        for y in a.year:
+            print('\n'.join(build(y)))
+    elif a.cmd == 'task':
+        task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']))
+    elif a.cmd == 'manifest':
+        launch_manifest()
+    else:
+        launch(parse_years(a.years), a.vm_type, a.max_workers, spot=not a.on_demand)
+
+
+if __name__ == '__main__':
+    main()
