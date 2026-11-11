@@ -9,7 +9,7 @@ import rasterio
 import xarray as xr
 import zarr
 
-from ocr import stages
+from ocr import multiscales, stages
 from ocr.config import OutputPaths, Risk, StorageConfig
 from ocr.risks.flood import refit
 from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, POINT, RUNS, SE, VALUES, score
@@ -209,7 +209,28 @@ def test_pyramid_stage_on_refit_store(root: Path) -> None:
     assert dict(level1.sizes) == {'driver': 3, 'y': 32, 'x': 48}
     assert set(level1.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
     assert zarr.open_group(session.store, path='1', mode='r')[CONTRIBUTION].dtype == 'int16'
+    # means of the valid cells under each level-1 cell; nodata never averaged in
+    level0 = _open()
+    for v in (FDP, SE, CONTRIBUTION):
+        expected = level0[v].coarsen(y=2, x=2).mean()
+        np.testing.assert_allclose(level1[v].values, expected.values, atol=SCALE)
     # from level 1's own averaged contributions
     valid = level1[CONTRIBUTION].notnull().all('driver')
     dominant = level1[CONTRIBUTION].fillna(0).argmax('driver').where(valid)
     np.testing.assert_array_equal(level1[DOMINANT].values, dominant.values)
+
+
+def test_pyramid_reads_packed_layers_packed(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # topozarr re-packs decoded floats in memory, the whole array at once
+    seen = {}
+    create = multiscales.create_pyramid
+
+    def spy(ds: xr.Dataset, **kw):
+        seen.update({name: da.dtype for name, da in ds.data_vars.items()})
+        return create(ds, **kw)
+
+    monkeypatch.setattr(multiscales, 'create_pyramid', spy)
+    _write_run(root)
+    _score()
+    stages.pyramid(stages.RISKS[Risk.FLOOD], OUT, overwrite=True, levels=2)
+    assert {seen[v] for v in (FDP, SE, CONTRIBUTION)} == {np.dtype('int16')}

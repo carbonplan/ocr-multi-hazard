@@ -34,6 +34,12 @@ def write_multiscales(
             del root[name]
         root.attrs.pop('multiscales', None)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
+    # Packed ints stay packed: topozarr re-packs decoded ones with eager, whole-array math.
+    raw = xr.open_zarr(
+        session.store, group='0', consolidated=False, chunks=None, mask_and_scale=False
+    )
+    packed = [name for name, da in ds.data_vars.items() if 'scale_factor' in da.encoding]
+    ds = ds.assign({name: raw[name].variable for name in packed})
     ds = ds.proj.assign_crs(spatial_ref=crs)
     derived = {name: write for name, write in (derived or {}).items() if name in ds}
     # One variable per write: Pyramid.write looks up each variable's array while earlier
