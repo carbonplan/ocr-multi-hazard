@@ -8,132 +8,35 @@ in the ERA5 refit of Fosu et al. (2024, doi:10.63024/dpva-2pa1):
 
 eta_850 is the 850 hPa absolute vorticity (s-1), MV the moisture variable (column relative
 humidity CRH in %, or column saturation deficit SD in kg m-2, negative), PI the Bister-Emanuel
-potential intensity (m s-1) and VWS the 200-850 hPa vector wind difference (m s-1). The rate is
+potential intensity (m s-1) and VWS the 250-850 hPa vector wind difference (m s-1). The rate is
 per month and grid cell. Fosu's b is for 1 x 1 degree boxes; the area factor scales it to the grid.
+Fosu et al. print the shear as 200-850 hPa; the tutorial's TCGI, Camargo et al. (2025,
+supplement) and Lee et al. (2020, 2023) use 250-850 hPa, and so do we.
 
-Fosu et al. give the shear as 200-850 hPa, but the tutorial's TCGI uses 250-850 hPa (as do Lee
-et al. 2023, section 2.1), and so do we.
+The CHAZ tutorial data (Zenodo 11631930) carry the TCGI for ERA5 2017 with its inputs. The
+commands below build what the review notebook docs/methods/hurricane-risk/genesis-index.ipynb
+reads (files under store.S3_ROOT):
 
-The CHAZ tutorial data (Zenodo 11631930) carry the TCGI for ERA5 2017 with its inputs; `compare`
-rebuilds both from ERA5 monthly means and writes them side by side for the review notebook
-(docs/methods/hurricane-risk/genesis-index.ipynb).
+    compare           our inputs and TCGI next to the tutorial's 2017 ones, on its grid
+    seeding           our TCGI per month, 1981-2005 and 2017, next to the storms per year in
+                      the published ERA5 track files
+    fetch-validation  the 6-hourly August 2017 temperatures the notebook tests W* against
 
-Files live under S3_ROOT (s3://carbonplan-ocr/input/hurricane/chaz) and are cached in
-CACHE with the same keys; `path` downloads a key on first use.
-
-    fetch    ERA5 monthly means from the CDS into the cache (needs ~/.cdsapirc);
-             --validation adds the August 2017 6-hourly temperatures the notebook tests
-    compare  our inputs and TCGI next to the tutorial's 2017 ones, on its 2-degree grid
-    seeding  our TCGI seeds per year, 1981-2005 and 2017, next to the seeds in the published
-             ERA5 track files (needs `fetch --year 1981 ... 2005`)
-    push      upload cached files that differ from S3 and merge them into manifest.json
-    manifest  fold parallel jobs' manifest fragments into manifest.json
-
-Run in the `chaz` pixi environment, with AWS credentials for the bucket (e.g. AWS_PROFILE).
+ERA5 itself comes from forcing.py fetch.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-S3_ROOT = os.environ.get('CHAZ_S3_ROOT', 's3://carbonplan-ocr/input/hurricane/chaz')
-CACHE = Path(os.environ.get('CHAZ_CACHE', Path.home() / '.cache' / 'ocr' / 'chaz'))
-ERA5 = 'inputs/era5'
-TUTORIAL = 'inputs/zenodo-11631930'  # CHAZ tutorial data, CC BY 4.0
-VALIDATION = 'validation/tcgi'
-SOURCES = {
-    ERA5: 'ERA5 monthly means from the CDS (tcgi.py fetch)',
-    TUTORIAL: 'CHAZ tutorial data, Zenodo 11631930 (CC BY 4.0)',
-    f'{VALIDATION}/era5-201708-6h': 'ERA5 6-hourly T, August 2017, 2-degree grid (tcgi.py fetch --validation)',
-    f'{VALIDATION}/compare_2017.nc': 'derived: tcgi.py compare',
-    f'{VALIDATION}/seeding_1981_2005': 'derived: tcgi.py seeding',
-    'forcing/era5': 'CHAZ forcing from ERA5 (forcing.py build)',
-    f'{VALIDATION}/chaz_port_2017_storms.csv': 'our CHAZ tutorial port on ERA5 2017, 40 track realizations at ratio 1.13: seeds and storms kept (Shane98c/chaz-local chaz_downscale.py)',
-}
-
-
-def _s3():
-    import s3fs
-
-    return s3fs.S3FileSystem()
-
-
-def path(key: str) -> Path:
-    """Local path of a bucket key under S3_ROOT, downloaded into CACHE on first use."""
-    local = CACHE / key
-    if not local.exists():
-        local.parent.mkdir(parents=True, exist_ok=True)
-        part = local.with_name(local.name + '.part')
-        _s3().get(f'{S3_ROOT}/{key}', str(part))
-        part.rename(local)
-    return local
-
-
-MANIFEST = 'manifest.json'
-FRAGMENTS = 'manifests'  # per-job entries from parallel jobs, folded in by `manifest`
-
-
-def _entry(local: Path, key: str) -> dict:
-    h = hashlib.sha256()
-    with open(local, 'rb') as f:
-        for block in iter(lambda: f.read(1 << 20), b''):
-            h.update(block)
-    source = next((v for k, v in SOURCES.items() if key.startswith(k)), '')
-    return {'bytes': local.stat().st_size, 'sha256': h.hexdigest(), 'source': source}
-
-
-def _remote_manifest(fs) -> dict:
-    key = f'{S3_ROOT}/{MANIFEST}'
-    return json.loads(fs.cat(key))['files'] if fs.exists(key) else {}
-
-
-def push(prefix: str = '', fragment: str | None = None) -> dict:
-    """Upload cached files under `prefix` whose checksum differs from the manifest (or that S3
-    lacks). Their entries are merged into manifest.json, or, from a parallel job, written to
-    manifests/<fragment>.json for `manifest` to merge."""
-    fs = _s3()
-    remote = _remote_manifest(fs)
-    files = {}
-
-    def keep(p: Path) -> bool:
-        return p.is_file() and not p.name.endswith('.part') and p.name != MANIFEST
-
-    for local in sorted(filter(keep, (CACHE / prefix).rglob('*'))):
-        key = str(local.relative_to(CACHE))
-        files[key] = _entry(local, key)
-        if remote.get(key, {}).get('sha256') != files[key]['sha256'] or not fs.exists(
-            f'{S3_ROOT}/{key}'
-        ):
-            fs.put(str(local), f'{S3_ROOT}/{key}')
-            print('pushed', key, flush=True)
-    if fragment:
-        with fs.open(f'{S3_ROOT}/{FRAGMENTS}/{fragment}.json', 'w') as f:
-            json.dump({'files': files}, f, indent=1)
-    else:
-        with fs.open(f'{S3_ROOT}/{MANIFEST}', 'w') as f:
-            json.dump({'files': {**remote, **files}}, f, indent=1, sort_keys=True)
-    return files
-
-
-def merge_manifest() -> int:
-    """Fold the parallel jobs' manifest fragments into manifest.json; returns the entry count."""
-    fs = _s3()
-    files = _remote_manifest(fs)
-    for frag in sorted(fs.glob(f'{S3_ROOT}/{FRAGMENTS}/*.json')):
-        files.update(json.loads(fs.cat(frag))['files'])
-    with fs.open(f'{S3_ROOT}/{MANIFEST}', 'w') as f:
-        json.dump({'files': files}, f, indent=1, sort_keys=True)
-    return len(files)
-
+from ocr.risks.hurricane import store
 
 # Fosu et al. (2024) section 2.1 prints these to two or three decimals. The digits here are
 # recovered from the tutorial's 2017 TCGI (an exact log-linear fit on its own inputs); the printed
@@ -305,118 +208,36 @@ def potential_intensity(sst_c, msl_hpa, t_c, q_gkg) -> xr.DataArray:
 # --- ERA5 ---------------------------------------------------------------------------------------
 
 
-def _retrieve(requests: dict[str, tuple[str, dict]]) -> None:
+def fetch_validation() -> None:
+    """The 6-hourly August 2017 temperatures the notebook averages W* over, in four requests to
+    stay under the CDS size limit."""
     import cdsapi
 
-    def get(key):
-        dest = CACHE / key
-        if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dataset, req = requests[key]
-            part = dest.with_name(dest.name + '.part')
-            cdsapi.Client(quiet=True).retrieve(dataset, req, str(part))
-            part.rename(dest)
-        return key
-
-    with ThreadPoolExecutor(len(requests)) as pool:
-        for key in pool.map(get, requests):
-            print('have', key, flush=True)
-
-
-def fetch(year: int, validation: bool = False) -> None:
-    """ERA5 monthly means into CACHE. For REFERENCE_YEAR the winds also carry ERA5's vorticity and
-    200 hPa, which the notebook compares against; `validation` adds the 6-hourly August 2017
-    temperatures (four requests, under the CDS size limit)."""
-    base = {
-        'product_type': ['monthly_averaged_reanalysis'],
-        'year': [str(year)],
-        'month': [f'{m:02d}' for m in range(1, 13)],
-        'time': ['00:00'],
-        'data_format': 'netcdf',
-        'download_format': 'unarchived',
-    }
-    pl, sl = (
-        'reanalysis-era5-pressure-levels-monthly-means',
-        'reanalysis-era5-single-levels-monthly-means',
-    )
-    requests = {
-        f'{ERA5}/{year}/pl_wind_025.nc': (
-            pl,
+    days = {'a': range(1, 9), 'b': range(9, 17), 'c': range(17, 25), 'd': range(25, 32)}
+    for k, ds in days.items():
+        dest = store.CACHE / f'{store.VALIDATION}/era5-201708-6h/{k}.nc'
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + '.part')
+        cdsapi.Client(quiet=True).retrieve(
+            'reanalysis-era5-pressure-levels',
             {
-                **base,
-                **(
-                    {
-                        'pressure_level': ['200', '250', '850'],
-                        'variable': ['u_component_of_wind', 'v_component_of_wind', 'vorticity'],
-                    }
-                    if year == REFERENCE_YEAR
-                    else {
-                        'pressure_level': ['250', '850'],
-                        'variable': ['u_component_of_wind', 'v_component_of_wind'],
-                    }
-                ),
-            },
-        ),
-        f'{ERA5}/{year}/sl_025.nc': (
-            sl,
-            {
-                **base,
-                'variable': [
-                    'sea_surface_temperature',
-                    'mean_sea_level_pressure',
-                    'surface_pressure',
-                    'total_column_water_vapour',
-                    'land_sea_mask',
-                ],
-            },
-        ),
-        f'{ERA5}/{year}/pl_tq_1deg.nc': (
-            pl,
-            {
-                **base,
+                'product_type': ['reanalysis'],
                 'variable': ['temperature', 'specific_humidity'],
-                'pressure_level': [str(p) for p in ERA5_LEVELS],
-                'grid': ['1.0', '1.0'],
+                'year': ['2017'],
+                'month': ['08'],
+                'day': [f'{d:02d}' for d in ds],
+                'time': ['00:00', '06:00', '12:00', '18:00'],
+                'pressure_level': [str(p) for p in ERA5_LEVELS if p >= 100],
+                'area': [89, 0, -89, 358],
+                'grid': ['2.0', '2.0'],
+                'data_format': 'netcdf',
+                'download_format': 'unarchived',
             },
-        ),
-    }
-    if validation:
-        days = {'a': range(1, 9), 'b': range(9, 17), 'c': range(17, 25), 'd': range(25, 32)}
-        for k, ds in days.items():
-            requests[f'{VALIDATION}/era5-201708-6h/{k}.nc'] = (
-                'reanalysis-era5-pressure-levels',
-                {
-                    'product_type': ['reanalysis'],
-                    'variable': ['temperature', 'specific_humidity'],
-                    'year': ['2017'],
-                    'month': ['08'],
-                    'day': [f'{d:02d}' for d in ds],
-                    'time': ['00:00', '06:00', '12:00', '18:00'],
-                    'pressure_level': [str(p) for p in ERA5_LEVELS if p >= 100],
-                    'area': [89, 0, -89, 358],
-                    'grid': ['2.0', '2.0'],
-                    'data_format': 'netcdf',
-                    'download_format': 'unarchived',
-                },
-            )
-    _retrieve(requests)
-
-
-def _era5(path: Path) -> xr.Dataset:
-    ds = xr.open_dataset(path)
-    ds = ds.rename(
-        {
-            k: v
-            for k, v in {
-                'latitude': 'lat',
-                'longitude': 'lon',
-                'valid_time': 'time',
-                'pressure_level': 'level',
-            }.items()
-            if k in ds.dims or k in ds.coords
-        }
-    )
-    return ds.drop_vars([v for v in ('number', 'expver') if v in ds.coords], errors='ignore')
+            str(part),
+        )
+        part.rename(dest)
 
 
 def ocean(sst: xr.DataArray, grid: xr.Dataset) -> xr.DataArray:
@@ -432,23 +253,19 @@ def ocean(sst: xr.DataArray, grid: xr.Dataset) -> xr.DataArray:
     return ok.sel(lat=grid['lat'].astype(float), lon=grid['lon'].astype(float))
 
 
-def tutorial(name: str) -> xr.Dataset:
-    return xr.open_dataset(path(f'{TUTORIAL}/{name}'), decode_times=False)
-
-
 def tutorial_grid() -> xr.Dataset:
-    return tutorial('TCGI_CRH_PI_2017.nc')
+    return store.tutorial('TCGI_CRH_PI_2017.nc')
 
 
 def era5_inputs(year: int, grid: xr.Dataset) -> xr.Dataset:
     """Our TCGI inputs on the tutorial's grid. Its 2-degree centres (odd latitudes, even
     longitudes) are nodes of the ERA5 grids, so a bilinear regrid there is a point sample."""
     at = {'lat': grid['lat'].astype(float), 'lon': grid['lon'].astype(float)}
-    wind_native = _era5(path(f'{ERA5}/{year}/pl_wind_025.nc'))
+    wind_native = store.open_era5(store.path(f'{store.ERA5}/{year}/pl_wind_025.nc'))
     wind = wind_native.sel(at)
-    sl_native = _era5(path(f'{ERA5}/{year}/sl_025.nc'))
+    sl_native = store.open_era5(store.path(f'{store.ERA5}/{year}/sl_025.nc'))
     sl = sl_native.sel(at)
-    tq = _era5(path(f'{ERA5}/{year}/pl_tq_1deg.nc')).sel(at)
+    tq = store.open_era5(store.path(f'{store.ERA5}/{year}/pl_tq_1deg.nc')).sel(at)
 
     out = xr.Dataset()
     w850 = wind_native.sel(level=850)
@@ -481,12 +298,12 @@ def _months(ds: xr.Dataset, dim: str) -> xr.Dataset:
     return ds.rename({dim: 'month'}).assign_coords(month=np.arange(1, 13))
 
 
-def compare(out: Path = CACHE / VALIDATION / f'compare_{REFERENCE_YEAR}.nc') -> Path:
+def compare(out: Path = store.CACHE / store.VALIDATION / f'compare_{REFERENCE_YEAR}.nc') -> Path:
     grid = tutorial_grid()
     ours = _months(era5_inputs(REFERENCE_YEAR, grid), 'time')
     theirs = _months(grid, 'time')
-    pi_theirs = _months(tutorial(f'PI_{REFERENCE_YEAR}.nc'), 'time')
-    sd_theirs = _months(tutorial(f'TCGI_SD_PI_{REFERENCE_YEAR}.nc'), 'time')
+    pi_theirs = _months(store.tutorial(f'PI_{REFERENCE_YEAR}.nc'), 'time')
+    sd_theirs = _months(store.tutorial(f'TCGI_SD_PI_{REFERENCE_YEAR}.nc'), 'time')
     for other in (pi_theirs, sd_theirs):
         assert (other['lat'] == theirs['lat']).all() and (other['lon'] == theirs['lon']).all()
     ds = xr.Dataset()
@@ -547,7 +364,7 @@ def published_counts(years: list[int]) -> pd.DataFrame:
     return pd.DataFrame(counts, index=pd.Index(years, name='year'))
 
 
-def seeding(out: Path = CACHE / VALIDATION / 'seeding_1981_2005.csv') -> Path:
+def seeding(out: Path = store.CACHE / store.VALIDATION / 'seeding_1981_2005.csv') -> Path:
     """Our global TCGI per month for SEEDING_YEARS and REFERENCE_YEAR, the published files'
     storms per year, and (in the .json) the observed storm count the public code calibrates to."""
     import netCDF4
@@ -569,7 +386,7 @@ def seeding(out: Path = CACHE / VALIDATION / 'seeding_1981_2005.csv') -> Path:
         print(year, flush=True)
     df = pd.DataFrame.from_dict(rows, orient='index').rename_axis('year')
     df = df.join(published_counts(list(df.index)))
-    with netCDF4.Dataset(path(f'{TUTORIAL}/bt_global_predictors.nc')) as bt:
+    with netCDF4.Dataset(store.path(f'{store.TUTORIAL}/bt_global_predictors.nc')) as bt:
         years = np.asarray(bt['StormYear'][:])
     observed = ((years >= SEEDING_YEARS[0]) & (years <= SEEDING_YEARS[-1])).sum() / len(
         SEEDING_YEARS
@@ -587,25 +404,16 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = p.add_subparsers(dest='cmd', required=True)
-    f = sub.add_parser('fetch')
-    f.add_argument('--year', type=int, nargs='+', default=[REFERENCE_YEAR])
-    f.add_argument('--validation', action='store_true')
     sub.add_parser('compare')
     sub.add_parser('seeding')
-    sub.add_parser('push')
-    sub.add_parser('manifest')
+    sub.add_parser('fetch-validation')
     a = p.parse_args()
-    if a.cmd == 'fetch':
-        for year in a.year:
-            fetch(year, a.validation and year == REFERENCE_YEAR)
-    elif a.cmd == 'compare':
+    if a.cmd == 'compare':
         print(compare())
     elif a.cmd == 'seeding':
         print(seeding())
-    elif a.cmd == 'push':
-        push()
     else:
-        print(merge_manifest(), 'files in manifest')
+        fetch_validation()
 
 
 if __name__ == '__main__':

@@ -10,20 +10,19 @@ writes its file layout, on the tutorial's 2-degree grid (cell centres on odd lat
     Cov_{year}_2deg.nc                            covariance of daily 250/850 hPa wind anomalies
     A_{year}{month}.nc                            its Cholesky factor, interpolated to each day
 
-Raw ERA5 goes under S3_ROOT/inputs/era5/{year}/ with the CDS request beside each file
-(`<file>.request.json`); forcing goes under S3_ROOT/forcing/era5/{year}/.
+Raw ERA5 goes under store.S3_ROOT/inputs/era5/{year}/ with the CDS request beside each file
+(`<file>.request.json`); forcing goes under store.S3_ROOT/forcing/era5/{year}/.
 
-    fetch    ERA5 for a year into the cache: from S3 when it is there, else from the CDS
-    build    the forcing files for a year, from the cached ERA5
-    task      fetch, build and push one year (what each Coiled job runs; year from
+    python -m ocr.risks.hurricane.forcing <command>
+
+    fetch     ERA5 for a year into the cache: from S3 when it is there, else from the CDS
+    build     the forcing files for a year, from the cached ERA5
+    task      fetch, build and push one year (what each Coiled task runs; year from
               $COILED_BATCH_TASK_INPUT)
-    launch    one Coiled batch task per year
+    launch    one Coiled batch task per year (batch.py; needs a Coiled login and ~/.cdsapirc)
     manifest  merge the jobs' manifest fragments into manifest.json, on Coiled
 
-Launching needs only a Coiled login: Coiled uploads the scripts, and the VMs use the workspace's
-AWS access.
-
-Run in the `chaz` pixi environment.
+Run in the `hurricane` pixi environment.
 """
 
 from __future__ import annotations
@@ -32,19 +31,18 @@ import argparse
 import calendar
 import json
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
-import tcgi
 import xarray as xr
 from scipy.interpolate import interp1d
 
-HERE = Path(__file__).resolve().parent
-RAW = tcgi.ERA5
-OUT = 'forcing/era5'
+from ocr.risks.hurricane import batch, store, tcgi
+
+RAW = store.ERA5
+OUT = store.FORCING
 LAT = np.arange(-89.0, 90.0, 2.0)
 LON = np.arange(0.0, 360.0, 2.0)
 DAILY_TIMES = ['00:00', '06:00', '12:00', '18:00']  # daily means of 6-hourly analyses
@@ -136,7 +134,7 @@ def requests(year: int) -> dict[str, tuple[str, dict]]:
 
 
 def _on_s3(key: str) -> bool:
-    return tcgi._s3().exists(f'{tcgi.S3_ROOT}/{key}')
+    return store.on_s3(key)
 
 
 def fetch(year: int, workers: int = 4) -> None:
@@ -147,11 +145,11 @@ def fetch(year: int, workers: int = 4) -> None:
     todo = requests(year)
 
     def get(key):
-        local = tcgi.CACHE / key
+        local = store.CACHE / key
         if local.exists():
             return key, 'cached'
         if _on_s3(key):
-            tcgi.path(key)
+            store.path(key)
             return key, 's3'
         dataset, req = todo[key]
         local.parent.mkdir(parents=True, exist_ok=True)
@@ -175,14 +173,16 @@ def fetch(year: int, workers: int = 4) -> None:
 
 
 def _monthly_winds(year: int) -> xr.Dataset:
-    w = tcgi._era5(tcgi.path(f'{RAW}/{year}/pl_wind_025.nc')).sel(lat=LAT, lon=LON)
+    w = store.open_era5(store.path(f'{RAW}/{year}/pl_wind_025.nc')).sel(lat=LAT, lon=LON)
     return xr.Dataset(
         {f'{c}{lev}': w[c].sel(level=lev, drop=True) for c in ('u', 'v') for lev in (250, 850)}
     )
 
 
 def _daily_winds(year: int) -> xr.Dataset:
-    months = [tcgi._era5(tcgi.path(f'{RAW}/{year}/uv_daily_2deg_{m:02d}.nc')) for m in range(1, 13)]
+    months = [
+        store.open_era5(store.path(f'{RAW}/{year}/uv_daily_2deg_{m:02d}.nc')) for m in range(1, 13)
+    ]
     w = xr.concat(months, 'time').sortby('time').sortby('lat').sel(lat=LAT, lon=LON)
     w = w.resample(time='1D').mean()
     return xr.Dataset(
@@ -216,7 +216,10 @@ def covariance(year: int, daily: xr.Dataset, monthly: xr.Dataset) -> xr.Dataset:
             n = xm.shape[0]
             out[m - 1] = (np.mean(xm * ym, 0) - np.mean(xm, 0) * np.mean(ym, 0)) * n / (n - 1)
         cov[pair] = (('month', 'lat', 'lon'), out)
-    ds = xr.Dataset(cov, coords={'month': np.arange(1, 13), 'lat': LAT, 'lon': LON})
+    ds = xr.Dataset(
+        cov,
+        coords={'month': np.arange(1, 13), 'lat': daily['lat'].values, 'lon': daily['lon'].values},
+    )
     for v in COV_PAIRS:
         ds[v].attrs['units'] = '(m/s)^2'
     return ds
@@ -274,7 +277,7 @@ def a_matrices(year: int, cov: xr.Dataset) -> dict[int, np.ndarray]:
 
 def predictors(year: int, monthly: xr.Dataset, pi: xr.DataArray) -> xr.Dataset:
     """The intensity model's monthly predictors (the tutorial's cell 17)."""
-    rh = tcgi._era5(tcgi.path(f'{RAW}/{year}/pl_rh_025.nc')).sel(lat=LAT, lon=LON)
+    rh = store.open_era5(store.path(f'{RAW}/{year}/pl_rh_025.nc')).sel(lat=LAT, lon=LON)
     ds = monthly.copy()
     ds['hur'] = rh['r'].sel(level=[500, 700, 850]).mean('level')
     ds['PI'] = pi
@@ -282,7 +285,7 @@ def predictors(year: int, monthly: xr.Dataset, pi: xr.DataArray) -> xr.Dataset:
 
 
 def build(year: int) -> list[str]:
-    out = tcgi.CACHE / OUT / str(year)
+    out = store.CACHE / OUT / str(year)
     out.mkdir(parents=True, exist_ok=True)
     x = tcgi.era5_inputs(year, grid())
     written = []
@@ -322,106 +325,38 @@ def build(year: int) -> list[str]:
 
 # --- Coiled ------------------------------------------------------------------------------------
 
-CODE = ['tcgi.py', 'forcing.py', 'chaz_run.py']
-
 
 def task(year: int) -> None:
     fetch(year)
     build(year)
     raw, forcing = (
-        tcgi.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
-        tcgi.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing'),
+        store.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
+        store.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing'),
     )
     print(f'{year}: {len(raw)} raw and {len(forcing)} forcing files on S3', flush=True)
 
 
-def coiled_batch(
-    name: str,
-    script: str,
-    args: list[str],
-    years: list[int] | None = None,
-    vm_type: str = 'm8g.xlarge',
-    max_workers: int = 1,
-    spot: bool = True,
-    secrets: dict[str, str] | None = None,
-) -> list[str]:
-    """`coiled batch run <script> <args>`, mapping over `years` if given. Run from this directory
-    (run_quietly does): Coiled uploads the script and, through its API, the files the script
-    names, so the other scripts in CODE travel with it. The VMs read and write S3 with the Coiled
-    workspace's AWS access, so launching needs only a Coiled login. The scheduler gets the
-    workers' VM type, since Coiled refuses clusters that mix ARM and x86."""
-    cmd = [
-        'coiled',
-        'batch',
-        'run',
-        '--name',
-        name,
-        '--region',
-        'us-west-2',
-        '--vm-type',
-        vm_type,
-        '--scheduler-vm-type',
-        vm_type,
-        '--tag',
-        'Project=OCR',
-        '--spot-policy',
-        'spot_with_fallback' if spot else 'on-demand',
-        '--max-workers',
-        str(max_workers),
-    ]
-    if years:
-        cmd += ['--map-over-values', ','.join(map(str, years))]
-    for k, v in (secrets or {}).items():
-        cmd += ['--secret-env', f'{k}={v}']
-    return cmd + ['--', 'python', script, *args]
-
-
-def run_quietly(cmd: list[str]) -> None:
-    """Run a command with secret values redacted from the echo, and without echoing its arguments
-    on failure (CalledProcessError would)."""
-    shown = ' '.join(
-        c.split('=', 1)[0] + '=<redacted>' if c.startswith('CDSAPI_KEY=') else c for c in cmd
-    )
-    print(shown, flush=True)
-    rc = subprocess.run(cmd, cwd=HERE).returncode
-    if rc:
-        raise SystemExit(f'{cmd[0]} {cmd[1]} {cmd[2]} exited with {rc}')
-
-
-def parse_years(spec: str) -> list[int]:
-    years = []
-    for part in spec.split(','):
-        lo, _, hi = part.partition('-')
-        years.extend(range(int(lo), int(hi or lo) + 1))
-    return years
-
-
 def launch(years: list[int], vm_type: str, max_workers: int, spot: bool = True) -> None:
     """One Coiled batch task per year; the CDS key goes as secret env vars."""
-    cds = dict(
-        line.split(':', 1)
-        for line in Path('~/.cdsapirc').expanduser().read_text().splitlines()
-        if ':' in line
-    )
+    rc = Path('~/.cdsapirc').expanduser().read_text().splitlines()
+    cds = dict(line.split(':', 1) for line in rc if ':' in line)
     secrets = {'CDSAPI_URL': cds['url'].strip(), 'CDSAPI_KEY': cds['key'].strip()}
-    run_quietly(
-        coiled_batch(
-            f'chaz-forcing-era5-{years[0]}-{years[-1]}',
-            'forcing.py',
-            ['task'],
-            years,
-            vm_type,
-            max_workers,
-            spot,
-            secrets,
-        )
+    batch.run(
+        'forcing',
+        ['task'],
+        name=f'chaz-forcing-era5-{years[0]}-{years[-1]}',
+        over=years,
+        vm_type=vm_type,
+        max_workers=max_workers,
+        spot=spot,
+        secret_env=secrets,
     )
 
 
 def launch_manifest() -> None:
     """Merge the parallel jobs' manifest fragments, on a small Coiled VM."""
-    run_quietly(
-        coiled_batch('chaz-manifest', 'tcgi.py', ['manifest'], vm_type='m8g.medium', spot=False)
+    batch.run(
+        'store', ['manifest'], name='chaz-manifest', vm_type='m8g.large', spot=False, wait=True
     )
 
 
@@ -453,7 +388,7 @@ def main() -> None:
     elif a.cmd == 'manifest':
         launch_manifest()
     else:
-        launch(parse_years(a.years), a.vm_type, a.max_workers, spot=not a.on_demand)
+        launch(batch.parse_years(a.years), a.vm_type, a.max_workers, spot=not a.on_demand)
 
 
 if __name__ == '__main__':

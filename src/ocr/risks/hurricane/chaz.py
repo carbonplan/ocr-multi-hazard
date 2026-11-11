@@ -19,11 +19,13 @@ rate of 0.78, divided by the seeds our TCGI gives over those years. Storms that 
 Output goes to S3_ROOT/runs/era5/{TCGI}/{year}_r{NNN}.nc, in the layout of the published
 ERA5 track files, with each year's stage times in {year}_timing.csv.
 
+    python -m ocr.risks.hurricane.chaz <command>
+
     run      one year locally, one process per track realization
     task     one year on a Coiled VM (year from $COILED_BATCH_TASK_INPUT), then push
-    launch   one Coiled batch task per year
+    launch   one Coiled batch task per year (batch.py; needs a Coiled login)
 
-Run in the `chaz` pixi environment.
+Run in the `hurricane` pixi environment.
 """
 
 from __future__ import annotations
@@ -34,7 +36,6 @@ import copy
 import gc
 import os
 import random
-import sys
 import time
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
@@ -44,27 +45,26 @@ import netCDF4 as nc
 import numpy as np
 import numpy.ma as ma
 import pandas as pd
-import tcgi
 import xarray as xr
 from netCDF4 import date2num
 from numpy import nanmean
 from scipy import stats
 from scipy.io import netcdf_file
 
-# Coiled uploads the files a launched script names, so these travel with this one.
-SCRIPTS = ['tcgi.py', 'forcing.py']
-FORCING = 'forcing/era5'
-RUNS = 'runs/era5'
+from ocr.risks.hurricane import batch, store
+
+FORCING = store.FORCING
+RUNS = store.RUNS
 REALIZATIONS = 10  # track realizations per year, as in the published ERA5 set
 MEMBERS = 40  # intensity members per realization
 
 
 def static(name: str) -> Path:
-    return tcgi.path(f'{tcgi.TUTORIAL}/{name}')
+    return store.path(f'{store.TUTORIAL}/{name}')
 
 
 def forcing(name: str, year: int) -> Path:
-    return tcgi.path(f'{FORCING}/{year}/{name}')
+    return store.path(f'{FORCING}/{year}/{name}')
 
 
 def get_landmask():
@@ -945,7 +945,7 @@ def run_one(task):
 
 
 def run_dir(tcgi_name: str) -> Path:
-    out = tcgi.CACHE / RUNS / tcgi_name
+    out = store.CACHE / RUNS / tcgi_name
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -992,25 +992,21 @@ def task(year: int, tcgi_name: str) -> None:
     ratio = seeding_ratio(tcgi_name)
     print(f'{tcgi_name}: seeding ratio {ratio:.4f}', flush=True)
     run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio)
-    files = tcgi.push(f'{RUNS}/{tcgi_name}', fragment=f'run-era5-{tcgi_name}-{year}')
+    files = store.push(f'{RUNS}/{tcgi_name}', fragment=f'run-era5-{tcgi_name}-{year}')
     print(f'{year}: {len(files)} files on S3', flush=True)
 
 
 def launch(
     years: list[int], tcgi_name: str, vm_type: str, max_workers: int, spot: bool = True
 ) -> None:
-    import forcing as forcing_module
-
-    forcing_module.run_quietly(
-        forcing_module.coiled_batch(
-            f'chaz-run-era5-{tcgi_name}-{years[0]}-{years[-1]}',
-            'chaz_run.py',
-            ['task', '--tcgi', tcgi_name],
-            years,
-            vm_type,
-            max_workers,
-            spot,
-        )
+    batch.run(
+        'chaz',
+        ['task', '--tcgi', tcgi_name],
+        name=f'chaz-run-era5-{tcgi_name}-{years[0]}-{years[-1]}',
+        over=years,
+        vm_type=vm_type,
+        max_workers=max_workers,
+        spot=spot,
     )
 
 
@@ -1042,17 +1038,8 @@ def main():
     elif a.cmd == 'task':
         task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']), a.tcgi)
     else:
-        import forcing as forcing_module
-
-        launch(
-            forcing_module.parse_years(a.years),
-            a.tcgi,
-            a.vm_type,
-            a.max_workers,
-            spot=not a.on_demand,
-        )
+        launch(batch.parse_years(a.years), a.tcgi, a.vm_type, a.max_workers, spot=not a.on_demand)
 
 
 if __name__ == '__main__':
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     main()
