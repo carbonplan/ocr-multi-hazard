@@ -51,6 +51,18 @@
         "xclim>=0.62.0,<0.63",
     ]
     flood         = ["rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
+    # CHAZ forcing (MetPy, tcpyPI, the CDS client), landfall statistics and its review notebooks
+    hurricane = [
+        "cartopy>=0.26.0,<0.27",
+        "cdsapi>=0.7.6",
+        "ipykernel>=6.29",
+        "metpy>=1.6,<2",
+        "nbconvert>=7.16,<8",
+        "netcdf4>=1.7.5,<2",
+        "scipy>=1.14",
+        "shapely>=2.1,<3",
+        "tcpyPI>=1.3.5",
+    ]
     coiled-deploy = ["coiled>=1.135.6,<2", "jupyter-server-proxy>=4.6.0,<5", "jupyterlab>=4.6.4,<5"]
     data-mgmt = [
         "boto3>=1.40.0,<2", # aiobotocore (via s3fs) pins botocore
@@ -144,12 +156,14 @@
 
 [tool.pixi.environments]
     # Map environments to features
-    all-deps = ["coiled-deploy", "data-mgmt", "dev", "docs", "fire", "flood"]
+    all-deps = ["coiled-deploy", "data-mgmt", "dev", "docs", "fire", "flood", "hurricane"]
     default  = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
     deploy   = ["coiled-deploy", "fire"]
     dev      = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
     docs     = ["coiled-deploy", "docs", "fire"]
     flood    = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
+    # CHAZ forcing, model runs and review notebooks (src/ocr/risks/hurricane).
+    hurricane = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood", "hurricane"]
 
 # Tasks grouped by features
 [tool.pixi.feature.dev.tasks]
