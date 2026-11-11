@@ -21,6 +21,9 @@ Raw ERA5 goes under store.S3_ROOT/inputs/era5/{year}/ with the CDS request besid
               $COILED_BATCH_TASK_INPUT)
     launch    one Coiled batch task per year (batch.py; needs a Coiled login and ~/.cdsapirc)
     manifest  merge the jobs' manifest fragments into manifest.json, on Coiled
+    reference / launch-reference
+              the tutorial's Zenodo files and a January 2017 wind test the review notebooks
+              compare with, fetched and pushed (here, or on Coiled)
 
 Run in the `hurricane` pixi environment.
 """
@@ -167,6 +170,40 @@ def fetch(year: int, workers: int = 4) -> None:
     with ThreadPoolExecutor(workers) as pool:
         for key, how in pool.map(get, todo):
             print(f'{how:6s} {key}', flush=True)
+
+
+def fetch_validation() -> list[str]:
+    """January 2017 winds at every hour and at 00/06/12/18 UTC, on the tutorial's grid: the review
+    notebook tests which daily mean the tutorial's daily winds are."""
+    import cdsapi
+
+    keys = []
+    for name, hours in (('1h', [f'{h:02d}:00' for h in range(24)]), ('6h', DAILY_TIMES)):
+        key = f'validation/forcing/uv_201701_{name}_2deg.nc'
+        dest = store.CACHE / key
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            part = dest.with_name(dest.name + '.part')
+            cdsapi.Client(quiet=True).retrieve(
+                'reanalysis-era5-pressure-levels',
+                {
+                    'product_type': ['reanalysis'],
+                    'variable': ['u_component_of_wind', 'v_component_of_wind'],
+                    'year': ['2017'],
+                    'month': ['01'],
+                    'day': [f'{d:02d}' for d in range(1, 32)],
+                    'time': hours,
+                    'pressure_level': ['250', '850'],
+                    'area': [89, 0, -89, 358],
+                    'grid': ['2.0', '2.0'],
+                    'data_format': 'netcdf',
+                    'download_format': 'unarchived',
+                },
+                str(part),
+            )
+            part.rename(dest)
+        keys.append(key)
+    return keys
 
 
 # --- build -------------------------------------------------------------------------------------
@@ -336,11 +373,25 @@ def task(year: int) -> None:
     print(f'{year}: {len(raw)} raw and {len(forcing)} forcing files on S3', flush=True)
 
 
-def launch(years: list[int], vm_type: str, max_workers: int, spot: bool = True) -> None:
-    """One Coiled batch task per year; the CDS key goes as secret env vars."""
+def reference() -> None:
+    """The reference files the review notebooks read: the tutorial's Zenodo record and the January
+    2017 wind test, pushed to S3 (what `launch-reference` runs)."""
+    store.fetch_tutorial()
+    store.push(store.TUTORIAL, fragment='tutorial')
+    fetch_validation()
+    store.push('validation/forcing', fragment='validation-forcing')
+
+
+def cds_secrets() -> dict[str, str]:
+    """The CDS key from ~/.cdsapirc, for Coiled's secret env vars."""
     rc = Path('~/.cdsapirc').expanduser().read_text().splitlines()
     cds = dict(line.split(':', 1) for line in rc if ':' in line)
-    secrets = {'CDSAPI_URL': cds['url'].strip(), 'CDSAPI_KEY': cds['key'].strip()}
+    return {'CDSAPI_URL': cds['url'].strip(), 'CDSAPI_KEY': cds['key'].strip()}
+
+
+def launch(years: list[int], vm_type: str, max_workers: int, spot: bool = True) -> None:
+    """One Coiled batch task per year; the CDS key goes as secret env vars."""
+    secrets = cds_secrets()
     batch.run(
         'forcing',
         ['task'],
@@ -376,6 +427,8 @@ def main() -> None:
     la.add_argument('--max-workers', type=int, default=8)
     la.add_argument('--on-demand', action='store_true', help='on-demand VMs instead of spot')
     sub.add_parser('manifest', help='merge manifest fragments on Coiled')
+    sub.add_parser('reference', help="fetch the notebooks' reference files and push them")
+    sub.add_parser('launch-reference', help='run `reference` on Coiled')
     a = p.parse_args()
     if a.cmd == 'fetch':
         for y in a.year:
@@ -387,6 +440,12 @@ def main() -> None:
         task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']))
     elif a.cmd == 'manifest':
         launch_manifest()
+    elif a.cmd == 'reference':
+        reference()
+    elif a.cmd == 'launch-reference':
+        batch.run(
+            'forcing', ['reference'], name='chaz-reference', spot=False, secret_env=cds_secrets()
+        )
     else:
         launch(batch.parse_years(a.years), a.vm_type, a.max_workers, spot=not a.on_demand)
 

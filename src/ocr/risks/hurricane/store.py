@@ -39,6 +39,8 @@ SOURCES = {
     f'{VALIDATION}/era5-201708-6h': 'ERA5 6-hourly T, August 2017, 2-degree grid (tcgi.py fetch-validation)',
     f'{VALIDATION}/compare_2017.nc': 'derived: tcgi.py compare',
     f'{VALIDATION}/seeding_1981_2005': 'derived: tcgi.py seeding',
+    'validation/forcing/uv_201701': 'ERA5 hourly and 6-hourly 250/850 hPa winds, January 2017, '
+    '2-degree grid (forcing.py fetch-validation)',
     f'{VALIDATION}/chaz_port_2017_storms.csv': 'our CHAZ tutorial port on ERA5 2017, 40 track '
     'realizations at ratio 1.13: seeds and storms kept (Shane98c/chaz-local chaz_downscale.py)',
 }
@@ -75,6 +77,41 @@ def open_era5(file: Path) -> xr.Dataset:
 
 def tutorial(name: str) -> xr.Dataset:
     return xr.open_dataset(path(f'{TUTORIAL}/{name}'), decode_times=False)
+
+
+ZENODO_RECORD = 11631930
+
+
+def fetch_tutorial() -> list[str]:
+    """Every file of the CHAZ tutorial's Zenodo record into the cache, checked against Zenodo's
+    md5s. These are the reference files the review notebooks compare with, and the intensity
+    model's regressions and best-track predictors."""
+    import requests
+
+    files = requests.get(f'https://zenodo.org/api/records/{ZENODO_RECORD}', timeout=60).json()[
+        'files'
+    ]
+    got = []
+    for f in files:
+        dest = CACHE / TUTORIAL / f['key']
+        algo, digest = f['checksum'].split(':', 1)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            part = dest.with_name(dest.name + '.part')
+            h = hashlib.new(algo)
+            with (
+                requests.get(f['links']['self'], stream=True, timeout=600) as r,
+                open(part, 'wb') as out,
+            ):
+                r.raise_for_status()
+                for block in r.iter_content(1 << 20):
+                    h.update(block)
+                    out.write(block)
+            if h.hexdigest() != digest:
+                raise ValueError(f'{f["key"]}: {algo} {h.hexdigest()} != {digest}')
+            part.rename(dest)
+        got.append(f'{TUTORIAL}/{f["key"]}')
+    return got
 
 
 def _entry(local: Path, key: str) -> dict:
@@ -138,9 +175,13 @@ def main() -> None:
     sub = p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('push', help='upload the whole cache where it differs from S3')
     sub.add_parser('manifest', help="fold the parallel jobs' fragments into manifest.json")
+    sub.add_parser('fetch-tutorial', help="the CHAZ tutorial's Zenodo record, then push it")
     a = p.parse_args()
     if a.cmd == 'push':
         push()
+    elif a.cmd == 'fetch-tutorial':
+        fetch_tutorial()
+        push(TUTORIAL, fragment='tutorial')
     else:
         print(merge_manifest(), 'files in manifest')
 
