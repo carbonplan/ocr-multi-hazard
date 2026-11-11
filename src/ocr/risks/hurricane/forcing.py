@@ -142,7 +142,8 @@ def _on_s3(key: str) -> bool:
 
 def fetch(year: int, workers: int = 4) -> None:
     """Cache every raw file for `year`: from S3 if it is there, else from the CDS, with its
-    request saved beside it."""
+    request saved beside it. Each CDS download goes to S3 at once, since a spot reclaim can end a
+    task hours into the CDS queue."""
     import cdsapi
 
     todo = requests(year)
@@ -153,6 +154,8 @@ def fetch(year: int, workers: int = 4) -> None:
             return key, 'cached'
         if _on_s3(key):
             store.path(key)
+            if _on_s3(f'{key}.request.json'):
+                store.path(f'{key}.request.json')
             return key, 's3'
         dataset, req = todo[key]
         local.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +168,8 @@ def fetch(year: int, workers: int = 4) -> None:
                 indent=1,
             )
         )
+        store.upload(f'{key}.request.json')
+        store.upload(key)
         return key, 'cds'
 
     with ThreadPoolExecutor(workers) as pool:

@@ -146,6 +146,17 @@ def _entry(local: Path, key: str) -> dict:
     }
 
 
+_uploaded: dict[str, str] = {}
+
+
+def upload(key: str) -> None:
+    """Upload one cached file now, so a killed job's retry finds it on S3. `push` still records
+    it in the manifest and does not upload it again."""
+    local = CACHE / key
+    s3().put(str(local), f'{S3_ROOT}/{key}')
+    _uploaded[key] = _hash(local)
+
+
 def _remote_manifest(fs) -> dict:
     key = f'{S3_ROOT}/{MANIFEST}'
     return json.loads(fs.cat(key))['files'] if fs.exists(key) else {}
@@ -166,8 +177,10 @@ def push(prefix: str = '', fragment: str | None = None, pattern: str = '*') -> d
     for local in sorted(filter(keep, (CACHE / prefix).rglob(pattern))):
         key = str(local.relative_to(CACHE))
         files[key] = _entry(local, key)
-        stale = remote.get(key, {}).get('sha256') != files[key]['sha256']
-        if stale or not fs.exists(f'{S3_ROOT}/{key}'):
+        sha = files[key]['sha256']
+        if _uploaded.get(key) == sha:
+            continue
+        if remote.get(key, {}).get('sha256') != sha or not fs.exists(f'{S3_ROOT}/{key}'):
             fs.put(str(local), f'{S3_ROOT}/{key}')
             print('pushed', key, flush=True)
     if fragment:
