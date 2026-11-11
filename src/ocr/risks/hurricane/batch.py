@@ -11,6 +11,8 @@ import re
 import time
 from collections.abc import Sequence
 
+from ocr.risks.hurricane import store
+
 POLL_SECONDS = 30
 
 
@@ -43,7 +45,8 @@ def run(
         map_over_values=[str(v) for v in over] if over else None,
         forward_aws_credentials=False,
         secret_env=secret_env,
-        env={'PYTHONUNBUFFERED': '1'},
+        # the tasks write where this process would (store.S3_ROOT), whatever the VM's default
+        env={'PYTHONUNBUFFERED': '1', 'CHAZ_S3_ROOT': store.S3_ROOT},
         max_retries=max_retries,
         tag={'Project': 'OCR'},
     )
@@ -53,7 +56,10 @@ def run(
         flush=True,
     )
     if wait:
-        print(summary(wait_for(job['cluster_id'])), flush=True)
+        tasks = wait_for(job['cluster_id'])
+        print(summary(tasks), flush=True)
+        if any(failed(t) for t in tasks) or not tasks:
+            raise RuntimeError(f'{name}: tasks failed; logs: coiled batch logs {job["cluster_id"]}')
     return job
 
 
@@ -70,9 +76,13 @@ def wait_for(cluster_id: int) -> list[dict]:
         time.sleep(POLL_SECONDS)
 
 
+def failed(task: dict) -> bool:
+    """A task that errored, exited non-zero, or never finished (its cluster stopped first)."""
+    return task['state'] != 'done' or bool(task['exit_code'])
+
+
 def summary(tasks: list[dict]) -> str:
-    ok = sum(t['state'] == 'done' and not t['exit_code'] for t in tasks)
-    return f'{ok} of {len(tasks)} tasks succeeded'
+    return f'{sum(not failed(t) for t in tasks)} of {len(tasks)} tasks succeeded'
 
 
 def parse_years(spec: str) -> list[int]:

@@ -988,11 +988,35 @@ def run(
     return out_dir
 
 
+STATIC = [
+    'landmask.nc',
+    'bt_global_predictors.nc',
+    'result_w.nc',
+    'result_l.nc',
+    'coefficient_meanstd.nc',
+]
+
+
+def prefetch(year: int, tcgi_name: str) -> None:
+    """Cache a year's inputs before the worker pool starts, so workers only read them."""
+    for name in STATIC:
+        static(name)
+    for name in [
+        f'{tcgi_name}_{year}.nc',
+        f'I_MLR_{year}.nc',
+        *(f'A_{year}{m:02d}.nc' for m in range(1, 13)),
+    ]:
+        forcing(name, year)
+
+
 def task(year: int, tcgi_name: str) -> None:
     ratio = seeding_ratio(tcgi_name)
     print(f'{tcgi_name}: seeding ratio {ratio:.4f}', flush=True)
+    prefetch(year, tcgi_name)
     run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio)
-    files = store.push(f'{RUNS}/{tcgi_name}', fragment=f'run-era5-{tcgi_name}-{year}')
+    files = store.push(
+        f'{RUNS}/{tcgi_name}', fragment=f'run-era5-{tcgi_name}-{year}', pattern=f'{year}_*'
+    )
     print(f'{year}: {len(files)} files on S3', flush=True)
 
 
@@ -1034,6 +1058,7 @@ def main():
     a = p.parse_args()
     if a.cmd == 'run':
         ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi)
+        prefetch(a.year, a.tcgi)
         print(run(a.year, a.tcgi, list(range(a.realizations)), a.members, a.workers, ratio))
     elif a.cmd == 'task':
         task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']), a.tcgi)

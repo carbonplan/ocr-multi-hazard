@@ -17,6 +17,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import xarray as xr
@@ -52,14 +54,26 @@ def s3():
     return s3fs.S3FileSystem()
 
 
+def _part(local: Path) -> Path:
+    """A temporary file beside `local`, unique to this process, for writing then replacing."""
+    local.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=local.parent, prefix=local.name + '.', suffix='.part')
+    os.close(fd)
+    return Path(name)
+
+
 def path(key: str) -> Path:
-    """Local path of a key under S3_ROOT, downloaded into CACHE on first use."""
+    """Local path of a key under S3_ROOT, downloaded into CACHE on first use. Safe when several
+    processes ask for the same key at once: each downloads to its own temporary file and moves it
+    into place."""
     local = CACHE / key
     if not local.exists():
-        local.parent.mkdir(parents=True, exist_ok=True)
-        part = local.with_name(local.name + '.part')
-        s3().get(f'{S3_ROOT}/{key}', str(part))
-        part.rename(local)
+        part = _part(local)
+        try:
+            s3().get(f'{S3_ROOT}/{key}', str(part))
+            os.replace(part, local)
+        finally:
+            part.unlink(missing_ok=True)
     return local
 
 
@@ -95,32 +109,41 @@ def fetch_tutorial() -> list[str]:
     for f in files:
         dest = CACHE / TUTORIAL / f['key']
         algo, digest = f['checksum'].split(':', 1)
-        if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            part = dest.with_name(dest.name + '.part')
-            h = hashlib.new(algo)
-            with (
-                requests.get(f['links']['self'], stream=True, timeout=600) as r,
-                open(part, 'wb') as out,
-            ):
-                r.raise_for_status()
-                for block in r.iter_content(1 << 20):
-                    h.update(block)
-                    out.write(block)
-            if h.hexdigest() != digest:
-                raise ValueError(f'{f["key"]}: {algo} {h.hexdigest()} != {digest}')
-            part.rename(dest)
+        if not (dest.exists() and _hash(dest, algo) == digest):
+            part = _part(dest)
+            try:
+                with (
+                    requests.get(f['links']['self'], stream=True, timeout=600) as r,
+                    open(part, 'wb') as out,
+                ):
+                    r.raise_for_status()
+                    for block in r.iter_content(1 << 20):
+                        out.write(block)
+                if (got_digest := _hash(part, algo)) != digest:
+                    raise ValueError(f'{f["key"]}: {algo} {got_digest} != {digest}')
+                os.replace(part, dest)
+            finally:
+                part.unlink(missing_ok=True)
         got.append(f'{TUTORIAL}/{f["key"]}')
     return got
 
 
-def _entry(local: Path, key: str) -> dict:
-    h = hashlib.sha256()
-    with open(local, 'rb') as f:
+def _hash(file: Path, algo: str = 'sha256') -> str:
+    h = hashlib.new(algo)
+    with open(file, 'rb') as f:
         for block in iter(lambda: f.read(1 << 20), b''):
             h.update(block)
+    return h.hexdigest()
+
+
+def _entry(local: Path, key: str) -> dict:
     source = next((v for k, v in SOURCES.items() if key.startswith(k)), '')
-    return {'bytes': local.stat().st_size, 'sha256': h.hexdigest(), 'source': source}
+    return {
+        'bytes': local.stat().st_size,
+        'sha256': _hash(local),
+        'source': source,
+        'recorded': datetime.now(UTC).isoformat(),
+    }
 
 
 def _remote_manifest(fs) -> dict:
@@ -128,10 +151,11 @@ def _remote_manifest(fs) -> dict:
     return json.loads(fs.cat(key))['files'] if fs.exists(key) else {}
 
 
-def push(prefix: str = '', fragment: str | None = None) -> dict:
-    """Upload cached files under `prefix` whose checksum differs from the manifest (or that S3
-    lacks). Their entries are merged into manifest.json, or, from a parallel job, written to
-    manifests/<fragment>.json for `merge_manifest`."""
+def push(prefix: str = '', fragment: str | None = None, pattern: str = '*') -> dict:
+    """Upload cached files under `prefix` matching `pattern` whose checksum differs from the
+    manifest (or that S3 lacks). Their entries go into manifest.json, or, from a parallel job,
+    into manifests/<fragment>.json for `merge_manifest`. Writing manifest.json directly is a
+    read-modify-write: do it from one place at a time, and let parallel jobs write fragments."""
     fs = s3()
     remote = _remote_manifest(fs)
     files = {}
@@ -139,7 +163,7 @@ def push(prefix: str = '', fragment: str | None = None) -> dict:
     def keep(p: Path) -> bool:
         return p.is_file() and not p.name.endswith('.part') and p.name != MANIFEST
 
-    for local in sorted(filter(keep, (CACHE / prefix).rglob('*'))):
+    for local in sorted(filter(keep, (CACHE / prefix).rglob(pattern))):
         key = str(local.relative_to(CACHE))
         files[key] = _entry(local, key)
         stale = remote.get(key, {}).get('sha256') != files[key]['sha256']
@@ -156,13 +180,20 @@ def push(prefix: str = '', fragment: str | None = None) -> dict:
 
 
 def merge_manifest() -> int:
-    """Fold the parallel jobs' manifest fragments into manifest.json; returns the entry count."""
+    """Fold the parallel jobs' manifest fragments into manifest.json, keeping each file's most
+    recently recorded entry, then delete the merged fragments so none can later override a newer
+    upload. Run it from one place at a time. Returns the entry count."""
     fs = s3()
     files = _remote_manifest(fs)
-    for frag in sorted(fs.glob(f'{S3_ROOT}/{FRAGMENTS}/*.json')):
-        files.update(json.loads(fs.cat(frag))['files'])
+    frags = sorted(fs.glob(f'{S3_ROOT}/{FRAGMENTS}/*.json'))
+    for frag in frags:
+        for key, entry in json.loads(fs.cat(frag))['files'].items():
+            if entry.get('recorded', '') >= files.get(key, {}).get('recorded', ''):
+                files[key] = entry
     with fs.open(f'{S3_ROOT}/{MANIFEST}', 'w') as f:
         json.dump({'files': files}, f, indent=1, sort_keys=True)
+    if frags:
+        fs.rm(frags)
     return len(files)
 
 
