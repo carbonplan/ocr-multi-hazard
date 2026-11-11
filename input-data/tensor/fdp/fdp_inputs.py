@@ -12,8 +12,9 @@
 """Stage the Collins et al. (2022) model inputs in S3 for retraining.
 
 Copies the eleven predictor rasters and the released presence/absence points
-from the USGS data release (doi:10.5066/P954TTQN) into `input/flood/fdp-refit/inputs/`, and
-rasterizes the HUC-2 watersheds onto the predictor grid.
+from the USGS data release (doi:10.5066/P954TTQN) into `input/flood/fdp-refit/inputs/`,
+rasterizes the HUC-2 watersheds onto the predictor grid, and copies the published surface to
+`input/flood/raw/usgs-fdp/` for fdp_train's comparison and the flood ETL.
 
 The predictors are rewritten as tiled, deflate-compressed COGs so a training
 task can window-read one watershed straight from S3. Values, dtype and nodata
@@ -27,10 +28,10 @@ where generalized neighbours overlap, the higher HUC code wins.
 
 Every step is skipped when its output is already recorded in the manifest, so
 `stage` resumes after an interruption. Expect ~18 GB of ScienceBase downloads;
-run it in us-west-2 next to the bucket (see the README).
+`--coiled` runs it on a VM in us-west-2, next to the bucket.
 
 Usage:
-  python fdp_inputs.py stage
+  python fdp_inputs.py stage [--coiled]
   python fdp_inputs.py verify
 """
 
@@ -53,7 +54,17 @@ import rasterio.features
 import rasterio.shutil
 import requests
 import s3fs
-from fdp import BUCKET, PROJ4, REFIT, download, sciencebase_url
+from fdp import (
+    BUCKET,
+    PROJ4,
+    PUBLISHED_KEY,
+    PUBLISHED_ZIP,
+    REFIT,
+    download,
+    extract_tif,
+    launch,
+    sciencebase_url,
+)
 from pyproj import CRS
 
 INPUTS = f'{BUCKET}/{REFIT}/inputs'
@@ -287,7 +298,20 @@ def stage_hucs(grid: dict, work: Path) -> dict:
     return {'source': r.url, 'windows': windows, 'cells': cells}
 
 
-def cmd_stage(_) -> None:
+def stage_published(work: Path) -> None:
+    zip_path = work / PUBLISHED_ZIP
+    download(sciencebase_url(PUBLISHED_ZIP), zip_path)
+    tif = work / Path(PUBLISHED_KEY).name
+    extract_tif(zip_path, tif)
+    zip_path.unlink()
+    s3fs.S3FileSystem().put_file(str(tif), PUBLISHED_KEY)
+    tif.unlink()
+
+
+def cmd_stage(args) -> None:
+    if args.coiled:
+        launch('fdp-inputs', ['fdp_inputs.py', 'stage'], vm_type=args.vm_type)
+        return
     manifest = read_manifest()
     s3 = s3fs.S3FileSystem()
     with tempfile.TemporaryDirectory(prefix='fdp-inputs-') as tmp:
@@ -321,6 +345,12 @@ def cmd_stage(_) -> None:
             write_manifest(manifest)
         else:
             print('huc2: staged')
+
+        if s3.exists(PUBLISHED_KEY):
+            print('published surface: staged')
+        else:
+            print('published surface:')
+            stage_published(work)
     write_manifest(manifest)
     print()
     cmd_verify(None)
@@ -394,6 +424,8 @@ def check() -> list[str]:
         if n != rec['points']:
             fails.append(f'{kind}: {n} rows, manifest says {rec["points"]}')
 
+    if not s3.exists(PUBLISHED_KEY):
+        fails.append('published surface missing')
     if 'huc2' not in manifest or not s3.exists(HUC_KEY):
         fails.append('huc2 raster missing')
     else:
@@ -421,7 +453,9 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = p.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('stage', help='download, convert and upload any inputs not yet staged')
+    st = sub.add_parser('stage', help='download, convert and upload any inputs not yet staged')
+    st.add_argument('--coiled', action='store_true', help='run on a Coiled VM')
+    st.add_argument('--vm-type', default='m7i.2xlarge')
     sub.add_parser('verify', help='check the staged inputs against the manifest')
     args = p.parse_args()
     {'stage': cmd_stage, 'verify': cmd_verify}[args.cmd](args)

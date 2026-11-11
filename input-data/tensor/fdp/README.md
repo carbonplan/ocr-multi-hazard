@@ -10,9 +10,8 @@ Random-forest-predicted probability of flood damage, 0..1, on a 100 m
 Like the CHAZ scripts, these are run by hand. The refit's training inputs and
 model runs go under `input/flood/fdp-refit/`, where the flood pipeline's `score`
 stage reads them (see [Served store](#served-store)); the published raster under
-`input/flood/raw/usgs-fdp/`, as for the flood ETL. Training compares each refit
-with the published surface's zarr pyramid at
-`ocr-explore/FDP/processed/flood_damage_probability/`.
+`input/flood/raw/usgs-fdp/`, where training compares each refit with it and the
+flood ETL reads it.
 
 For the proposed temporal validation and retraining with newer NOAA reports,
 see [the validation and rerun specification](RERUN_SPEC.md);
@@ -28,19 +27,34 @@ input hashes and reproducible local validation script.
 
 Refits the paper's 18 HUC-2 random forests with `train_fdp.R`, a port of the
 released R script (see its header for what differs). Three steps, each
-resumable and each writing under `input/flood/fdp-refit/`:
+resumable and each writing under `input/flood/fdp-refit/`. On Coiled, from
+start to finish (each step needs the previous one's output):
 
 ```bash
-# 1. predictors, released points and the HUC-2 raster -> inputs/ (~18 GB of downloads)
-pixi run -e fdp python input-data/tensor/fdp/fdp_inputs.py stage
+# 1. predictors, released points, the HUC-2 raster and the published surface (~18 GB of downloads)
+pixi run -e fdp python input-data/tensor/fdp/fdp_inputs.py stage --coiled
 
-# 2. training points for each run -> runs/<run>/points.csv
-pixi run -e fdp python input-data/tensor/fdp/fdp_points.py build
+# 2. training points for a run -> runs/<run>/points.{csv,json}
+pixi run -e fdp python input-data/tensor/fdp/fdp_points.py build --runs noaa-200612-202512 --coiled
 
-# 3. one watershed here, or all of them on Coiled
-pixi run -e fdp-r python input-data/tensor/fdp/fdp_train.py task --run original --huc 03
-pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-200612-202512
+# 3. every watershed of that run, one VM each, with the layers `score` reads
+pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-200612-202512 \
+  --distance planar --contributions --se --vm-type r7i.4xlarge
+
+# then the flood pipeline: score, pyramid, buildings, regions
+ocr run runs/flood/v2.0.0.toml
 ```
+
+Without `--coiled`, steps 1 and 2 run here; `fdp_train.py task --run <run> --huc 03`
+trains one watershed here. Coiled jobs copy these scripts to
+`input/flood/fdp-refit/code/<hash>/` and run them from there (`fdp.launch`), with
+the Coiled workspace's AWS access; launching needs AWS credentials to copy them.
+
+Points are reproducible across machines up to one PROJ quirk: reports on the
+45th parallel sit at the edge of Canada's NAD83(CSRS) shift grid, where PROJ's
+inverse shift lands slightly differently on x86 and arm64. Rebuilding
+`noaa-200612-202512` (built on an arm64 Mac) on Coiled moves 51 of its 103,331
+presences by up to 0.25 m, each within its cell; every other value matches.
 
 Runs:
 
@@ -68,7 +82,9 @@ pixi run -e fdp-r fdp-r-cran
 On Coiled, `launch` adds the R packages to the synced `fdp` environment as conda
 extras, one x86 VM per watershed (dismo has no ARM build). The paper reports an
 average of 5.55 h per watershed on 8 cores with ~23 GB RAM; each task's
-`run.json` records its actual time, peak memory and disk.
+`run.json` records its actual time, peak memory, disk and VM type. Peak memory
+sums the forked R workers, so it overstates what the VM needs; HUC 06 reported
+74 GB and ran on `r7i.4xlarge` (128 GB).
 
 A task's cut of the predictors is cached per watershed under
 `~/.cache/ocr/fdp/predictors/` (1.6 GB for HUC 03) and reused while the staged

@@ -35,9 +35,9 @@ nlcd` (EPSG:5070 metres) and a `points.json` summary:
 
 `--seeds 1 2 ...` adds `<run>-seed<k>` runs whose absences are drawn with seed
 SEED + k; seed 0 is the unsuffixed run. `--noaa-from <run>` reuses the NOAA
-files that run recorded, so runs built later share its presences even after
-NOAA reissues a year's file. Existing runs are not overwritten without
-`--overwrite`.
+files that run recorded, kept under `input/flood/raw/noaa-storm-events/`, so runs
+built later share its presences even after NOAA reissues a year's file. Existing
+runs are not overwritten without `--overwrite`.
 
 Absences for the NOAA runs are resampled with the paper's rules (Collins et al.
 2022, section 2), except where a run says otherwise: within each HUC-2, as many
@@ -46,9 +46,11 @@ floodplain, and never in a cell holding a presence. Absences sit at cell centres
 
 Loads the HUC, land-cover and floodplain grids whole (~4 GB as uint8).
 
+`--coiled` runs `build` with the same arguments on a Coiled VM.
+
 Usage:
   python fdp_points.py build [--runs original noaa-200612-202512 ...] [--seeds 0 1 2]
-      [--noaa-from noaa-200612-202512] [--overwrite]
+      [--noaa-from noaa-200612-202512] [--overwrite] [--coiled]
 """
 
 from __future__ import annotations
@@ -68,13 +70,16 @@ import pandas as pd
 import rasterio
 import requests
 import s3fs
-from fdp import BUCKET, REFIT
+from fdp import BUCKET, REFIT, launch
 from fdp_inputs import HUC_KEY, HUCS, predictor_key, read_manifest, response_key
 from pyproj import Transformer
 from rasterio.windows import Window
 
 RUNS = f'{BUCKET}/{REFIT}/runs'
 NOAA = 'https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/'
+# Every NOAA file a run used: NCEI drops a year's file when it reissues it, so `--noaa-from`
+# reads them here.
+NOAA_ARCHIVE = f'{BUCKET}/input/flood/raw/noaa-storm-events'
 NOAA_START, NOAA_END = pd.Timestamp('2006-12-01'), pd.Timestamp('2026-01-01')
 ORIGINAL_END = pd.Timestamp('2020-06-01')
 FLOOD_TYPES = ['Flood', 'Flash Flood']
@@ -182,12 +187,16 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
         sys.exit(f'NOAA index is missing years: {sorted(latest)}')
 
     frames, provenance = [], []
+    s3 = s3fs.S3FileSystem()
     for year, name in sorted(latest.items()):
-        path = raw / name
-        if not path.exists():
+        path, archived = raw / name, f'{NOAA_ARCHIVE}/{name}'
+        if not path.exists() and s3.exists(archived):
+            s3.get_file(archived, str(path))
+        elif not path.exists():
             r = requests.get(NOAA + name, timeout=300)
             r.raise_for_status()
             path.write_bytes(r.content)
+            s3.put_file(str(path), archived)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if name in hashes and digest != hashes[name]:
             sys.exit(f'{path}: sha256 differs from the pinned run')
@@ -355,6 +364,12 @@ def released(kind: str) -> pd.DataFrame:
 
 
 def cmd_build(args) -> None:
+    if args.coiled:
+        argv = ['fdp_points.py', 'build', '--runs', *args.runs, '--seeds', *map(str, args.seeds)]
+        argv += ['--noaa-from', args.noaa_from] if args.noaa_from else []
+        argv += ['--overwrite'] if args.overwrite else []
+        launch('fdp-points', argv, vm_type=args.vm_type)
+        return
     s3 = s3fs.S3FileSystem()
     targets = [('original', 0)] if 'original' in args.runs else []
     targets += [(run, seed) for run in NOAA_RUNS if run in args.runs for seed in args.seeds]
@@ -461,6 +476,8 @@ def main() -> None:
     b.add_argument('--seeds', nargs='+', type=int, default=[0], help='absence draws per NOAA run')
     b.add_argument('--noaa-from', help='reuse the NOAA files recorded by this run')
     b.add_argument('--overwrite', action='store_true')
+    b.add_argument('--coiled', action='store_true', help='run on a Coiled VM')
+    b.add_argument('--vm-type', default='m7i.2xlarge')
     args = p.parse_args()
     {'build': cmd_build}[args.cmd](args)
 

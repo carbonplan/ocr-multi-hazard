@@ -5,7 +5,6 @@
 #   "pandas",
 #   "rasterio",
 #   "s3fs>=2024.0.0",
-#   "zarr>=3",
 # ]
 # ///
 """Train and predict the FDP random forest for HUC-2 watersheds.
@@ -27,9 +26,8 @@ predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
 `se` adds standard errors to a watershed already trained and uploaded, from
 its saved forest and prediction, without retraining.
 
-`launch` submits one `task` per watershed as a Coiled batch job. It copies
-this directory's scripts to input/flood/fdp-refit/code/<hash>/, and fdp_task.sh fetches them on
-each VM. dismo has no linux-aarch64 build, so the VMs are x86.
+`launch` submits one `task` per watershed as a Coiled batch job (`fdp.launch`).
+dismo has no linux-aarch64 build, so the VMs are x86.
 
 The R packages are not in any pixi environment: locally, point `--rscript` at
 an R with them installed (see the README); on Coiled they are added to the
@@ -44,7 +42,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -60,8 +57,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import s3fs
-import zarr
-from fdp import BUCKET, CACHE, REFIT, VARIABLE, store_uri
+from fdp import CACHE, PUBLISHED_KEY, launch, vm_type
 from fdp_inputs import HUC_KEY, HUCS, PREDICTORS, predictor_key, read_manifest
 from fdp_points import RUNS, SEED, run_key
 from rasterio.windows import Window
@@ -69,7 +65,6 @@ from rasterio.windows import Window
 HERE = Path(__file__).resolve().parent
 R_SCRIPT = 'train_fdp.R'
 CONTRIB_SCRIPT = 'contrib_fdp.R'
-CONTRIB_SOURCE = 'fdp_contrib.cpp'
 SE_SCRIPT = 'se_fdp.R'
 SE_FILES = ('se.tif', 'se.json', 'se-log.txt')
 R_PACKAGES = [
@@ -87,16 +82,6 @@ R_PACKAGES = [
     'r-jsonlite',
     'r-snow',
 ]
-CODE = (
-    'fdp.py',
-    'fdp_inputs.py',
-    'fdp_points.py',
-    'fdp_train.py',
-    R_SCRIPT,
-    CONTRIB_SCRIPT,
-    CONTRIB_SOURCE,
-    SE_SCRIPT,
-)
 QUICK = {'iters': 3, 'trees': 300}
 
 
@@ -272,13 +257,13 @@ def compare(
         t = src.transform
     with rasterio.open(floodplain) as src:
         in_floodplain = src.read(1) == 1
-    root = zarr.open_group(
-        zarr.storage.FsspecStore.from_url(f'{store_uri()}/0', read_only=True), mode='r'
-    )
-    xs, ys = np.asarray(root['x'][:]), np.asarray(root['y'][:])
-    c0 = int(np.flatnonzero(np.isclose(xs, t.c + t.a / 2))[0])
-    r0 = int(np.flatnonzero(np.isclose(ys, t.f + t.e / 2))[0])
-    published = np.asarray(root[VARIABLE][r0 : r0 + ours.shape[0], c0 : c0 + ours.shape[1]])
+    with rasterio.open(published_tif()) as src:
+        p = src.transform
+        col, row = (t.c - p.c) / p.a, (t.f - p.f) / p.e
+        if (p.a, p.e) != (t.a, t.e) or max(abs(col - round(col)), abs(row - round(row))) > 1e-3:
+            sys.exit('the published surface is off the predictor lattice')
+        win = Window(round(col), round(row), ours.shape[1], ours.shape[0])
+        published = src.read(1, window=win, masked=True).astype('float64').filled(np.nan)
 
     mine, theirs = ~ours.mask & inside, np.isfinite(published) & inside
     both = mine & theirs
@@ -294,6 +279,17 @@ def compare(
         'floodplain_share': float(fp.mean()),
         'outside_floodplain': agreement(a[~fp], b[~fp], sample, seed),
     }
+
+
+def published_tif() -> Path:
+    """The published surface (`fdp_inputs.py stage` puts it in S3), cached locally."""
+    tif = CACHE / Path(PUBLISHED_KEY).name
+    if not tif.exists():
+        tif.parent.mkdir(parents=True, exist_ok=True)
+        part = tif.with_suffix('.part')
+        s3fs.S3FileSystem().get_file(PUBLISHED_KEY, str(part))
+        part.rename(tif)
+    return tif
 
 
 def upload(local: Path, prefix: str) -> None:
@@ -418,7 +414,7 @@ def cmd_task(args) -> None:
                 'host': {
                     'platform': platform.platform(),
                     'cpus': os.cpu_count(),
-                    'vm_type': os.environ.get('COILED_VM_TYPE'),
+                    'vm_type': vm_type(),
                 },
             },
             indent=2,
@@ -464,50 +460,18 @@ def cmd_se(args) -> None:
 # ---------------------------------------------------------------------------
 
 
-def stage_code() -> str:
-    """Copy the task's scripts to S3 under a hash of their contents."""
-    digest = hashlib.sha256(b''.join((HERE / name).read_bytes() for name in CODE)).hexdigest()
-    prefix = f'{BUCKET}/{REFIT}/code/{digest[:12]}'
-    s3 = s3fs.S3FileSystem()
-    for name in CODE:
-        s3.put_file(str(HERE / name), f'{prefix}/{name}')
-    return prefix
-
-
 def cmd_launch(args) -> None:
-    hucs = args.hucs or HUCS
-    code = stage_code()
-    task = ['--run', args.run, '--distance', args.distance]
-    if args.quick:
-        task.append('--quick')
-    if args.contributions:
-        task.append('--contributions')
-    if args.se:
-        task.append('--se')
-    cmd = [
-        'coiled',
-        'batch',
-        'run',
-        '--name',
+    task = ['fdp_train.py', 'task', '--run', args.run, '--distance', args.distance]
+    task += [f'--{flag}' for flag in ('quick', 'contributions', 'se') if getattr(args, flag)]
+    launch(
         f'fdp-{args.run}-{args.distance}{"-quick" if args.quick else ""}',
-        '--region',
-        'us-west-2',
-        '--vm-type',
-        args.vm_type,
-        '--disk-size',
-        str(args.disk_size),
-        '--tag',
-        'Project=OCR',
-        '--spot-policy',
-        'spot_with_fallback' if args.spot else 'on-demand',
-        '--map-over-values',
-        ','.join(hucs),
-    ]
-    for pkg in R_PACKAGES:
-        cmd += ['--package-sync-conda-extras', pkg]
-    cmd += ['--', 'bash', str(HERE / 'fdp_task.sh'), code, *task]
-    print(' '.join(cmd))
-    subprocess.run(cmd, check=True)
+        task,
+        vm_type=args.vm_type,
+        disk_size=args.disk_size,
+        spot=args.spot,
+        map_over=args.hucs or HUCS,
+        conda_extras=R_PACKAGES,
+    )
 
 
 def main() -> None:

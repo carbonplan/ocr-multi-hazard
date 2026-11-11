@@ -5,11 +5,9 @@ GeoZarr-tagged on its native EPSG:5070 grid (no reprojection; joins should move 
 not the raster out). The flood `score` stage writes the store from CarbonPlan's refit instead
 (`ocr.risks.flood.refit`); this ETL writes the published USGS surface, e.g. for a comparison version.
 
-Raw tif provenance (manual, one-time):
-1. Download Output_CONUS_FDP_100m.zip from SOURCE (ScienceBase only serves expiring presigned links).
-   SOURCE: https://www.sciencebase.gov/catalog/item/6170694ed34ea36449a67ef7
-2. Unzip Output_CONUS_FDP_100m/CONUS_FDP_100m.tif (striped GeoTIFF, 100 m, EPSG:5070).
-3. Upload it to RAW_KEY.
+The raw tif (CONUS_FDP_100m.tif from Output_CONUS_FDP_100m.zip, striped, 100 m, EPSG:5070; SOURCE:
+https://www.sciencebase.gov/catalog/item/6170694ed34ea36449a67ef7) is put at RAW_KEY by
+input-data/tensor/fdp/fdp_inputs.py stage.
 
 Run, then `ocr run` without score: pixi run -e flood flood-etl --version v2.0.0 [--prefix scratch/<you>] [--overwrite].
 On Coiled: coiled batch run --vm-type r8g.xlarge --disk-size 50 --arm --tag Project=OCR -- python -m ocr.risks.flood.etl.flood --version v2.0.0
