@@ -32,7 +32,7 @@ class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
 
 DEFAULT: JobConfig = {
     'arm': True,
-    'forward_aws_credentials': True,
+    'forward_aws_credentials': False,
     'spot_policy': 'on-demand',
     'tag': {'Project': 'OCR'},
     'env': {'PYTHONUNBUFFERED': '1'},  # stream logs live; piped stdout is block-buffered
