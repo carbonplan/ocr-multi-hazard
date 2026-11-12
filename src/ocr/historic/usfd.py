@@ -186,17 +186,14 @@ def main(overwrite: bool = typer.Option(False, '--overwrite')) -> None:
     if not build and mirrored:
         typer.echo(f'skip: {KEY} exists; pass --overwrite')
         return
-    # /scratch on Coiled (VM disk, not the Docker overlay /tmp); the system temp dir elsewhere.
     with tempfile.TemporaryDirectory(dir=get_temp_dir()) as tmp:
         csv_path = Path(tmp) / CSV_NAME
         md5, sha256 = download(URL, csv_path)
-        # The md5 pins the bytes zenodo published, so an output from an earlier run was built from this file.
         if md5 != MD5:
             raise ValueError(f'{URL}: md5 {md5}, zenodo publishes {MD5}')
         if build:
             meta = source_metadata(sha256=sha256, retrieved=datetime.now(UTC).date())
             out = write_local(csv_path, Path(tmp) / 'out', metadata=meta, temp_dir=tmp)
-        # After the build, so a failed one leaves no mirror behind. Mirrors are never overwritten.
         if not mirrored:
             obstore.put(StorageConfig().object_store(), RAW_KEY, csv_path)
             typer.echo(f'mirrored {RAW_KEY}')
