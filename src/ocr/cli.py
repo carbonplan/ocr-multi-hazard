@@ -21,7 +21,6 @@ class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
     disk_size: str
     max_workers: int
     max_retries: int
-    forward_aws_credentials: bool
     software: str
     region: str
     spot_policy: Literal['on-demand', 'spot', 'spot_with_fallback']
