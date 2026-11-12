@@ -152,10 +152,10 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     peak, decay and wind at AROUND hours from landfall. lat, lon (node, storm); wind (member,
     node, storm) in kt.
 
-    How a CHAZ member ends (`end_rule`): its wind runs to the end of its track ('track end'); the
-    intensity model stopped it after two 12-hourly steps at or below 35 kt following a peak above
-    35 kt ('fell to 35 kt'); or neither, which includes a step below 10 kt ('other'). Observed
-    storms are 'observed'."""
+    How a CHAZ member ends (`end_rule`): its wind reaches the last node the intensity model can
+    reach on its track ('track end'); the model stopped it after two 12-hourly steps at or below
+    35 kt following a peak above 35 kt ('fell to 35 kt'); or neither: a step predicted below
+    10 kt, or missing predictors ('other'). Observed storms are 'observed'."""
     lon = wrap(lon)
     n_m, n_n, n_s = wind.shape
     na = ((wind >= TS) & in_north_atlantic(lat, lon)[None] & np.isfinite(lat)[None]).any(axis=1)
@@ -167,7 +167,7 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     wind_at_end = np.isfinite(wind[:, last, s_idx])
     alive = np.isfinite(wind)
     w_end = np.where(alive.any(axis=1), n_n - 1 - np.argmax(alive[:, ::-1], axis=1), -1)
-    ends = end_rules(wind, w_end, np.minimum(last, n_n - 5)[None], observed=source == 'IBTrACS')
+    ends = end_rules(wind, w_end, reach(last, n_n)[None], observed=source == 'IBTrACS')
     m_idx = np.arange(n_m)[:, None]
     safe = np.maximum(w_end, 0)
     end_lat, end_lon = lat[safe, s_idx[None]], lon[safe, s_idx[None]]
@@ -231,20 +231,33 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     return df
 
 
-def end_rules(wind, w_end, stop, observed: bool) -> np.ndarray:
+def reach(last, n: int):
+    """The last node CHAZ's intensity model can give a wind on a track whose last node is `last`,
+    in arrays of `n` nodes (get_stochastic): it predicts 12 h ahead from even nodes up to
+    min(last, n - 5) + 1, and only to nodes on the track."""
+    it2 = np.minimum(last, n - 5)
+    final_it = it2 + 1 - (it2 + 1) % 2
+    return np.minimum(np.minimum(final_it + 2, last - last % 2), n - 1)
+
+
+def end_rules(wind, w_end, reachable, observed: bool) -> np.ndarray:
     """(member, storm) labels of how each member's wind ends; see storm_rows. wind (member,
-    node, storm); w_end, its last node with wind (-1 for none); stop, the last node the
-    intensity model may reach."""
+    node, storm); w_end, its last node with wind (-1 for none); reachable, from `reach`.
+
+    get_stochastic stops after storing the prediction at w_end when the two values before it
+    are at or below 35 kt and the peak before it is above 35 kt; the prediction itself does not
+    count toward that peak."""
     out = np.full(w_end.shape, 'observed' if observed else 'other', dtype=object)
     if observed:
         return out
     m, s = np.indices(w_end.shape)
+    before = np.arange(wind.shape[1])[None, :, None] <= (w_end - 2)[:, None, :]
     with np.errstate(invalid='ignore'):
-        peak = np.nanmax(np.where(np.isfinite(wind), wind, -np.inf), axis=1)
+        peak = np.max(np.where(before & np.isfinite(wind), wind, -np.inf), axis=1)
     w2 = np.where(w_end >= 2, wind[m, np.maximum(w_end - 2, 0), s], np.nan)
     w4 = np.where(w_end >= 4, wind[m, np.maximum(w_end - 4, 0), s], np.nan)
     out[(peak > 35) & (w2 <= 35) & (w4 <= 35)] = 'fell to 35 kt'
-    out[(w_end >= 0) & (w_end >= stop - 1)] = 'track end'
+    out[(w_end >= 0) & (w_end >= reachable)] = 'track end'
     return out
 
 

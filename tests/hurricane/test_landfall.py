@@ -77,19 +77,43 @@ def test_landfall_share_splits_into_crossing_and_wind_at_crossing():
     assert s['tracks from NA genesis crossing the US coast, share'] == pytest.approx(0.5)
 
 
-def test_end_rules_tell_track_end_from_the_35_kt_stop():
-    nan = np.nan
-    wind = np.array(
-        [
-            [[30], [50], [34], [50], [33], [30], [31], [nan], [nan], [nan]],  # fell to 35 kt
-            [[30], [50], [60], [55], [50], [45], [40], [38], [36], [nan]],  # runs to the stop
-            [[30], [50], [60], [55], [12], [nan], [nan], [nan], [nan], [nan]],  # other
-        ]
-    ).astype(float)
-    alive = np.isfinite(wind)
-    w_end = wind.shape[1] - 1 - np.argmax(alive[:, ::-1], axis=1)
-    got = landfall.end_rules(wind, w_end, np.array([[8]]), observed=False)
-    assert got[:, 0].tolist() == ['fell to 35 kt', 'track end', 'other']
+def chaz_member(evens, n):
+    """One member as get_stochastic stores it: predictions at even nodes, odd nodes between two
+    of them interpolated; NaN beyond."""
+    w = np.full(n, np.nan)
+    w[0 : 2 * len(evens) : 2] = evens
+    for k in range(1, 2 * len(evens) - 1, 2):
+        w[k] = 0.5 * (w[k - 1] + w[k + 1])
+    return w
+
+
+@pytest.mark.parametrize(
+    ('evens', 'rule'),
+    [
+        ([30, 50, 60, 34, 33, 30], 'fell to 35 kt'),
+        (
+            [25, 30, 30, 60],
+            'other',
+        ),  # the next prediction fell below 10 kt; 60 is not a peak before
+        ([30, 50, 60, 55, 12], 'other'),
+        ([30, 50, 60, 55, 50, 45, 40, 38], 'track end'),
+    ],
+)
+def test_end_rules_follow_get_stochastic(evens, rule):
+    n, last = 20, 14  # track to node 14; the model reaches node 14
+    wind = chaz_member(evens, n)[None, :, None]
+    w_end = np.array([[2 * (len(evens) - 1)]])
+    reachable = landfall.reach(np.array([last]), n)[None]
+    assert landfall.end_rules(wind, w_end, reachable, observed=False)[0, 0] == rule
+
+
+@pytest.mark.parametrize(
+    ('last', 'n', 'expected'),
+    [(10, 15, 10), (11, 15, 10), (12, 13, 10), (20, 13, 10), (9, 30, 8)],
+)
+def test_reach_of_the_intensity_model(last, n, expected):
+    # it runs to min(last, n - 5) + 1 in even steps and stores 12 h (2 nodes) ahead, on the track
+    assert landfall.reach(np.array([last]), n)[0] == expected
 
 
 def test_wind_around_landfall_and_end_after_landfall():

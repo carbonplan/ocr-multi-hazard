@@ -1,13 +1,15 @@
 """Which steering noise produced a set of CHAZ tracks, from the tracks' own motion.
 
 CHAZ moves a storm with 0.8 of the 850 hPa plus 0.2 of the 250 hPa wind: the monthly mean
-interpolated to the day plus A·ε, with A a factor of the daily wind covariance and ε white noise,
-plus beta drift. Track motion minus the mean steering, less a fitted drift that scales with
+interpolated to the day plus A·ε, with A a factor of the daily wind covariance and ε unit-variance
+noise that is correlated in time (calF's random-phase Fourier series), plus beta drift. Track motion minus the mean steering, less a fitted drift that scales with
 cos(lat), leaves the A·ε part, whose spread and u-v correlation differ between A read as the lower
 Cholesky factor (the tutorial's files, and ours) and A with its off-diagonal entries zero (what
 the tutorial notebook's code as written produces).
 
-Steps are 6-hourly, North Atlantic, 10-30N, in the year of the forcing. The steering and A are
+Steps are 6-hourly, North Atlantic, 10-30N, in the year of the forcing. Because ε is correlated
+in time, successive steps of a track are not independent, and the step count overstates the
+sample size. The steering and A are
 averaged over 5x5 cells of the 2-degree grid around each step, to smooth over the grid.
 """
 
