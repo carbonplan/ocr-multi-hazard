@@ -11,6 +11,8 @@ reproduced and our runs compared on the same footing:
   - a (storm, member) counts only where it carries wind, a landfall only at 34 kt or more
   - CHAZ rates are also given scaled so its North Atlantic tropical-storm count matches the
     observed one, which leaves where storms go and how strong they are
+  - the landfall share of North Atlantic storms splits exactly into the share whose track crosses
+    the US coast at all, whatever its wind, and the share of those crossings made at 34 kt or more
 
   run    tables for IBTrACS, the published ERA5 tracks and our runs, under validation/chaz/landfall
 """
@@ -19,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import io
-import os
 
 import numpy as np
 import pandas as pd
@@ -33,9 +34,7 @@ BOX = (-130.0, 15.0, -60.0, 52.0)  # lon0, lat0, lon1, lat1 of the land raster
 RES = 1 / 24
 REGIONS = ('TX-AL', 'FL', 'GA-Car', 'VA-ME', 'other')
 TIME_FILL = -54786.0  # 1800-01-01 in days since 1950: CHAZ's marker for no data
-PUBLISHED = os.environ.get(
-    'CHAZ_PUBLISHED_TRACKS', 's3://carbonplan-ocr/ocr-explore/CHAZ/tracks/ERA5'
-)
+PUBLISHED = store.PUBLISHED_TRACKS
 OUT = 'validation/chaz/landfall'
 
 
@@ -132,12 +131,19 @@ def crossings(lat_h, lon_h, land: USLand) -> np.ndarray:
 
 
 def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd.DataFrame:
-    """One row per (member, storm): North Atlantic TS flag, lifetime peak, and US landfall
+    """One row per (member, storm): North Atlantic TS flag, lifetime peak, whether the track
+    crosses the US coast and whether the member has wind at its last track node, and US landfall
     wind, region, 24 h approach peak and 12/24 h decay. lat, lon (node, storm); wind (member,
     node, storm) in kt."""
     lon = wrap(lon)
-    n_m, _, n_s = wind.shape
+    n_m, n_n, n_s = wind.shape
     na = ((wind >= TS) & in_north_atlantic(lat, lon)[None] & np.isfinite(lat)[None]).any(axis=1)
+    track = np.isfinite(lat)
+    first = np.argmax(track, axis=0)
+    last = n_n - 1 - np.argmax(track[::-1], axis=0)
+    s_idx = np.arange(n_s)
+    genesis_na = track.any(axis=0) & in_north_atlantic(lat[first, s_idx], lon[first, s_idx])
+    wind_at_end = np.isfinite(wind[:, last, s_idx])
     with np.errstate(all='ignore'):
         peak = np.nanmax(np.where(np.isfinite(wind), wind, -np.inf), axis=1)
     lat_h, lon_h = hourly(lat), wrap(hourly(unwrap(lon)))
@@ -154,6 +160,9 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
             'year': np.tile(year, n_m),
             'na_ts': na.ravel(),
             'peak': peak.ravel(),
+            'genesis_na': np.tile(genesis_na, n_m),
+            'crosses': np.tile(cross.any(axis=0), n_m),
+            'wind_at_end': wind_at_end.ravel(),
         }
     )
     for k in ('lf_wind', 'lf_max_wind', 'lf_pre24', 'lf_post12', 'lf_post24', 'lf_lat', 'lf_lon'):
@@ -223,8 +232,16 @@ def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
     na = df[df['na_ts']]
     lf = df[df['lf_region'].notna()]
     big = lf[lf['lf_wind'] >= HU]
+    crossing = na[na['crosses']]
+    tracks = df.drop_duplicates(['unit', 'storm'])
+    tracks = tracks[tracks['genesis_na']]
     out = {
         'NA TS storms/yr': len(na) / member_years * scale,
+        'tracks from NA genesis crossing the US coast, share': tracks['crosses'].mean(),
+        'NA TS storms crossing the US coast, share': na['crosses'].mean(),
+        'crossings at >= 34 kt, share': (crossing['lf_wind'] >= TS).mean(),
+        'crossings at >= 64 kt, share': (crossing['lf_wind'] >= HU).mean(),
+        'NA TS storms with wind at their last track node, share': na['wind_at_end'].mean(),
         'NA share peak >= 64 kt': (na['peak'] >= HU).mean(),
         'NA share peak >= 96 kt': (na['peak'] >= MH).mean(),
         'US landfalls/yr (>= 34 kt)': len(lf) / member_years * scale,
