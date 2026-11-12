@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import fsspec
@@ -15,6 +17,8 @@ def bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(store, 'CACHE', tmp_path / 'cache')
     monkeypatch.setattr(store, 's3', lambda: fs)
     monkeypatch.setattr(store, '_uploaded', {})
+    monkeypatch.setattr(store, '_checked', set())
+    monkeypatch.setattr(store, 'OFFLINE', False)
     return fs
 
 
@@ -76,3 +80,72 @@ def test_push_records_but_skips_files_already_uploaded(bucket, monkeypatch):
     assert list(files) == ['inputs/era5/2000/sl_025.nc']
     assert puts == []
     assert bucket.cat(remote('inputs/era5/2000/sl_025.nc')) == b'a'
+
+
+def age(file, seconds):
+    t = time.time() - seconds
+    os.utime(file, (t, t))
+
+
+def test_path_replaces_a_cached_copy_that_s3_has_overwritten(bucket):
+    key = 'forcing/era5/2000/I_MLR_2000.nc'
+    local = store.CACHE / key
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'old')
+    age(local, 3600)
+    bucket.pipe(remote(key), b'new')
+    assert store.path(key).read_bytes() == b'new'
+
+
+def test_path_keeps_a_cached_copy_that_is_current_or_only_local(bucket):
+    bucket.pipe(remote('a.nc'), b'same')
+    (store.CACHE / 'a.nc').parent.mkdir(parents=True)
+    (store.CACHE / 'a.nc').write_bytes(b'same')
+    (store.CACHE / 'b.nc').write_bytes(b'local only')
+    assert store.path('a.nc').read_bytes() == b'same'
+    assert store.path('b.nc').read_bytes() == b'local only'
+
+
+def test_push_refuses_to_overwrite_a_newer_s3_copy(bucket):
+    key = 'forcing/era5/2017/PI_2017.nc'
+    local = store.CACHE / key
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'built on the laptop')
+    age(local, 3600)
+    bucket.pipe(remote(key), b'rebuilt on Coiled')
+    with pytest.raises(RuntimeError, match='older than their S3 copies'):
+        store.push('forcing/era5/2017')
+    assert bucket.cat(remote(key)) == b'rebuilt on Coiled'
+    store.push('forcing/era5/2017', force=True)
+    assert bucket.cat(remote(key)) == b'built on the laptop'
+
+
+def test_push_after_upload_does_not_see_a_stale_copy(bucket, monkeypatch):
+    key = 'inputs/era5/2000/sl_025.nc'
+    (store.CACHE / key).parent.mkdir(parents=True)
+    (store.CACHE / key).write_bytes(b'a')
+    store.upload(key)
+    monkeypatch.setattr(store, '_uploaded', {})
+    store.push('inputs/era5/2000')
+    assert bucket.cat(remote(key)) == b'a'
+
+
+def test_merge_keeps_a_fragment_rewritten_during_the_merge(bucket, monkeypatch):
+    frag = remote('manifests/run-2000.json')
+    entry = {'sha256': 'x', 'recorded': '2026-01-01T00:00:00+00:00'}
+    bucket.pipe(frag, json.dumps({'files': {'a': entry}}).encode())
+    cat = bucket.cat
+
+    def cat_then_rewrite(path, *a, **k):
+        out = cat(path, *a, **k)
+        if path == frag:
+            time.sleep(0.01)
+            bucket.pipe(frag, json.dumps({'files': {'b': entry}}).encode())
+        return out
+
+    monkeypatch.setattr(bucket, 'cat', cat_then_rewrite)
+    store.merge_manifest()
+    assert bucket.exists(frag)
+    monkeypatch.setattr(bucket, 'cat', cat)
+    assert store.merge_manifest() == 2
+    assert not bucket.exists(frag)
