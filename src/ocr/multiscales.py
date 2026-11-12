@@ -7,6 +7,14 @@ import zarr
 from topozarr import create_pyramid
 
 
+def drop_levels(session: icechunk.Session) -> None:
+    """Delete the pyramid levels (every group but "0") and the root multiscales attrs; uncommitted."""
+    root = zarr.open_group(session.store, mode='r+')
+    for name in [n for n in root.group_keys() if n != '0']:
+        del root[name]
+    root.attrs.pop('multiscales', None)
+
+
 def write_multiscales(
     repo: icechunk.Repository,
     crs: str,
@@ -24,10 +32,7 @@ def write_multiscales(
     """
     session = repo.writable_session(branch)
     if overwrite:
-        root = zarr.open_group(session.store, mode='r+')
-        for name in [n for n in root.group_keys() if n != '0']:
-            del root[name]
-        root.attrs.pop('multiscales', None)
+        drop_levels(session)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
     if variables is not None:
         ds = ds[variables]

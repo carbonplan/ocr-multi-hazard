@@ -1,4 +1,4 @@
-"""Risk-agnostic storage config. Fire still uses its own config! TODO: refactor fire config to this later"""
+"""Risk-agnostic storage config and output paths."""
 
 from enum import StrEnum
 from pathlib import Path
@@ -8,7 +8,7 @@ import icechunk
 import pydantic_settings
 from obstore.auth.boto3 import Boto3CredentialProvider
 from obstore.store import LocalStore, S3Store
-from pydantic import BeforeValidator, StringConstraints, field_validator
+from pydantic import AfterValidator, BeforeValidator, field_validator
 from pydantic.dataclasses import dataclass
 from pydantic_extra_types.semantic_version import SemanticVersion
 
@@ -62,6 +62,13 @@ def _strip_v(version: str) -> str:
     return version[1:]
 
 
+def _check_prefix(prefix: str) -> str:
+    # Keys join onto local_root / the bucket: an absolute or '..' prefix would escape local_root.
+    if prefix.startswith('/') or {'', '.', '..'} & set(prefix.split('/')):
+        raise ValueError(f'prefix must be a relative key like scratch/you, got {prefix!r}')
+    return prefix
+
+
 OUTPUT_PREFIX = 'output'  # production outputs; anything else is scratch
 
 
@@ -78,7 +85,7 @@ class OutputPaths:
     # not a standard str, so we can validate as semver
     version: Annotated[SemanticVersion, BeforeValidator(_strip_v)]
     # Bucket key prefix for outputs, e.g. 'scratch/<you>'. Inputs always read from input/.
-    prefix: Annotated[str, StringConstraints(pattern=r'^[\w.-]+(/[\w.-]+)*$')] = OUTPUT_PREFIX
+    prefix: Annotated[str, AfterValidator(_check_prefix)] = OUTPUT_PREFIX
 
     @property
     def root(self) -> str:
