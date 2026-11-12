@@ -110,10 +110,24 @@ def test_a_seeded_realization_repeats_exactly(monkeypatch, tmp_path):
         out = tmp_path / str(k)
         out.mkdir()
         monkeypatch.setattr(chaz, 'run_dir', lambda name, out=out: out)
-        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI'))
+        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI', 'lower'))
         assert t['storms_kept'] > 0
         runs.append(xr.open_dataset(out / '2017_r000.nc').load())
     a, b = runs
     for v in a.data_vars:
         np.testing.assert_array_equal(a[v].values, b[v].values)
     assert a.attrs['random_seed'] == 2017000 and a.attrs['seeding_ratio'] == 0.15
+
+
+def test_diagonal_steering_zeroes_only_the_off_diagonal_entries(monkeypatch):
+    import xarray as xr
+
+    a = xr.DataArray(np.arange(1.0, 11.0)[:, None, None, None] * np.ones((10, 2, 3, 4)))
+    monkeypatch.setattr(chaz.gv, 'steering', 'lower')
+    assert chaz.steering_factor(a) is a
+    monkeypatch.setattr(chaz.gv, 'steering', 'diagonal')
+    got = chaz.steering_factor(a)
+    assert got[:, 0, 0, 0].values.tolist() == [1, 0, 3, 0, 0, 6, 0, 0, 0, 10]
+    assert a[1, 0, 0, 0] == 2  # the forcing is left alone
+    assert chaz.run_name('TCGI_CRH_PI', 'diagonal') == 'TCGI_CRH_PI-steering-diagonal'
+    assert chaz.run_name('TCGI_CRH_PI') == 'TCGI_CRH_PI'

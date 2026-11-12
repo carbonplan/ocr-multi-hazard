@@ -351,7 +351,7 @@ def compare(obs: pd.DataFrame, runs: dict[str, tuple[pd.DataFrame, int]]) -> pd.
     return pd.DataFrame(cols)
 
 
-def run(tcgi_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
+def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     fs = store.s3()
     land = USLand()
     csv_key = sorted(
@@ -371,7 +371,7 @@ def run(tcgi_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     ours = []
     for r in range(10):
         for year in range(YEARS[0], YEARS[1] + 1):
-            key = f'{store.RUNS}/{tcgi_name}/{year}_r{r:03d}.nc'
+            key = f'{store.RUNS}/{run_name}/{year}_r{r:03d}.nc'
             with xr.open_dataset(store.path(key), decode_times=False) as ds:
                 rows = chaz_rows(ds.load(), land, 'ours', f'r{r:03d}')
             rows['storm'] = rows['storm'] + year * 10_000
@@ -386,13 +386,13 @@ def run(tcgi_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     tab = compare(obs, {'published': (pub, members['published']), 'ours': (ours, members['ours'])})
     local = store.CACHE / OUT
     local.mkdir(parents=True, exist_ok=True)
-    written = [f'summary_{tcgi_name}.csv']
+    written = [f'summary_{run_name}.csv']
     tab.to_csv(local / written[0])
-    for name, rows in (('ibtracs', obs), ('published', pub), (f'ours_{tcgi_name}', ours)):
+    for name, rows in (('ibtracs', obs), ('published', pub), (f'ours_{run_name}', ours)):
         written.append(f'rows_{name}.parquet')
         rows.to_parquet(local / written[-1])
     store.push(
-        fragment=f'landfall-{tcgi_name}', replace=True, keys=[f'{OUT}/{name}' for name in written]
+        fragment=f'landfall-{run_name}', replace=True, keys=[f'{OUT}/{name}' for name in written]
     )
     return tab
 
@@ -403,11 +403,11 @@ def main() -> None:
     )
     sub = p.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run')
-    r.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
+    r.add_argument('--run', default='TCGI_CRH_PI', help='run under runs/era5 (chaz.run_name)')
     a = p.parse_args()
     pd.set_option('display.width', 250)
     pd.set_option('display.max_columns', 20)
-    print(run(a.tcgi).round(3).to_string())
+    print(run(a.run).round(3).to_string())
 
 
 if __name__ == '__main__':
