@@ -1,11 +1,12 @@
 import calendar
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-from ocr.risks.hurricane import batch, forcing, tcgi
+from ocr.risks.hurricane import batch, chaz, forcing, tcgi
 
 
 def column(values, levels):
@@ -83,6 +84,49 @@ def test_a_matrices_reconstruct_the_covariance():
     for k, (i, j) in enumerate(lower):
         chol[i, j] = a[7][k, 10, 1, 1]
     np.testing.assert_allclose(chol @ chol.T, full, rtol=1e-6)
+
+
+def test_a_matrices_refuse_a_covariance_with_gaps():
+    lat, lon = forcing.LAT[:3], forcing.LON[:2]
+    data = {
+        name: (
+            ('month', 'lat', 'lon'),
+            np.full((12, lat.size, lon.size), 1.0 if i in (0, 4, 7, 9) else 0.0),
+        )
+        for i, name in enumerate(forcing.COV_PAIRS)
+    }
+    data['u850pu850p'][1][5, 1, 1] = np.nan
+    cov = xr.Dataset(data, coords={'month': np.arange(1, 13), 'lat': lat, 'lon': lon})
+    with pytest.raises(ValueError, match='missing values'):
+        forcing.a_matrices(2018, cov)
+
+
+@pytest.mark.parametrize(
+    ('day', 'expected'),
+    [
+        (datetime(2020, 1, 10), 0.0),
+        (datetime(2020, 2, 15), 1.0),
+        (datetime(2020, 3, 1), 1.0 + 15 / 29),  # 15 Feb to 15 Mar is 29 days in a leap year
+        (datetime(2021, 3, 1), 1.0 + 14 / 28),
+        (datetime(2020, 12, 20), 11.0),
+    ],
+)
+def test_monthly_fields_interpolate_between_mid_months(day, expected):
+    field = np.arange(12.0).reshape(12, 1, 1)
+    assert float(chaz.date_interpolation(day, field)[0, 0]) == pytest.approx(expected)
+
+
+def test_ocean_needs_sst_at_the_node_and_its_north_and_west_neighbours():
+    lat, lon = np.arange(4.0, -1.0, -1.0), np.arange(5.0)
+    sst = xr.DataArray(np.ones((5, 5)), dims=('lat', 'lon'), coords={'lat': lat, 'lon': lon})
+    sst[2, 2] = np.nan  # 2N 2E
+    grid = xr.Dataset(coords={'lat': lat[1:], 'lon': lon})
+    ok = tcgi.ocean(sst, grid)
+    missing = {(float(a), float(b)) for a, b in zip(*np.nonzero(~ok.values), strict=True)}
+    missing = {(float(ok['lat'][int(i)]), float(ok['lon'][int(j)])) for i, j in missing}
+    assert missing == {(2.0, 2.0), (1.0, 2.0), (2.0, 3.0), (1.0, 3.0)}
+    with pytest.raises(ValueError, match='north to south'):
+        tcgi.ocean(sst.sortby('lat'), grid)
 
 
 def test_covariance_of_daily_anomalies():

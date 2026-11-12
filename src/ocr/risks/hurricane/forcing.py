@@ -35,14 +35,14 @@ import calendar
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 from scipy.interpolate import interp1d
 
-from ocr.risks.hurricane import batch, store, tcgi
+from ocr.risks.hurricane import batch, chaz, store, tcgi
 
 RAW = store.ERA5
 OUT = store.FORCING
@@ -140,6 +140,17 @@ def _on_s3(key: str) -> bool:
     return store.on_s3(key)
 
 
+def check_request(key: str, dataset: str, request: dict) -> None:
+    """A reused raw file must come from the request we would send now. Its saved request is
+    compared when there is one beside it."""
+    saved = store.CACHE / f'{key}.request.json'
+    if not saved.exists():
+        return
+    got = json.loads(saved.read_text())
+    if (got['dataset'], got['request']) != (dataset, request):
+        raise ValueError(f'{key} was fetched with a different request; delete it to fetch again')
+
+
 def fetch(year: int, workers: int = 4) -> None:
     """Cache every raw file for `year`: from S3 if it is there, else from the CDS, with its
     request saved beside it. Each CDS download goes to S3 at once, since a spot reclaim can end a
@@ -151,11 +162,13 @@ def fetch(year: int, workers: int = 4) -> None:
     def get(key):
         local = store.CACHE / key
         if local.exists():
+            check_request(key, *todo[key])
             return key, 'cached'
         if _on_s3(key):
             store.path(key)
             if _on_s3(f'{key}.request.json'):
                 store.path(f'{key}.request.json')
+            check_request(key, *todo[key])
             return key, 's3'
         dataset, req = todo[key]
         local.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +240,9 @@ def _daily_winds(year: int) -> xr.Dataset:
     ]
     w = xr.concat(months, 'time').sortby('time').sortby('lat').sel(lat=LAT, lon=LON)
     w = w.resample(time='1D').mean()
+    days = 366 if calendar.isleap(year) else 365
+    if w.sizes['time'] != days or any(bool(w[v].isnull().any()) for v in w.data_vars):
+        raise ValueError(f'{year}: daily winds cover {w.sizes["time"]} days or have gaps')
     return xr.Dataset(
         {f'{c}{lev}': w[c].sel(level=lev, drop=True) for c in ('u', 'v') for lev in (250, 850)}
     )
@@ -267,28 +283,6 @@ def covariance(year: int, daily: xr.Dataset, monthly: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def _to_day(field: np.ndarray, day: date) -> np.ndarray:
-    """A monthly field at `day`, linear between mid-months (the tutorial's date_interpolation)."""
-    if day.day >= 15:
-        if day.month == 12:
-            return field[11]
-        d0, d1, i0 = (
-            datetime(day.year, day.month, 15),
-            datetime(day.year, day.month + 1, 15),
-            day.month - 1,
-        )
-    else:
-        if day.month == 1:
-            return field[0]
-        d0, d1, i0 = (
-            datetime(day.year, day.month - 1, 15),
-            datetime(day.year, day.month, 15),
-            day.month - 2,
-        )
-    r = np.interp((datetime(day.year, day.month, day.day) - d0).days, [0, (d1 - d0).days], [0, 1])
-    return field[i0] * (1 - r) + field[i0 + 1] * r
-
-
 def a_matrices(year: int, cov: xr.Dataset) -> dict[int, np.ndarray]:
     """Lower Cholesky factors of each day's covariance, as the 10 lower-triangle entries CHAZ reads,
     shape (10, day, lat, lon) per month (the tutorial's cell 14). The tutorial's published A files
@@ -303,16 +297,16 @@ def a_matrices(year: int, cov: xr.Dataset) -> dict[int, np.ndarray]:
     lower = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (3, 3)]
     out = {}
     for m in range(1, 13):
-        days = [date(year, m, d) for d in range(1, calendar.monthrange(year, m)[1] + 1)]
+        days = [datetime(year, m, d) for d in range(1, calendar.monthrange(year, m)[1] + 1)]
         stack = np.stack(
-            [np.stack([_to_day(c[v], d) for d in days]) for v in COV_PAIRS]
+            [np.stack([chaz.date_interpolation(d, c[v]) for d in days]) for v in COV_PAIRS]
         )  # (10, day, lat, lon)
         mat = np.zeros(stack.shape[1:] + (4, 4))
         for k, (i, j) in enumerate(upper):
             mat[..., i, j] = mat[..., j, i] = stack[k]
-        chol = np.zeros_like(mat)
-        ok = np.isfinite(mat).all(axis=(-2, -1))
-        chol[ok] = np.linalg.cholesky(mat[ok])
+        if not np.isfinite(mat).all():
+            raise ValueError(f'{year}-{m:02d}: the wind covariance has missing values')
+        chol = np.linalg.cholesky(mat)
         out[m] = np.stack([chol[..., i, j] for i, j in lower]).astype('float32')
     return out
 

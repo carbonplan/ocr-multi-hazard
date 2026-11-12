@@ -1,14 +1,18 @@
 """Run the CHAZ model (genesis, tracks, intensity) on our forcing, one year at a time.
 
 A port of the CHAZ downscaling tutorial notebook (github.com/cl3225/CHAZ,
-Turtorial_chaz_downscaling_colab.ipynb, MIT). The model code is the notebook's, with three kinds
-of change:
+Turtorial_chaz_downscaling_colab.ipynb, MIT). The model code is the notebook's, with these
+changes:
 
   - numpy 2 spellings (np.float64, np.nan)
   - dask map_blocks with the synchronous scheduler became plain loops, which is what that
     scheduler ran
   - each track realization draws its own genesis seeds, as CHAZvBeta/CHAZ.py does; the notebook
     seeds once and reuses them. Each realization gets a fixed random seed, so runs repeat.
+  - missing steering winds are filled from neighbouring cells, which the notebook computes and
+    then discards, and a missing forcing file fails the run where the notebook ends the track
+
+Each track file records what it was made from in its attributes (`provenance`).
 
 Forcing comes from forcing.py (S3_ROOT/forcing/era5/{year}/); the intensity regressions,
 best-track predictors and land mask from the tutorial's Zenodo record (11631930, CC BY 4.0). The
@@ -38,7 +42,7 @@ import os
 import random
 import time
 from bisect import bisect_left, bisect_right
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import netCDF4 as nc
@@ -86,11 +90,11 @@ class gv:
     # land in the intensity model (ocean -1, land 0). get_predictors writes the
     # mean over cells within landRadius km and then the centre-cell value into
     # one array that bt.landmask and bt.landmaskMean share, as upstream CHAZ
-    # does, so everything below reads the centre cell of the 2 degree mask and
-    # landRadius and landSwitch have no effect (chaz_landterm.py run --meanfix
-    # keeps the mean apart). The land regression applies unless the value is
-    # above landThreshold at either end of a step; its land-change predictor
-    # is scaled by landDelta.
+    # does (CHAZvBeta/src/module_GenBamPred.py), so everything below reads the
+    # centre cell of the 2 degree mask and landRadius and landSwitch have no
+    # effect. The land regression applies unless the value is above
+    # landThreshold at either end of a step; its land-change predictor is
+    # scaled by landDelta.
     landRadius = 300.0
     landThreshold = -0.5
     landSwitch = 'mean'
@@ -217,6 +221,16 @@ def fillinNaN(var, neighbors):
     return var
 
 
+def fill_missing(x: np.ndarray, neighbors) -> np.ndarray:
+    """NaN cells of each (month, lat, lon) slice filled from their neighbours by fillinNaN."""
+    missing = np.isnan(x)
+    if not missing.any():
+        return x
+    if missing.all(axis=(1, 2)).any():
+        raise ValueError('a month of steering winds is missing everywhere')
+    return fillinNaN(np.ma.masked_invalid(x), neighbors).filled(np.nan)
+
+
 def date_interpolation(dateInput, fileInput):
     """Monthly fields interpolated linearly to the date; December holds."""
     if dateInput.day >= 15:
@@ -282,7 +296,6 @@ def bam(iS):
         (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, 1),
         (1, -1), (-1, -1), (0, 2), (0, -2), (2, 0), (-2, 0),
     )  # fmt: skip
-    missing_value = 1e20
     dt = 1.0 * 60 * 60
     T = np.float64(15)
     F = calF(15)
@@ -305,25 +318,12 @@ def bam(iS):
 
     while fstDate < endDate and fstDate.year == yearTC:
         if fstDate.year != year0:
-            fileName = forcing(f'I_MLR_{fstDate.year:04d}.nc', fstDate.year)
-            try:
-                ds = xr.open_dataset(fileName)
-                u250m = ds['u250'].values
-                u850m = ds['u850'].values
-                v250m = ds['v250'].values
-                v850m = ds['v850'].values
-                for data in [u250m, u850m, v250m, v850m]:
-                    data[np.isnan(data)] = missing_value
-                    data = np.ma.masked_values(data, missing_value)
-                    data = fillinNaN(data, neighbors)
-                xlong = ds['lon'][:]
-                xlat = ds['lat'][:]
-                xxlong, xxlat = np.meshgrid(xlong, xlat)
-                ds.close()
-                year0 = fstDate.year
-            except Exception:
-                print(f'no {fileName}')
-                break
+            with xr.open_dataset(forcing(f'I_MLR_{fstDate.year:04d}.nc', fstDate.year)) as ds:
+                u250m, u850m, v250m, v850m = (
+                    fill_missing(ds[v].values, neighbors) for v in ('u250', 'u850', 'v250', 'v850')
+                )
+                xxlong, xxlat = np.meshgrid(ds['lon'].values, ds['lat'].values)
+            year0 = fstDate.year
         if fstDate.day != day0:
             u250m2d = date_interpolation(fstDate, u250m)
             v250m2d = date_interpolation(fstDate, v250m)
@@ -937,11 +937,38 @@ def run_one(task):
     calIntensity(n_members)
     t['s_intensity'] = time.perf_counter() - t0
     ds = to_dataset(bt)
+    ds.attrs.update(provenance(year, ichaz, seed, ratio, n_members, tcgi_name))
     t['storms_kept'] = ds.sizes['stormID']
     tmp = out.with_suffix('.nc.part')
     ds.to_netcdf(tmp)
     tmp.rename(out)
     return t
+
+
+def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
+    """What a track file was made from, as netCDF attributes."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        ocr_version = version('ocr')
+    except PackageNotFoundError:
+        ocr_version = 'unknown'
+    return {
+        'tcgi': tcgi_name,
+        'year': year,
+        'realization': realization,
+        'random_seed': seed,
+        'seeding_ratio': ratio,
+        'intensity_members': n_members,
+        'beta_drift_uv_ms': f'{gv.uBeta}, {gv.vBeta}',
+        'survival_rate': gv.survivalrate,
+        'forcing': f'{store.S3_ROOT}/{FORCING}/{year}',
+        f'{tcgi_name}_sha256': store._hash(forcing(f'{tcgi_name}_{year}.nc', year)),
+        'I_MLR_sha256': store._hash(forcing(f'I_MLR_{year}.nc', year)),
+        'chaz_py_sha256': store._hash(Path(__file__)),
+        'ocr_version': ocr_version,
+        'created': datetime.now(UTC).isoformat(timespec='seconds'),
+    }
 
 
 def run_dir(tcgi_name: str) -> Path:
@@ -967,13 +994,18 @@ def run(
     year: int, tcgi_name: str, realizations: list[int], members: int, workers: int, ratio: float
 ) -> Path:
     import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     out_dir = run_dir(tcgi_name)
     tasks = [(year, r, ratio, members, tcgi_name) for r in realizations]
     timing_path = out_dir / f'{year}_timing.csv'
     t_start = time.perf_counter()
-    with mp.get_context('spawn').Pool(workers, maxtasksperchild=1) as pool:
-        for t in pool.imap_unordered(run_one, tasks):
+    # a worker killed by the OS breaks the pool and raises here, so the task fails and retries
+    with ProcessPoolExecutor(
+        workers, mp_context=mp.get_context('spawn'), max_tasks_per_child=1
+    ) as pool:
+        for future in as_completed([pool.submit(run_one, x) for x in tasks]):
+            t = future.result()
             if t is None:
                 continue
             t['s_total'] = t['s_genesis'] + t['s_tracks'] + t['s_predictors'] + t['s_intensity']

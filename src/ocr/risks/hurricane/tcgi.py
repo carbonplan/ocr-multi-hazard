@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -242,7 +241,10 @@ def fetch_validation() -> None:
 
 def ocean(sst: xr.DataArray, grid: xr.Dataset) -> xr.DataArray:
     """Cells with TCGI: SST defined at the node and its N, W and NW neighbours on the native grid,
-    the support of the tutorial's bilinear regrid (99.99% of its 2017 cells agree)."""
+    the support of the tutorial's bilinear regrid (99.99% of its 2017 cells agree). N is the
+    previous row, as ERA5 orders latitude north to south."""
+    if not (sst['lat'].diff('lat') < 0).all():
+        raise ValueError('ocean() needs latitudes in ERA5 order, north to south')
     ok = sst.notnull()
     ok = (
         ok
@@ -273,7 +275,7 @@ def era5_inputs(year: int, grid: xr.Dataset) -> xr.Dataset:
     out['vws'] = wind_shear(
         *(wind[c].sel(level=lev) for lev in (SHEAR_TOP, 850) for c in ('u', 'v'))
     )
-    # W* down to mean sea-level pressure, not surface pressure: 3x closer to the tutorial's W*
+    # W* down to mean sea-level pressure, not surface pressure: half the rms against the tutorial's W*
     out['CRH'], out['SD'] = moisture(tq['t'], sl['tcwv'], sl['msl'] / 100)
     out['PI'] = potential_intensity(
         sl['sst'] - 273.15, sl['msl'] / 100, tq['t'] - 273.15, tq['q'] * 1000
@@ -338,9 +340,7 @@ def compare(out: Path = store.CACHE / store.VALIDATION / f'compare_{REFERENCE_YE
 # sets ratio from observed storms 1981-2005 over a survival rate of 0.78.
 SEEDING_YEARS = list(range(1981, 2006))
 SURVIVAL = 0.78
-PUBLISHED_TRACKS = os.environ.get(
-    'CHAZ_PUBLISHED_TRACKS', 's3://carbonplan-ocr/ocr-explore/CHAZ/tracks/ERA5'
-)
+PUBLISHED_TRACKS = store.PUBLISHED_TRACKS
 
 
 def seeds(monthly_tcgi: np.ndarray, ratio: float) -> np.ndarray:
@@ -350,8 +350,8 @@ def seeds(monthly_tcgi: np.ndarray, ratio: float) -> np.ndarray:
 
 def published_counts(years: list[int]) -> pd.DataFrame:
     """Storms per year in each of the ten published ERA5 track files (Meiler, shared Sept 2026).
-    These are the storms CHAZ kept, not its seeds: the writer drops some (e.g. genesis within 2
-    degrees of the equator), and counts differ between files where the seed counts cannot."""
+    These are the storms CHAZ kept, not its seeds, so counts differ between files where the seed
+    counts cannot."""
     import s3fs
 
     fs = s3fs.S3FileSystem() if PUBLISHED_TRACKS.startswith('s3://') else None
