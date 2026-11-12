@@ -29,7 +29,8 @@ If you want to **understand how fire risk is calculated**:
 
 1. Read the [Fire risk overview](methods/fire-risk/overview.md) for conceptual background.
 2. Learn about how we performed [Evaluation](methods/fire-risk/evaluation.md) of our fire risk estimates.
-3. Review our [Data sources](reference/data-sources.md).
+3. For flood risk, read the [Flood risk overview](methods/flood-risk/overview.md) and its [Evaluation](methods/flood-risk/evaluation.md).
+4. Review our [Data sources](reference/data-sources.md).
 
 :::
 
@@ -70,6 +71,8 @@ methods/fire-risk/overview
 methods/fire-risk/horizontal-scaling-via-spatial-chunking
 methods/fire-risk/score-bins
 methods/fire-risk/evaluation
+methods/flood-risk/overview
+methods/flood-risk/evaluation
 ```
 
 ```{toctree}

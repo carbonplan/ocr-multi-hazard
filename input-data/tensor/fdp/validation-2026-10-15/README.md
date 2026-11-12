@@ -1,7 +1,8 @@
 # Local temporal validation: June 2020–December 2025
 
-Start with the executed [notebook](validation.ipynb). This file is the detailed
-run record.
+Start with the executed
+[notebook](../../../../docs/methods/flood-risk/temporal-validation.ipynb). This
+file is the detailed run record.
 
 Run date: 2026-10-15. The frozen Collins FDP surface retains a moderate ability
 to rank later NOAA report locations above watershed-matched background. It is

@@ -126,9 +126,11 @@ The `wind_direction` coordinate contains 8 direction labels: `['N', 'NE', 'E', '
 - Values sum to 1.0 for all pixels (normalized probability distribution)
 - Derived from CONUS404 data (Rasmussen et al, 2023) using 99th percentile Fosberg Fire Weather Index (FFWI) as threshold
 
+(flood-risk-variables)=
+
 ### Flood risk variables
 
-Flood risk is CarbonPlan's refit of the USGS Flood Damage Probability (FDP) model ([USGS data release](https://doi.org/10.5066/P954TTQN)), one random forest per HUC-2 watershed, mosaicked into one store.
+Flood risk is CarbonPlan's refit of the USGS Flood Damage Probability (FDP) model ([USGS data release](https://doi.org/10.5066/P954TTQN)), one random forest per HUC-2 watershed, mosaicked into one store. The [flood methods overview](../methods/flood-risk/overview.md) describes the model.
 
 | Property           | Value                                               |
 | ------------------ | --------------------------------------------------- |
@@ -155,6 +157,8 @@ Flood risk is CarbonPlan's refit of the USGS Flood Damage Probability (FDP) mode
 | `fdp_se`          | int16 | (y, x)         | dimensionless | Standard error of `fdp` (infinitesimal jackknife)                                                                           |
 | `contribution`    | int16 | (driver, y, x) | dimensionless | Change in `fdp` credited to each driver (Saabas attribution). Per cell, the watershed's baseline + the sum over drivers = `fdp` |
 | `dominant_driver` | uint8 | (y, x)         | -             | Index of the driver with the largest `contribution`; 255 where missing                                                      |
+
+(drivers)=
 
 #### Drivers
 
