@@ -1,9 +1,9 @@
 """Region GeoParquet laid out for the web map's range-request lookups (ported from carbonplan/ocr-multi-hazard#8).
 
-    <out_key>/nation.parquet, states.parquet
-    <out_key>/counties/state_fips=SS/data.parquet
-    <out_key>/tracts/state_fips=SS/county_fips=CCC/data.parquet
-    <out_key>/blocks/state_fips=SS/county_fips=CCC/data.parquet
+    <out_key>/nation.geoparquet, states.geoparquet
+    <out_key>/counties/state_fips=SS/data.geoparquet
+    <out_key>/tracts/state_fips=SS/county_fips=CCC/data.geoparquet
+    <out_key>/blocks/state_fips=SS/county_fips=CCC/data.geoparquet
 
 Rows are in GEOID order with a row cap per page, so every column breaks pages at the same rows,
 and GEOID and bbox carry statistics and page indexes. A reader finds a region by GEOID from the
@@ -88,7 +88,7 @@ def _parts(src: Path, level: RegionLevel) -> Iterator[tuple[str, pa.Table]]:
     """(relative path, rows) per output file, one state read at a time so blocks never sit in memory whole."""
     width = SPLIT.get(level)
     if width is None:
-        yield f'{level}.parquet', pq.read_table(src).sort_by('GEOID')
+        yield f'{level}.geoparquet', pq.read_table(src).sort_by('GEOID')
         return
     ds = pads.dataset(src)
     states = sorted(
@@ -102,7 +102,7 @@ def _parts(src: Path, level: RegionLevel) -> Iterator[tuple[str, pa.Table]]:
         for part in _split(state.sort_by('GEOID'), width):
             g = part['GEOID'][0].as_py()
             hive = f'state_fips={g[:2]}' + (f'/county_fips={g[2:5]}' if width == 5 else '')
-            yield f'{level}/{hive}/data.parquet', part
+            yield f'{level}/{hive}/data.geoparquet', part
 
 
 def write_level(
