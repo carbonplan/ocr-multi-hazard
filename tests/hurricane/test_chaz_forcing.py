@@ -149,3 +149,29 @@ def test_covariance_of_daily_anomalies():
 
 def test_parse_years():
     assert batch.parse_years('1981-1983,2019') == [1981, 1982, 1983, 2019]
+
+
+def daily_files(monkeypatch, start: str, end: str):
+    """forcing._daily_winds reading synthetic 6-hourly winds from start to end."""
+    time = pd.date_range(start, end, freq='6h')
+    shape = (time.size, 2, 1, 1)
+    ds = xr.Dataset(
+        {c: (('time', 'level', 'lat', 'lon'), np.ones(shape)) for c in ('u', 'v')},
+        coords={'time': time, 'level': [250, 850], 'lat': forcing.LAT[:1], 'lon': forcing.LON[:1]},
+    )
+    months = {m: ds.sel(time=ds['time.month'] == m) for m in range(1, 13)}
+    monkeypatch.setattr(forcing, 'LAT', forcing.LAT[:1])
+    monkeypatch.setattr(forcing, 'LON', forcing.LON[:1])
+    monkeypatch.setattr(forcing.store, 'path', lambda key: key)
+    monkeypatch.setattr(forcing.store, 'open_era5', lambda key: months[int(key[-5:-3])])
+
+
+def test_daily_winds_refuse_a_shifted_calendar(monkeypatch):
+    daily_files(monkeypatch, '2018-01-02', '2019-01-01 18:00')
+    with pytest.raises(ValueError, match='every day'):
+        forcing._daily_winds(2018)
+
+
+def test_daily_winds_accept_the_whole_year(monkeypatch):
+    daily_files(monkeypatch, '2018-01-01', '2018-12-31 18:00')
+    assert forcing._daily_winds(2018).sizes['time'] == 365

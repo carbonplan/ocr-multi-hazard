@@ -17,11 +17,19 @@ def test_fill_missing_fills_from_neighbours():
     assert got[1, 2, 3] == 1.0
 
 
-def test_fill_missing_refuses_a_month_missing_everywhere():
+@pytest.mark.parametrize('bad', [np.nan, np.inf])
+def test_fill_missing_refuses_a_month_missing_everywhere(bad):
     x = np.ones((2, 4, 5))
-    x[0] = np.nan
+    x[0] = bad
+    x[0, 0, 0] = np.nan
     with pytest.raises(ValueError):
         chaz.fill_missing(x, NEIGHBORS)
+
+
+def test_fill_missing_fills_infinities_and_prefers_the_first_neighbour():
+    x = np.arange(20.0).reshape(1, 4, 5)
+    x[0, 2, 2] = np.inf
+    assert chaz.fill_missing(x, NEIGHBORS)[0, 2, 2] == x[0, 1, 2]  # fillinNaN's (0, 1): row before
 
 
 @pytest.fixture

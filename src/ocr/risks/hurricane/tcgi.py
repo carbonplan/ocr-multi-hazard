@@ -364,6 +364,35 @@ def published_counts(years: list[int]) -> pd.DataFrame:
     return pd.DataFrame(counts, index=pd.Index(years, name='year'))
 
 
+def published_seed_filters(years: tuple[int, int] = (1981, 2019)) -> pd.DataFrame:
+    """Storms in each published ERA5 track file whose first node lies within 2 degrees of the
+    equator or outside every CHAZ basin: the two filters of the public code's writer."""
+    import s3fs
+
+    from ocr.risks.hurricane import chaz
+
+    xbin, ybin, basin_map = chaz.getbasinMap()
+    fs = s3fs.S3FileSystem() if PUBLISHED_TRACKS.startswith('s3://') else None
+    rows = []
+    for i in range(10):
+        src = f'{PUBLISHED_TRACKS}/global_2019_2ens{i:03d}_pre.nc'
+        with fs.open(src, 'rb') if fs else open(src, 'rb') as f:
+            ds = xr.open_dataset(f, engine='scipy', decode_times=False)
+            year = ds['year'].values
+            sel = (year >= years[0]) & (year <= years[1])
+            lon0, lat0 = ds['longitude'].values[0, sel], ds['latitude'].values[0, sel]
+        basin = chaz.defineBasin(lon0, lat0, xbin, ybin, basin_map)
+        rows.append(
+            {
+                'file': i,
+                'storms': int(sel.sum()),
+                'first node within 2° of the equator': int((np.abs(lat0) < 2).sum()),
+                'first node outside every basin': int((basin == 0).sum()),
+            }
+        )
+    return pd.DataFrame(rows).set_index('file')
+
+
 def seeding(out: Path = store.CACHE / store.VALIDATION / 'seeding_1981_2005.csv') -> Path:
     """Our global TCGI per month for SEEDING_YEARS and REFERENCE_YEAR, the published files'
     storms per year, and (in the .json) the observed storm count the public code calibrates to."""
