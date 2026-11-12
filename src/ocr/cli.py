@@ -18,6 +18,7 @@ from ocr.stages import RISKS, STAGES, preflight, stage_kwargs
 class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
     vm_type: list[str]
     arm: bool
+    forward_aws_credentials: bool
     disk_size: str
     max_workers: int
     max_retries: int

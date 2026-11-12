@@ -9,7 +9,7 @@ Fire still uses the older `ocr-deploy` CLI (`ocr-deploy --help`) until its refac
 A deployment is one committed TOML file under `runs/<risk>/`:
 
 ```bash
-pixi run -e flood flood-etl --version v2.0.0  # once: writes store.icechunk (add --overwrite to redo)
+pixi run -e flood flood-etl --version v2.0.0  # once: writes store.icechunk (--overwrite redoes it and drops the pyramid; rerun pyramid/buildings/regions)
 ocr run runs/flood/v2.0.0.toml --dry-run      # print the plan, check inputs, run nothing
 ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```

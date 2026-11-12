@@ -231,7 +231,6 @@ pixi run tests-integration  # Integration tests (may require S3 access)
 
 - **`pyproject.toml`** - Project metadata, dependencies (managed by Pixi), build config, tool settings (ruff, pytest, coverage)
 - **`pixi.lock`** - Locked dependency versions for reproducible environments
-- **`environment.yaml`** - Conda environment export (auto-generated from Pixi for Coiled deployments)
 
 ### Documentation
 

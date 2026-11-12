@@ -6,6 +6,7 @@ import odc.geo.xr  # noqa: F401
 import pytest
 import rioxarray  # noqa: F401
 import xarray as xr
+import zarr
 
 from ocr.config import OutputPaths, Risk, StorageConfig
 from ocr.risks.flood.etl.flood import RAW_KEY, read_tif, run
@@ -59,8 +60,14 @@ def test_run_roundtrip(cfg: StorageConfig) -> None:
 def test_overwrite_guard(cfg: StorageConfig) -> None:
     run(OUT)
     repo, _ = _open(cfg)
-    first = repo.lookup_branch('main')
+    session = repo.writable_session('main')
+    root = zarr.open_group(session.store, mode='r+')
+    root.create_group('1')
+    root.attrs['multiscales'] = {'layout': []}
+    first = session.commit('fake pyramid level')
     with pytest.raises(FileExistsError):
         run(OUT)
     run(OUT, overwrite=True)
     assert repo.lookup_branch('main') != first
+    root = zarr.open_group(repo.readonly_session('main').store, mode='r')
+    assert list(root.group_keys()) == ['0'] and 'multiscales' not in root.attrs

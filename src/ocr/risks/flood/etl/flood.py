@@ -11,7 +11,7 @@ Raw tif provenance (manual, one-time):
 3. Upload it to RAW_KEY.
 
 Run before `ocr run`: pixi run -e flood flood-etl --version v2.0.0 [--prefix scratch/<you>] [--overwrite].
-On Coiled: coiled batch run --vm-type r8g.xlarge --disk-size 50 --arm --forward-aws-credentials --tag Project=OCR -- python -m ocr.risks.flood.etl.flood --version v2.0.0
+On Coiled: coiled batch run --vm-type r8g.xlarge --disk-size 50 --arm --tag Project=OCR -- python -m ocr.risks.flood.etl.flood --version v2.0.0
 """
 
 from typing import Annotated
@@ -21,6 +21,7 @@ import rioxarray
 import typer
 import xarray as xr
 import xproj  # noqa: F401
+import zarr
 from icechunk.xarray import to_icechunk
 from topozarr import attach_geozarr_metadata, recommend_encoding
 
@@ -50,12 +51,14 @@ def read_tif(cfg: StorageConfig) -> xr.Dataset:
 
 def write_icechunk(cfg: StorageConfig, ds: xr.Dataset, prefix: str, overwrite: bool) -> str:
     """Write ds to group "0" of the repo at `prefix` and return the snapshot id. Refuses an existing
-    repo unless overwrite, which adds a commit on main."""
+    repo unless overwrite, which replaces the whole hierarchy (drops pyramid levels) in a new commit
+    on main. buildings/regions outputs are not deleted; rerun them after."""
     storage = cfg.icechunk_storage(prefix)
     if icechunk.Repository.exists(storage) and not overwrite:
         raise FileExistsError(f'{cfg.uri(prefix)} exists; pass --overwrite')
     repo = icechunk.Repository.open_or_create(storage)
     session = repo.writable_session('main')
+    zarr.open_group(session.store, mode='w')  # drop stale pyramid levels and root multiscales attrs
     to_icechunk(ds, session, group='0', mode='w', encoding=recommend_encoding(ds))
     return session.commit('USGS FDP 100m EPSG:5070')
 
