@@ -21,7 +21,8 @@ rate of 0.78, divided by the seeds our TCGI gives over those years. Storms that 
 31 December stop there, as in the notebook.
 
 Output goes to S3_ROOT/runs/era5/{run}/{year}_r{NNN}.nc (`run_name`: the TCGI variant, plus
-the steering noise when not the default), in the layout of the published ERA5 track files, with each year's stage times in {year}_timing.csv.
+any model option not at its default), in the layout of the published ERA5 track files, with each
+year's stage times in {year}_timing.csv.
 
     python -m ocr.risks.hurricane.chaz <command>
 
@@ -85,10 +86,19 @@ def steering_factor(a: xr.DataArray) -> xr.DataArray:
     return a
 
 
-def run_name(tcgi_name: str, steering: str = 'lower') -> str:
-    """Directory of a run under RUNS: the TCGI variant, and the steering noise when not the
-    default."""
-    return tcgi_name if steering == 'lower' else f'{tcgi_name}-steering-{steering}'
+OPTIONS = {'steering': ('lower', 'diagonal'), 'land': ('shared', 'separate')}  # default first
+
+
+def run_name(tcgi_name: str, **options: str) -> str:
+    """Directory of a run under RUNS: the TCGI variant, then each option not at its default."""
+    parts = [tcgi_name]
+    for key, choices in OPTIONS.items():
+        value = options.get(key, choices[0])
+        if value not in choices:
+            raise ValueError(f'{key}={value!r}; expected one of {choices}')
+        if value != choices[0]:
+            parts.append(f'{key}-{value}')
+    return '-'.join(parts)
 
 
 def get_landmask():
@@ -111,6 +121,10 @@ class gv:
     # 'diagonal' zeroes its off-diagonal entries, as the tutorial notebook's transposed factor
     # does (the published ERA5 tracks are consistent with it; tracks notebook, section 3)
     steering = 'lower'
+    # 'shared': get_predictors writes the 300 km land mean and then the centre cell into one array
+    # that landmask and landmaskMean share, as the public code does, so the intensity model reads
+    # the centre cell; 'separate' keeps the mean in its own array, as the regressions were fit on
+    land = 'shared'
     # land in the intensity model (ocean -1, land 0). get_predictors writes the
     # mean over cells within landRadius km and then the centre-cell value into
     # one array that bt.landmask and bt.landmaskMean share, as upstream CHAZ
@@ -467,7 +481,7 @@ class fst2bt:
         ):  # fmt: skip
             setattr(self, name, np.empty(shape, dtype=float) * nan)
         self.landmask = data['ldmask']
-        self.landmaskMean = data['ldmask']
+        self.landmaskMean = data['ldmask'] if gv.land == 'shared' else data['ldmask'].copy()
         self.trSpeed = np.zeros(shape) * nan
         self.trDir = np.zeros(shape) * nan
         self.dVdt = np.zeros(shape)
@@ -937,13 +951,14 @@ def to_dataset(bt1) -> xr.Dataset:
 def run_one(task):
     """One track realization with its intensity members; returns stage times."""
     global yearTC
-    year, ichaz, ratio, n_members, tcgi_name, steering = task
-    out = run_dir(run_name(tcgi_name, steering)) / f'{year}_r{ichaz:03d}.nc'
+    year, ichaz, ratio, n_members, tcgi_name, options = task
+    out = run_dir(run_name(tcgi_name, **options)) / f'{year}_r{ichaz:03d}.nc'
     if out.exists():
         return None
     yearTC = year
     gv.TCGIinput = tcgi_name
-    gv.steering = steering
+    for key, choices in OPTIONS.items():
+        setattr(gv, key, options.get(key, choices[0]))
     seed = year * 1000 + ichaz
     random.seed(seed)
     np.random.seed(seed)
@@ -988,6 +1003,7 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
         'intensity_members': n_members,
         'beta_drift_uv_ms': f'{gv.uBeta}, {gv.vBeta}',
         'steering_noise': gv.steering,
+        'land_mean': gv.land,
         'survival_rate': gv.survivalrate,
         'forcing': f'{store.S3_ROOT}/{FORCING}/{year}',
         f'{tcgi_name}_sha256': store._hash(forcing(f'{tcgi_name}_{year}.nc', year)),
@@ -1024,13 +1040,14 @@ def run(
     members: int,
     workers: int,
     ratio: float,
-    steering: str = 'lower',
+    options: dict[str, str] | None = None,
 ) -> Path:
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    out_dir = run_dir(run_name(tcgi_name, steering))
-    tasks = [(year, r, ratio, members, tcgi_name, steering) for r in realizations]
+    options = options or {}
+    out_dir = run_dir(run_name(tcgi_name, **options))
+    tasks = [(year, r, ratio, members, tcgi_name, options) for r in realizations]
     timing_path = out_dir / f'{year}_timing.csv'
     t_start = time.perf_counter()
     # a worker killed by the OS breaks the pool and raises here, so the task fails and retries
@@ -1074,12 +1091,13 @@ def prefetch(year: int, tcgi_name: str) -> None:
         forcing(name, year)
 
 
-def task(year: int, tcgi_name: str, steering: str = 'lower') -> None:
+def task(year: int, tcgi_name: str, options: dict[str, str] | None = None) -> None:
+    options = options or {}
     ratio = seeding_ratio(tcgi_name)
-    print(f'{tcgi_name}: seeding ratio {ratio:.4f}; steering {steering}', flush=True)
+    print(f'{tcgi_name}: seeding ratio {ratio:.4f}; options {options}', flush=True)
     prefetch(year, tcgi_name)
-    run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio, steering)
-    name = run_name(tcgi_name, steering)
+    run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio, options)
+    name = run_name(tcgi_name, **options)
     files = store.push(
         f'{RUNS}/{name}',
         fragment=f'run-era5-{name}-{year}',
@@ -1095,18 +1113,24 @@ def launch(
     vm_type: str,
     max_workers: int,
     spot: bool = True,
-    steering: str = 'lower',
+    options: dict[str, str] | None = None,
 ) -> None:
-    name = run_name(tcgi_name, steering)
+    options = options or {}
+    name = run_name(tcgi_name, **options)
     batch.run(
         'chaz',
-        ['task', '--tcgi', tcgi_name, '--steering', steering],
+        ['task', '--tcgi', tcgi_name, *(f'--{k}={v}' for k, v in options.items())],
         name=f'chaz-run-era5-{name}-{years[0]}-{years[-1]}',
         over=years,
         vm_type=vm_type,
         max_workers=max_workers,
         spot=spot,
     )
+
+
+def add_options(parser) -> None:
+    for key, choices in OPTIONS.items():
+        parser.add_argument(f'--{key}', default=choices[0], choices=choices)
 
 
 def main():
@@ -1121,29 +1145,30 @@ def main():
     q.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
     q.add_argument('--workers', type=int, default=max((os.cpu_count() or 2) - 2, 1))
     q.add_argument('--ratio', type=float, help='seeding ratio; default from 1981-2005 TCGI')
-    q.add_argument('--steering', default='lower', choices=['lower', 'diagonal'])
+    add_options(q)
     t = sub.add_parser('task')
     t.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
     t.add_argument('--year', type=int)
-    t.add_argument('--steering', default='lower', choices=['lower', 'diagonal'])
+    add_options(t)
     la = sub.add_parser('launch')
     la.add_argument('--years', default='1981-2019')
     la.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
     la.add_argument('--vm-type', default='m8g.xlarge')
     la.add_argument('--max-workers', type=int, default=20)
     la.add_argument('--on-demand', action='store_true', help='on-demand VMs instead of spot')
-    la.add_argument('--steering', default='lower', choices=['lower', 'diagonal'])
+    add_options(la)
     a = p.parse_args()
+    options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
     if a.cmd == 'run':
         ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi)
         prefetch(a.year, a.tcgi)
         realizations = list(range(a.realizations))
-        print(run(a.year, a.tcgi, realizations, a.members, a.workers, ratio, a.steering))
+        print(run(a.year, a.tcgi, realizations, a.members, a.workers, ratio, options))
     elif a.cmd == 'task':
-        task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']), a.tcgi, a.steering)
+        task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']), a.tcgi, options)
     else:
         years = batch.parse_years(a.years)
-        launch(years, a.tcgi, a.vm_type, a.max_workers, not a.on_demand, a.steering)
+        launch(years, a.tcgi, a.vm_type, a.max_workers, not a.on_demand, options)
 
 
 if __name__ == '__main__':

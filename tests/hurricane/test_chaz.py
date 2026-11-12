@@ -110,7 +110,7 @@ def test_a_seeded_realization_repeats_exactly(monkeypatch, tmp_path):
         out = tmp_path / str(k)
         out.mkdir()
         monkeypatch.setattr(chaz, 'run_dir', lambda name, out=out: out)
-        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI', 'lower'))
+        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI', {}))
         assert t['storms_kept'] > 0
         runs.append(xr.open_dataset(out / '2017_r000.nc').load())
     a, b = runs
@@ -129,5 +129,28 @@ def test_diagonal_steering_zeroes_only_the_off_diagonal_entries(monkeypatch):
     got = chaz.steering_factor(a)
     assert got[:, 0, 0, 0].values.tolist() == [1, 0, 3, 0, 0, 6, 0, 0, 0, 10]
     assert a[1, 0, 0, 0] == 2  # the forcing is left alone
-    assert chaz.run_name('TCGI_CRH_PI', 'diagonal') == 'TCGI_CRH_PI-steering-diagonal'
+    assert chaz.run_name('TCGI_CRH_PI', steering='diagonal') == 'TCGI_CRH_PI-steering-diagonal'
     assert chaz.run_name('TCGI_CRH_PI') == 'TCGI_CRH_PI'
+    assert (
+        chaz.run_name('TCGI_CRH_PI', steering='lower', land='separate')
+        == 'TCGI_CRH_PI-land-separate'
+    )
+    with pytest.raises(ValueError):
+        chaz.run_name('TCGI_CRH_PI', land='radius')
+
+
+@pytest.mark.parametrize(('land', 'shared'), [('shared', True), ('separate', False)])
+def test_land_mean_shares_the_centre_cell_array_only_by_default(monkeypatch, land, shared):
+    from datetime import datetime
+
+    monkeypatch.setattr(chaz.gv, 'land', land)
+    t = np.array([[datetime(2000, 8, 1)], [datetime(2000, 8, 1, 6)]], dtype=object)
+    bt = chaz.fst2bt(
+        {
+            'lon': np.array([[300.0], [299.0]]),
+            'lat': np.array([[20.0], [20.5]]),
+            'Time': t,
+            'ldmask': np.zeros((2, 1)),
+        }
+    )
+    assert (bt.landmask is bt.landmaskMean) is shared
