@@ -318,10 +318,14 @@ def run(tcgi_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     tab = compare(obs, {'published': (pub, members['published']), 'ours': (ours, members['ours'])})
     local = store.CACHE / OUT
     local.mkdir(parents=True, exist_ok=True)
-    tab.to_csv(local / f'summary_{tcgi_name}.csv')
+    written = [f'summary_{tcgi_name}.csv']
+    tab.to_csv(local / written[0])
     for name, rows in (('ibtracs', obs), ('published', pub), (f'ours_{tcgi_name}', ours)):
-        rows.to_parquet(local / f'rows_{name}.parquet')
-    store.push(OUT, fragment=f'landfall-{tcgi_name}', replace=True)
+        written.append(f'rows_{name}.parquet')
+        rows.to_parquet(local / written[-1])
+    store.push(
+        fragment=f'landfall-{tcgi_name}', replace=True, keys=[f'{OUT}/{name}' for name in written]
+    )
     return tab
 
 

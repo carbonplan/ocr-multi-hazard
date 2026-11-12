@@ -2,7 +2,9 @@
 
 Every file has a key under S3_ROOT (s3://carbonplan-ocr/input/hurricane/chaz) and is cached in
 CACHE under the same key. Beside the cache, CACHE/.sync/{key}.json records which S3 version
-(ETag) and content (sha256) each cached file had when it was last downloaded or uploaded:
+(ETag) and content (sha256) each cached file had when it was last downloaded or uploaded, and
+every upload stores its sha256 in the object's S3 metadata, so content can be compared without
+downloading it:
 
   - `path` downloads a key on first use and, once per process, again when S3 holds a version the
     cached copy did not come from
@@ -11,8 +13,9 @@ CACHE under the same key. Beside the cache, CACHE/.sync/{key}.json records which
     source of those files (`replace`). It records each file's size, sha256 and source in
     S3_ROOT/manifest.json, or, from a parallel job, in a fragment that `merge_manifest` folds in.
 
-A file that changes on S3 while a job is reading it is not handled. CHAZ_OFFLINE=1 reads the
-cache without checking it against S3.
+Each key is written by one job at a time; downloads of a key on one machine take turns. A file
+that changes on S3 while a job is reading it is not handled. CHAZ_OFFLINE=1 reads the cache
+without checking it against S3.
 
     inputs/era5/{year}/           ERA5 from the CDS, with each request beside its file
     inputs/zenodo-11631930/       CHAZ tutorial data (CC BY 4.0)
@@ -23,11 +26,13 @@ cache without checking it against S3.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -102,10 +107,33 @@ def _record(key: str, info: dict, sha: str) -> None:
     os.replace(part, f)
 
 
-def _same_content(local: Path, info: dict) -> bool:
-    """Whether a file matches an S3 object whose ETag is its MD5 (a single-part upload)."""
+def _remote_sha(fs, key: str) -> str | None:
+    """The sha256 an upload stored in the object's metadata, if the filesystem keeps any."""
+    if not hasattr(fs, 'metadata'):
+        return None
+    return fs.metadata(f'{S3_ROOT}/{key}', refresh=True).get('sha256')
+
+
+def _same_content(fs, key: str, local: Path, info: dict) -> bool:
+    """Whether a cached file holds what S3 holds: by the stored sha256, else by an ETag that is
+    the MD5 (a single-part upload without KMS)."""
+    remote = _remote_sha(fs, key)
+    if remote is not None:
+        return remote == _hash(local)
     etag = (info.get('ETag') or '').strip('"')
     return bool(etag) and '-' not in etag and _hash(local, 'md5') == etag
+
+
+@contextmanager
+def _lock(key: str):
+    f = CACHE / SYNC / f'{key}.lock'
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, 'a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 _checked: set[str] = set()
@@ -113,9 +141,8 @@ _checked: set[str] = set()
 
 def path(key: str) -> Path:
     """Local path of a key under S3_ROOT, downloaded into CACHE on first use. Once per process a
-    cached copy is checked against S3 and downloaded again unless it came from the version S3
-    holds. A file only in the cache is used as it is. Safe when several processes ask for the
-    same key at once: each downloads to its own temporary file and moves it into place."""
+    cached copy is checked against S3 and downloaded again unless it holds the version S3 holds.
+    A file only in the cache is used as it is."""
     local = CACHE / key
     if local.exists() and (OFFLINE or key in _checked):
         return local
@@ -124,12 +151,14 @@ def path(key: str) -> Path:
     if info is None:
         if not local.exists():
             raise FileNotFoundError(f'{S3_ROOT}/{key}')
-    elif local.exists() and (_synced(key) or {}).get('version') == _version(info):
-        pass
-    elif local.exists() and _same_content(local, info):
-        _record(key, info, _hash(local))
     else:
-        _download(fs, key, info)
+        with _lock(key):
+            if local.exists() and (_synced(key) or {}).get('version') == _version(info):
+                pass
+            elif local.exists() and _same_content(fs, key, local, info):
+                _record(key, info, _hash(local))
+            else:
+                _download(fs, key, info)
     _checked.add(key)
     return local
 
@@ -229,9 +258,17 @@ def upload(key: str) -> None:
 
 
 def _put(fs, key: str) -> None:
+    """Upload a cached file with its sha256 in the object's metadata, and record the version only
+    once S3 is seen to hold this content (another writer may have replaced it meanwhile)."""
     local = CACHE / key
-    fs.put(str(local), f'{S3_ROOT}/{key}')
-    _record(key, _info(fs, key), _hash(local))
+    sha = _hash(local)
+    fs.put(str(local), f'{S3_ROOT}/{key}', Metadata={'sha256': sha})
+    info = _info(fs, key)
+    remote = _remote_sha(fs, key)
+    if info is not None and remote in (None, sha):
+        _record(key, info, sha)
+    else:
+        (CACHE / SYNC / f'{key}.json').unlink(missing_ok=True)
 
 
 def _remote_manifest(fs) -> dict:
@@ -240,10 +277,14 @@ def _remote_manifest(fs) -> dict:
 
 
 def push(
-    prefix: str = '', fragment: str | None = None, pattern: str = '*', replace: bool = False
+    prefix: str = '',
+    fragment: str | None = None,
+    pattern: str = '*',
+    replace: bool = False,
+    keys: list[str] | None = None,
 ) -> dict:
-    """Upload cached files under `prefix` matching `pattern` that S3 lacks or that changed since
-    they were synced. Their entries go into manifest.json, or, from a parallel job, into a new
+    """Upload cached files under `prefix` matching `pattern` (or exactly `keys`) that S3 lacks or
+    that changed since they were synced. Each entry carries the S3 version it describes. Their entries go into manifest.json, or, from a parallel job, into a new
     fragment manifests/<fragment>-<time>-<id>.json for `merge_manifest`. Writing manifest.json
     directly is a read-modify-write: do it from one place at a time, and let parallel jobs write
     fragments.
@@ -259,7 +300,8 @@ def push(
             return False
         return p.relative_to(CACHE).parts[0] != SYNC
 
-    for local in sorted(filter(keep, (CACHE / prefix).rglob(pattern))):
+    found = (CACHE / k for k in keys) if keys is not None else (CACHE / prefix).rglob(pattern)
+    for local in sorted(filter(keep, found)):
         key = str(local.relative_to(CACHE))
         files[key] = _entry(local, key)
         sha = files[key]['sha256']
@@ -270,7 +312,7 @@ def push(
         elif synced is not None and synced['version'] == _version(info):
             if synced['sha256'] != sha:
                 todo.append(key)
-        elif _same_content(local, info):
+        elif _same_content(fs, key, local, info):
             _record(key, info, sha)
         else:
             if not replace:
@@ -285,6 +327,8 @@ def push(
     for key in todo:
         _put(fs, key)
         print('pushed', key, flush=True)
+    for key, entry in files.items():
+        entry['version'] = (_synced(key) or {}).get('version')
     if fragment:
         stamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%S')
         name = f'{fragment}-{stamp}-{uuid.uuid4().hex[:8]}.json'
@@ -298,18 +342,25 @@ def push(
 
 
 def merge_manifest() -> int:
-    """Fold the parallel jobs' manifest fragments into manifest.json, keeping each file's most
-    recently recorded entry, then delete the fragments it read. Fragments are never rewritten, so
-    one written during the merge waits for the next. Run it from one place at a time. Returns the
-    entry count."""
+    """Fold the parallel jobs' manifest fragments into manifest.json, then delete the fragments
+    it read. For each file it keeps the entry describing the version S3 holds now, else the most
+    recently recorded one. Fragments are never rewritten, so one written during the merge waits
+    for the next. Run it from one place at a time. Returns the entry count."""
     fs = s3()
-    files = _remote_manifest(fs)
+    root = fs._strip_protocol(S3_ROOT).rstrip('/') + '/'
+    current = {
+        k.removeprefix(root): _version(info) for k, info in fs.find(root, detail=True).items()
+    }
+    entries: dict[str, list[dict]] = {k: [v] for k, v in _remote_manifest(fs).items()}
     fs.invalidate_cache(f'{S3_ROOT}/{FRAGMENTS}')
     frags = sorted(fs.glob(f'{S3_ROOT}/{FRAGMENTS}/*.json'))
     for frag in frags:
         for key, entry in json.loads(fs.cat(frag))['files'].items():
-            if entry.get('recorded', '') >= files.get(key, {}).get('recorded', ''):
-                files[key] = entry
+            entries.setdefault(key, []).append(entry)
+    files = {}
+    for key, cands in entries.items():
+        matching = [e for e in cands if e.get('version') and e['version'] == current.get(key)]
+        files[key] = max(matching or cands, key=lambda e: e.get('recorded', ''))
     with fs.open(f'{S3_ROOT}/{MANIFEST}', 'w') as f:
         json.dump({'files': files}, f, indent=1, sort_keys=True)
     if frags:

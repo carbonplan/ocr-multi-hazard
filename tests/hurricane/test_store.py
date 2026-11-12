@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import fsspec
@@ -160,3 +162,76 @@ def test_merge_leaves_a_fragment_written_during_the_merge(bucket, monkeypatch):
     assert not bucket.exists(first) and bucket.exists(late)
     monkeypatch.setattr(bucket, 'cat', cat)
     assert store.merge_manifest() == 2
+
+
+def test_concurrent_requests_for_a_key_download_it_once(bucket, monkeypatch):
+    bucket.pipe(remote('a.nc'), b'x' * 1000)
+    get, calls = bucket.get, []
+
+    def slow_get(*a, **k):
+        calls.append(1)
+        time.sleep(0.05)
+        return get(*a, **k)
+
+    monkeypatch.setattr(bucket, 'get', slow_get)
+    threads = [threading.Thread(target=store.path, args=('a.nc',)) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+
+
+def stored_sha(bucket, monkeypatch, sha_of):
+    """Give the local stand-in S3 object metadata: sha_of(path) is what each object stores."""
+    monkeypatch.setattr(
+        bucket, 'metadata', lambda path, refresh=False: {'sha256': sha_of(path)}, raising=False
+    )
+
+
+def test_upload_does_not_record_a_version_another_writer_replaced(bucket, monkeypatch):
+    key = 'runs/era5/x/2000_r000.nc'
+    (store.CACHE / key).parent.mkdir(parents=True)
+    (store.CACHE / key).write_bytes(b'ours')
+    stored_sha(bucket, monkeypatch, lambda path: 'theirs')
+    store.upload(key)
+    assert store._synced(key) is None
+
+
+def test_a_cached_copy_with_the_stored_checksum_is_adopted_without_downloading(bucket, monkeypatch):
+    key = 'inputs/era5/2000/big.nc'
+    bucket.pipe(remote(key), b'same bytes')
+    (store.CACHE / key).parent.mkdir(parents=True)
+    (store.CACHE / key).write_bytes(b'same bytes')
+    stored_sha(bucket, monkeypatch, lambda path: store._hash(store.CACHE / key))
+    monkeypatch.setattr(bucket, 'get', lambda *a, **k: pytest.fail('downloaded'))
+    assert store.path(key).read_bytes() == b'same bytes'
+    puts = no_puts(bucket, monkeypatch)
+    store.push('inputs/era5/2000')
+    assert puts == []
+
+
+def test_push_of_keys_leaves_other_cached_files_alone(bucket):
+    out = store.CACHE / 'validation/chaz/landfall'
+    out.mkdir(parents=True)
+    (out / 'summary_TCGI_CRH_PI.csv').write_bytes(b'crh')
+    (out / 'summary_TCGI_SD_PI.csv').write_bytes(b'stale sd')
+    bucket.pipe(remote('validation/chaz/landfall/summary_TCGI_SD_PI.csv'), b'newer sd')
+    store.push(keys=['validation/chaz/landfall/summary_TCGI_CRH_PI.csv'], replace=True)
+    assert bucket.cat(remote('validation/chaz/landfall/summary_TCGI_SD_PI.csv')) == b'newer sd'
+    assert bucket.cat(remote('validation/chaz/landfall/summary_TCGI_CRH_PI.csv')) == b'crh'
+
+
+def test_merge_keeps_the_entry_for_the_version_s3_holds(bucket):
+    key = 'forcing/era5/2000/PI_2000.nc'
+    (store.CACHE / key).parent.mkdir(parents=True)
+    (store.CACHE / key).write_bytes(b'new')
+    store.push('forcing/era5/2000', fragment='later-upload')
+    held = json.loads(bucket.cat(bucket.glob(remote('manifests/later-upload-*.json'))[0]))
+    wrong_clock = {'sha256': 'old', 'recorded': '2099-01-01T00:00:00+00:00', 'version': 'gone'}
+    bucket.pipe(
+        remote('manifests/fast-clock.json'), json.dumps({'files': {key: wrong_clock}}).encode()
+    )
+    store.merge_manifest()
+    merged = json.loads(bucket.cat(remote('manifest.json')))['files'][key]
+    assert merged['sha256'] == held['files'][key]['sha256'] == store._hash(store.CACHE / key)
