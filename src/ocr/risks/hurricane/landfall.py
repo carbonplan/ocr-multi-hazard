@@ -283,7 +283,8 @@ def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFr
 
 def observed_arrays(csv: bytes):
     """chaz_arrays for the IBTrACS since-1980 CSV: every track, synoptic records only, by
-    season, with one 'member' of USA_WIND."""
+    season, with one 'member' of USA_WIND. Each track is laid on a regular 6-hourly grid from its
+    first record to its last, so a missing record is a NaN node, not a shorter step."""
     bt = pd.read_csv(
         io.BytesIO(csv),
         skiprows=[1],
@@ -292,8 +293,14 @@ def observed_arrays(csv: bytes):
     )
     t = pd.to_datetime(bt['ISO_TIME'])
     bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*YEARS)]
-    bt = bt.assign(USA_WIND=pd.to_numeric(bt['USA_WIND'], errors='coerce'))
-    groups = [g for _, g in bt.groupby('SID', sort=True)]
+    bt = bt.assign(USA_WIND=pd.to_numeric(bt['USA_WIND'], errors='coerce'), time=t[bt.index])
+    groups = []
+    for _, g in bt.groupby('SID', sort=True):
+        g = g.drop_duplicates('time').set_index('time').sort_index()
+        grid = pd.date_range(g.index[0], g.index[-1], freq='6h')
+        g = g.reindex(grid)
+        g['SEASON'] = g['SEASON'].ffill()
+        groups.append(g)
     n, life = len(groups), max(len(g) for g in groups)
     lat = np.full((life, n), np.nan)
     lon = np.full((life, n), np.nan)
