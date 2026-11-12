@@ -222,8 +222,9 @@ def fillinNaN(var, neighbors):
 
 
 def fill_missing(x: np.ndarray, neighbors) -> np.ndarray:
-    """NaN cells of each (month, lat, lon) slice filled from their neighbours by fillinNaN."""
-    missing = np.isnan(x)
+    """Non-finite cells of each (month, lat, lon) slice filled from their neighbours by
+    fillinNaN."""
+    missing = ~np.isfinite(x)
     if not missing.any():
         return x
     if missing.all(axis=(1, 2)).any():
@@ -1047,7 +1048,10 @@ def task(year: int, tcgi_name: str) -> None:
     prefetch(year, tcgi_name)
     run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio)
     files = store.push(
-        f'{RUNS}/{tcgi_name}', fragment=f'run-era5-{tcgi_name}-{year}', pattern=f'{year}_*'
+        f'{RUNS}/{tcgi_name}',
+        fragment=f'run-era5-{tcgi_name}-{year}',
+        pattern=f'{year}_*',
+        replace=True,
     )
     print(f'{year}: {len(files)} files on S3', flush=True)
 

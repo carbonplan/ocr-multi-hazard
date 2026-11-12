@@ -13,6 +13,8 @@ reproduced and our runs compared on the same footing:
     observed one, which leaves where storms go and how strong they are
   - the landfall share of North Atlantic storms splits exactly into the share whose track crosses
     the US coast at all, whatever its wind, and the share of those crossings made at 34 kt or more
+    (undefined when no track crosses). A CHAZ track runs on after its intensity member ends, so
+    the crossing share counts tracks, not storms that still exist
 
   run    tables for IBTrACS, the published ERA5 tracks and our runs, under validation/chaz/landfall
 """
@@ -319,7 +321,7 @@ def run(tcgi_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     tab.to_csv(local / f'summary_{tcgi_name}.csv')
     for name, rows in (('ibtracs', obs), ('published', pub), (f'ours_{tcgi_name}', ours)):
         rows.to_parquet(local / f'rows_{name}.parquet')
-    store.push(OUT, fragment=f'landfall-{tcgi_name}')
+    store.push(OUT, fragment=f'landfall-{tcgi_name}', replace=True)
     return tab
 
 

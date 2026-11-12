@@ -1,6 +1,4 @@
 import json
-import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import fsspec
@@ -16,7 +14,6 @@ def bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(store, 'S3_ROOT', str(tmp_path / 'root'))
     monkeypatch.setattr(store, 'CACHE', tmp_path / 'cache')
     monkeypatch.setattr(store, 's3', lambda: fs)
-    monkeypatch.setattr(store, '_uploaded', {})
     monkeypatch.setattr(store, '_checked', set())
     monkeypatch.setattr(store, 'OFFLINE', False)
     return fs
@@ -42,7 +39,7 @@ def test_push_pattern_and_fragment(bucket):
     files = store.push('runs/era5/TCGI_CRH_PI', fragment='run-2000', pattern='2000_*')
     assert list(files) == ['runs/era5/TCGI_CRH_PI/2000_r000.nc']
     assert not bucket.exists(remote('runs/era5/TCGI_CRH_PI/2001_r000.nc'))
-    assert bucket.exists(remote('manifests/run-2000.json'))
+    assert len(bucket.glob(remote('manifests/run-2000-*.json'))) == 1
 
 
 def test_merge_keeps_newest_entry_and_consumes_fragments(bucket):
@@ -69,83 +66,97 @@ def test_failed_tasks(task, bad):
     assert batch.failed(task) is bad
 
 
+def no_puts(bucket, monkeypatch):
+    puts = []
+    monkeypatch.setattr(bucket, 'put', lambda *a, **k: puts.append(a))
+    return puts
+
+
 def test_push_records_but_skips_files_already_uploaded(bucket, monkeypatch):
     raw = store.CACHE / 'inputs/era5/2000'
     raw.mkdir(parents=True)
     (raw / 'sl_025.nc').write_bytes(b'a')
     store.upload('inputs/era5/2000/sl_025.nc')
-    puts = []
-    monkeypatch.setattr(bucket, 'put', lambda *a, **k: puts.append(a))
+    puts = no_puts(bucket, monkeypatch)
     files = store.push('inputs/era5/2000', fragment='raw-2000')
     assert list(files) == ['inputs/era5/2000/sl_025.nc']
     assert puts == []
     assert bucket.cat(remote('inputs/era5/2000/sl_025.nc')) == b'a'
 
 
-def age(file, seconds):
-    t = time.time() - seconds
-    os.utime(file, (t, t))
+def test_push_skips_files_downloaded_on_a_fresh_machine(bucket, monkeypatch):
+    bucket.pipe(remote('inputs/era5/2000/sl_025.nc'), b'a')
+    store.path('inputs/era5/2000/sl_025.nc')
+    puts = no_puts(bucket, monkeypatch)
+    store.push('inputs/era5/2000')
+    assert puts == []
 
 
-def test_path_replaces_a_cached_copy_that_s3_has_overwritten(bucket):
+def test_path_replaces_a_cached_copy_of_another_version(bucket):
     key = 'forcing/era5/2000/I_MLR_2000.nc'
     local = store.CACHE / key
     local.parent.mkdir(parents=True)
     local.write_bytes(b'old')
-    age(local, 3600)
     bucket.pipe(remote(key), b'new')
     assert store.path(key).read_bytes() == b'new'
 
 
-def test_path_keeps_a_cached_copy_that_is_current_or_only_local(bucket):
+def test_path_checks_once_per_process_and_keeps_a_current_copy(bucket, monkeypatch):
     bucket.pipe(remote('a.nc'), b'same')
-    (store.CACHE / 'a.nc').parent.mkdir(parents=True)
-    (store.CACHE / 'a.nc').write_bytes(b'same')
-    (store.CACHE / 'b.nc').write_bytes(b'local only')
+    store.path('a.nc')
+    monkeypatch.setattr(bucket, 'get', lambda *a, **k: pytest.fail('downloaded again'))
+    store._checked.clear()
     assert store.path('a.nc').read_bytes() == b'same'
+
+
+def test_path_uses_a_file_only_in_the_cache(bucket):
+    (store.CACHE / 'b.nc').parent.mkdir(parents=True)
+    (store.CACHE / 'b.nc').write_bytes(b'local only')
     assert store.path('b.nc').read_bytes() == b'local only'
 
 
-def test_push_refuses_to_overwrite_a_newer_s3_copy(bucket):
+def test_push_refuses_to_overwrite_a_version_the_cache_has_not_seen(bucket):
     key = 'forcing/era5/2017/PI_2017.nc'
-    local = store.CACHE / key
-    local.parent.mkdir(parents=True)
-    local.write_bytes(b'built on the laptop')
-    age(local, 3600)
-    bucket.pipe(remote(key), b'rebuilt on Coiled')
-    with pytest.raises(RuntimeError, match='older than their S3 copies'):
+    bucket.pipe(remote(key), b'A')
+    store.path(key)  # the laptop's copy
+    bucket.pipe(remote(key), b'B')  # rebuilt on Coiled, same size
+    with pytest.raises(RuntimeError, match='has not seen'):
         store.push('forcing/era5/2017')
-    assert bucket.cat(remote(key)) == b'rebuilt on Coiled'
-    store.push('forcing/era5/2017', force=True)
-    assert bucket.cat(remote(key)) == b'built on the laptop'
+    assert bucket.cat(remote(key)) == b'B'
+    store.push('forcing/era5/2017', replace=True)
+    assert bucket.cat(remote(key)) == b'A'
 
 
-def test_push_after_upload_does_not_see_a_stale_copy(bucket, monkeypatch):
-    key = 'inputs/era5/2000/sl_025.nc'
-    (store.CACHE / key).parent.mkdir(parents=True)
-    (store.CACHE / key).write_bytes(b'a')
-    store.upload(key)
-    monkeypatch.setattr(store, '_uploaded', {})
-    store.push('inputs/era5/2000')
-    assert bucket.cat(remote(key)) == b'a'
+def test_push_uploads_a_file_changed_since_it_was_synced(bucket):
+    key = 'forcing/era5/2017/PI_2017.nc'
+    bucket.pipe(remote(key), b'A')
+    store.path(key).write_bytes(b'rebuilt')
+    store.push('forcing/era5/2017')
+    assert bucket.cat(remote(key)) == b'rebuilt'
 
 
-def test_merge_keeps_a_fragment_rewritten_during_the_merge(bucket, monkeypatch):
-    frag = remote('manifests/run-2000.json')
+def test_push_writes_a_new_fragment_each_time(bucket):
+    (store.CACHE / 'x').mkdir(parents=True)
+    (store.CACHE / 'x' / 'a.nc').write_bytes(b'a')
+    store.push('x', fragment='job')
+    store.push('x', fragment='job')
+    assert len(bucket.glob(remote('manifests/job-*.json'))) == 2
+
+
+def test_merge_leaves_a_fragment_written_during_the_merge(bucket, monkeypatch):
     entry = {'sha256': 'x', 'recorded': '2026-01-01T00:00:00+00:00'}
-    bucket.pipe(frag, json.dumps({'files': {'a': entry}}).encode())
+    first, late = remote('manifests/a.json'), remote('manifests/b.json')
+    bucket.pipe(first, json.dumps({'files': {'a': entry}}).encode())
     cat = bucket.cat
 
-    def cat_then_rewrite(path, *a, **k):
+    def cat_then_another_job_writes(path, *a, **k):
         out = cat(path, *a, **k)
-        if path == frag:
-            time.sleep(0.01)
-            bucket.pipe(frag, json.dumps({'files': {'b': entry}}).encode())
+        if path == first:
+            bucket.pipe(late, json.dumps({'files': {'b': entry}}).encode())
         return out
 
-    monkeypatch.setattr(bucket, 'cat', cat_then_rewrite)
-    store.merge_manifest()
-    assert bucket.exists(frag)
+    monkeypatch.setattr(bucket, 'cat', cat_then_another_job_writes)
+    assert store.merge_manifest() == 1
+    assert not bucket.exists(first) and bucket.exists(late)
     monkeypatch.setattr(bucket, 'cat', cat)
     assert store.merge_manifest() == 2
-    assert not bucket.exists(frag)

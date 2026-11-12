@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from scipy.interpolate import interp1d
 
@@ -240,9 +241,9 @@ def _daily_winds(year: int) -> xr.Dataset:
     ]
     w = xr.concat(months, 'time').sortby('time').sortby('lat').sel(lat=LAT, lon=LON)
     w = w.resample(time='1D').mean()
-    days = 366 if calendar.isleap(year) else 365
-    if w.sizes['time'] != days or any(bool(w[v].isnull().any()) for v in w.data_vars):
-        raise ValueError(f'{year}: daily winds cover {w.sizes["time"]} days or have gaps')
+    days = pd.date_range(f'{year}-01-01', f'{year}-12-31', freq='D')
+    if not w.indexes['time'].equals(days) or any(bool(w[v].isnull().any()) for v in w.data_vars):
+        raise ValueError(f'{year}: daily winds do not cover every day of the year without gaps')
     return xr.Dataset(
         {f'{c}{lev}': w[c].sel(level=lev, drop=True) for c in ('u', 'v') for lev in (250, 850)}
     )
@@ -367,7 +368,7 @@ def task(year: int) -> None:
     build(year)
     raw, forcing = (
         store.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
-        store.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing'),
+        store.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing', replace=True),
     )
     print(f'{year}: {len(raw)} raw and {len(forcing)} forcing files on S3', flush=True)
 
@@ -376,9 +377,9 @@ def reference() -> None:
     """The reference files the review notebooks read: the tutorial's Zenodo record and the January
     2017 wind test, pushed to S3 (what `launch-reference` runs)."""
     store.fetch_tutorial()
-    store.push(store.TUTORIAL, fragment='tutorial')
+    store.push(store.TUTORIAL, fragment='tutorial', replace=True)
     fetch_validation()
-    store.push('validation/forcing', fragment='validation-forcing')
+    store.push('validation/forcing', fragment='validation-forcing', replace=True)
 
 
 def cds_secrets() -> dict[str, str]:
