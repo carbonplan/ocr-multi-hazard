@@ -261,8 +261,9 @@ def end_rules(wind, w_end, reachable, observed: bool) -> np.ndarray:
     return out
 
 
-def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFrame:
-    """storm_rows for the storms of a CHAZ track file in YEARS."""
+def chaz_arrays(ds: xr.Dataset):
+    """lat, lon (node, storm), wind (member, node, storm) and year of the storms of a CHAZ track
+    file in YEARS, with CHAZ's padding nodes as NaN."""
     year = ds['year'].values
     sel = np.nonzero((year >= YEARS[0]) & (year <= YEARS[1]))[0]
     lat = ds['latitude'].values[:, sel]
@@ -272,11 +273,17 @@ def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFr
     lat = np.where(fill, np.nan, lat)
     lon = np.where(fill, np.nan, lon)
     wind = np.where(fill[None] | ~np.isfinite(lat)[None], np.nan, wind)
-    return storm_rows(lat, lon, wind, year[sel], land, source, unit)
+    return lat, lon, wind, year[sel]
 
 
-def observed(land: USLand, csv: bytes) -> pd.DataFrame:
-    """IBTrACS since-1980 CSV, every track, synoptic records only, by season."""
+def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFrame:
+    """storm_rows for the storms of a CHAZ track file in YEARS."""
+    return storm_rows(*chaz_arrays(ds), land, source, unit)
+
+
+def observed_arrays(csv: bytes):
+    """chaz_arrays for the IBTrACS since-1980 CSV: every track, synoptic records only, by
+    season, with one 'member' of USA_WIND."""
     bt = pd.read_csv(
         io.BytesIO(csv),
         skiprows=[1],
@@ -295,7 +302,21 @@ def observed(land: USLand, csv: bytes) -> pd.DataFrame:
     for k, g in enumerate(groups):
         lat[: len(g), k], lon[: len(g), k], wind[0, : len(g), k] = g['LAT'], g['LON'], g['USA_WIND']
         season[k] = g['SEASON'].iloc[0]
-    return storm_rows(lat, lon, wind, season, land, 'IBTrACS', 'ibtracs')
+    return lat, lon, wind, season
+
+
+def observed(land: USLand, csv: bytes) -> pd.DataFrame:
+    """storm_rows for IBTrACS (observed_arrays)."""
+    return storm_rows(*observed_arrays(csv), land, 'IBTrACS', 'ibtracs')
+
+
+def ibtracs_csv(fs) -> bytes:
+    """The latest IBTrACS since-1980 CSV kept under inputs/."""
+    key = sorted(
+        fs.glob(f'{store.S3_ROOT}/inputs/ibtracs-v04r01/*/ibtracs.since1980.list.v04r01.csv')
+    )[-1]
+    print('IBTrACS', key.rsplit('/', 2)[-2], flush=True)
+    return fs.cat(key)
 
 
 def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
@@ -354,11 +375,7 @@ def compare(obs: pd.DataFrame, runs: dict[str, tuple[pd.DataFrame, int]]) -> pd.
 def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     fs = store.s3()
     land = USLand()
-    csv_key = sorted(
-        fs.glob(f'{store.S3_ROOT}/inputs/ibtracs-v04r01/*/ibtracs.since1980.list.v04r01.csv')
-    )[-1]
-    obs = observed(land, fs.cat(csv_key))
-    print('IBTrACS', csv_key.rsplit('/', 2)[-2], len(obs), 'storms', flush=True)
+    obs = observed(land, ibtracs_csv(fs))
 
     pub = []
     for i in range(10):
