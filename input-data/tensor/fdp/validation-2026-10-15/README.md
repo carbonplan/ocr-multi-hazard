@@ -25,9 +25,9 @@ claimed to reproduce the original paper's exact inclusion rule.
 Against uniformly sampled eligible area within each watershed, the highest
 scoring 10% captures an estimated **24.0%** of all report cells, and the highest
 scoring 20% captures **45.0%**. For recorded-impact cells the corresponding
-figures are **22.8%** and **42.6%**. Threshold ties are allocated fractionally,
-equivalent to expected capture with uniform random tie-breaking. This matters
-because some watersheds contain large areas tied at score 1.0.
+figures are **22.8%** and **42.6%**. Some watersheds have large areas tied at
+score 1.0, so threshold ties are allocated fractionally, equivalent to expected
+capture with uniform random tie-breaking.
 
 ![Validation score distributions, yearly AUC and HUC-2 AUC](validation.png)
 
@@ -97,19 +97,19 @@ original boundary processing remain unresolved.
   method. They do not capture all storm-scale dependence or methodological
   uncertainty. Only one background-generation seed was used.
 
-**The key limitation is the comparison population.** This run does not match
-land cover or exclude floodplain cells as the original paper did. The original
-USGS response/predictor archive downloads could not be retrieved publicly in
-this session, and the supplementary selection rules were not recovered.
+The main limitation is the comparison population: this run does not match land
+cover or exclude floodplain cells as the original paper did. The original USGS
+response/predictor archive downloads could not be retrieved publicly at the time
+of this run, and the supplementary selection rules were not recovered.
 Consequently, this run evaluates presence/background ranking, with exposure
 and reporting biases still present. AUC 0.696 must not be interpreted as a
 decline from the paper's reported 0.750, since the evaluation designs differ.
 It also does not validate annual probabilities, loss amounts or individual
 building risk. Building footprints were not used in the evaluation.
 
-The broad temporal evaluation has now inspected 2024–2025. Those years can
-still support a transparent retrospective model comparison, but are no longer
-an untouched confirmatory holdout for choices informed by these findings.
+This evaluation inspected 2024–2025. Those years can still support a
+transparent retrospective model comparison, but not an untouched confirmatory
+holdout for choices informed by these findings.
 
 ## Reproduce and inspect
 
@@ -120,7 +120,7 @@ uv run input-data/tensor/fdp/validate_fdp.py --output _build/fdp-validation/2026
 ```
 
 Alternatively, run it with an existing Python environment containing those
-packages. This session used the existing OCR default Pixi environment; exact
+packages. This run used OCR's default Pixi environment; exact
 installed package versions and the executed script hash are in the manifest.
 The minimal `fdp` packaging environment alone does not contain all dependencies.
 
@@ -146,7 +146,7 @@ The completed cached-input run took **43 seconds wall time**, with approximately
 **11.3 GB peak memory footprint** (10.2 GB maximum resident set). The initial
 3.17 GB TIFF download took about 6.2 minutes. No cloud compute was launched and
 no remote objects were modified; existing S3 read/egress charges may still
-apply. This is a validation benchmark, not a retraining benchmark.
+apply. These timings do not estimate retraining cost.
 
 ## Implication for the rerun
 

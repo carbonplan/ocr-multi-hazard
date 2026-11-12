@@ -7,27 +7,28 @@
 Random-forest-predicted probability of flood damage, 0..1, on a 100 m
 31327 × 48357 CONUS grid in NAD83 / Conus Albers (EPSG:5070).
 
-Like the CHAZ scripts, these are run by hand. The refit's training inputs and
-model runs go under `input/flood/fdp-refit/`, where the flood pipeline's `score`
-stage reads them (see [Served store](#served-store)); the published raster under
-`input/flood/raw/usgs-fdp/`, where training compares each refit with it and the
-flood ETL reads it.
+The scripts in this directory are run by hand, outside the pipeline. The refit's training inputs
+and model runs go under `input/flood/fdp-refit/`, where the flood pipeline's
+`score` stage reads them (see [Served store](#served-store)). The published
+raster goes under `input/flood/raw/usgs-fdp/`, where training compares each
+refit with it and the flood ETL reads it.
 
-For the proposed temporal validation and retraining with newer NOAA reports,
-see [the validation and rerun specification](RERUN_SPEC.md);
-[Retraining](#retraining) refits the model.
+[The validation and rerun specification](RERUN_SPEC.md) lays out the temporal
+validation and the retraining with newer NOAA reports;
+[Retraining](#retraining) below runs the refit.
 
 The executed [local validation notebook](validation-2026-10-15/validation.ipynb)
-compares the frozen raster with June 2020–December 2025 NOAA reports. A
-[run record](validation-2026-10-15/README.md) accompanies the results, limitations,
-input hashes and reproducible local validation script.
+compares the published raster with June 2020–December 2025 NOAA reports. Its
+[run record](validation-2026-10-15/README.md) lists the results, limitations and
+input hashes, and how to rerun the validation script locally.
 
 ## Retraining
 
-Refits the paper's 18 HUC-2 random forests with `train_fdp.R`, a port of the
-released R script (see its header for what differs). Three steps, each
-resumable and each writing under `input/flood/fdp-refit/`. On Coiled, from
-start to finish (each step needs the previous one's output):
+Refits the paper's 18 random forests, one per HUC-2 watershed (the two-digit
+USGS hydrologic regions), with `train_fdp.R`, a port of the released R script
+(see its header for what differs). Three steps, each resumable and each writing
+under `input/flood/fdp-refit/`. On Coiled, from start to finish (each step needs
+the previous one's output):
 
 ```bash
 # 1. predictors, released points, the HUC-2 raster and the published surface (~18 GB of downloads)
@@ -44,10 +45,11 @@ pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-2006
 ocr run runs/flood/v2.0.0.toml
 ```
 
-Without `--coiled`, steps 1 and 2 run here; `fdp_train.py task --run <run> --huc 03`
-trains one watershed here. Coiled jobs copy these scripts to
+Without `--coiled`, steps 1 and 2 run locally; `fdp_train.py task --run <run> --huc 03`
+trains one watershed locally. Coiled jobs copy these scripts to
 `input/flood/fdp-refit/code/<hash>/` and run them from there (`fdp.launch`), with
-the Coiled workspace's AWS access; launching needs AWS credentials to copy them.
+the Coiled workspace's AWS access; launching needs local AWS credentials to copy
+the scripts there.
 
 Points are reproducible across machines up to one PROJ quirk: reports on the
 45th parallel sit at the edge of Canada's NAD83(CSRS) shift grid, where PROJ's
@@ -95,7 +97,7 @@ Each task uploads `fdp.tif` (the watershed's probabilities), `summary.json`
 separately outside the 100-yr floodplain), `importance.csv`, the final ranger
 model, CV predictions and the R log.
 
-The 100-yr floodplain holds no pseudo-absences, so the model scores it near 1
+The 100-yr floodplain has no pseudo-absences, so the model scores it near 1
 throughout: in HUC 03 every floodplain cell (20% of the watershed) falls in the
 top fifth of the surface. Agreement over the whole watershed is therefore
 inflated by a block both surfaces get trivially right, and the
@@ -165,9 +167,6 @@ together move the map about as much as six extra years of reports.
 
 ### Served store
 
-The ocr-web branch `Shane98c/fdp-retrained` reads an earlier HUC 03 mosaic at
-`ocr-explore/FDP/processed/retrained/noaa-200612-202512-planar/`.
-
 The flood pipeline's `score` stage (`ocr.risks.flood.refit`) mosaics the
 watersheds of the run it pins (`RUN`, `DISTANCE`) into
 `output/flood/<version>/store.icechunk`, in the layout documented in
@@ -183,6 +182,9 @@ ocr run runs/flood/v2.0.0.toml
 
 obstore reads AWS credentials from the environment only, so locally export
 them first with `eval "$(aws configure export-credentials --format env)"`.
+
+The ocr-web branch `Shane98c/fdp-retrained` reads an earlier HUC 03 mosaic at
+`ocr-explore/FDP/processed/retrained/noaa-200612-202512-planar/`.
 
 ## Outputs
 
@@ -212,4 +214,4 @@ input/flood/fdp-refit/runs/<run>/<distance>[-quick]/huc<NN>/
   threshold per HUC-2 watershed, the probability where that watershed's false
   positive and false negative rates cross, and the release ships the code but
   not the resulting values. No client-side threshold reproduces it, so the
-  viewer carries the continuous surface alone.
+  flood store carries only the continuous surface.

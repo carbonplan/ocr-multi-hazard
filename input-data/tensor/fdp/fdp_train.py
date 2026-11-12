@@ -248,7 +248,7 @@ def compare(
 ) -> dict:
     """Agreement with the published surface over the watershed's cells.
 
-    The 100-yr floodplain holds no pseudo-absences, so the model scores it near
+    The 100-yr floodplain has no pseudo-absences, so the model scores it near
     1 throughout; `outside_floodplain` measures agreement where the surface
     actually ranks cells.
     """
