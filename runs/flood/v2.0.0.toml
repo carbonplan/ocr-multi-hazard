@@ -1,8 +1,12 @@
-# Full flood deploy on Coiled: `pixi run flood-all`. Run `pixi run flood-etl --version v2.0.0` first.
+# Full flood deploy on Coiled: `pixi run flood-all`. score mosaics the FDP refit (`ocr.risks.flood.refit`).
 risk = "flood"
 version = "v2.0.0"
-stages = ["pyramid", "buildings", "regions"]
+stages = ["score", "pyramid", "buildings", "regions"]
 coiled = true
+
+[kwargs.score]  # the FDP refit model run, all 18 watersheds
+run = "noaa-200612-202512"
+distance = "planar"
 
 [kwargs.pyramid]
 levels = "auto"

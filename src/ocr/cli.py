@@ -60,6 +60,8 @@ JOBS: dict[str, JobConfig] = {
 }
 
 POLL_SECONDS = 10
+# Stage kwargs that write a partial output, so never to production (`execute`).
+SUBSETS = {'score': 'hucs', 'buildings': 'bbox'}
 
 Stage = StrEnum('Stage', {n: n for n in STAGES})
 
@@ -255,18 +257,19 @@ def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> Non
     risk, out, storage = cfg.risk, cfg.out, StorageConfig()
     if cfg.coiled and storage.local_root:
         raise typer.BadParameter('Coiled jobs write to S3: unset OCR_STORAGE_LOCAL_ROOT')
-    checked = {}
+    spec, checked = RISKS[risk], {}
     for s, kw in cfg.kwargs.items():
         try:
-            checked[s] = stage_kwargs(s, kw)
+            checked[s] = stage_kwargs(s, kw, spec)
         except ValidationError as e:
-            valid = ', '.join(type(stage_kwargs(s, {})).model_fields) or 'none'
+            valid = ', '.join(type(stage_kwargs(s, {}, spec)).model_fields) or 'none'
             raise typer.BadParameter(f'{e}\nvalid {s} kwargs: {valid}', param_hint='kwargs') from e
     given = {s: kw.model_dump(exclude_unset=True) for s, kw in checked.items()}
     production = out.prefix == OUTPUT_PREFIX and not out.version.prerelease
-    if 'bbox' in given.get('buildings', {}) and production:
-        msg = f'bbox subsets buildings: use --prefix scratch/<you> or e.g. v{out.version}-scratch'
-        raise typer.BadParameter(msg, param_hint='--version / --prefix')
+    for stage, kwarg in SUBSETS.items():
+        if kwarg in given.get(stage, {}) and production:
+            msg = f'{kwarg} subsets {stage}: use --prefix scratch/<you> or e.g. v{out.version}-scratch'
+            raise typer.BadParameter(msg, param_hint='--version / --prefix')
     ordered = [s for s in STAGES if s in cfg.stages]
     if unused := sorted(set(cfg.kwargs) - set(ordered)):
         typer.echo(f'warning: kwargs for stages not run, ignored: {unused}', err=True)

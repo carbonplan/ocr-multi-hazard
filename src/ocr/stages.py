@@ -1,5 +1,6 @@
 """Per-risk output settings and the shared stages: score, pyramid, buildings, regions."""
 
+import importlib
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -46,8 +47,17 @@ class RiskSpec:
     lod_carry: Sequence[str | tuple[str, str]]
     # Store CRS, `write_multiscales`. None -> no pyramid.
     crs: str | None = None
-    # Writes store.icechunk group "0". None -> the risk's own ETL writes it (flood: FDP is the risk layer).
-    score: Callable[[OutputPaths], None] | None = None
+    # Writes store.icechunk group "0", called as score(out, **kwargs); a 'module:function' path is
+    # imported on use, so a risk's extra deps load only when it runs. None -> its own ETL writes it.
+    score: Callable[..., None] | str | None = None
+
+
+def score_fn(spec: RiskSpec) -> Callable[..., None]:
+    if isinstance(spec.score, str):
+        module, name = spec.score.split(':')
+        return getattr(importlib.import_module(module), name)
+    assert spec.score is not None  # `preflight`
+    return spec.score
 
 
 RISKS = {
@@ -63,6 +73,7 @@ RISKS = {
         lod_shown=positive('fdp'),
         lod_carry=[('fdp', 'halffloat')],
         crs='EPSG:5070',
+        score='ocr.risks.flood.refit:score',
     ),
     # TODO: hurricane bins, shown predicate and carried columns; empty hists write building_count only.
     Risk.HURRICANE: RiskSpec(hists=[], lod_shown='true', lod_carry=[]),
@@ -149,11 +160,11 @@ def _delete_prefix(prefix: str) -> None:
 
 # Stages take (spec, out, overwrite, **util kwargs). Storage is the hand-off: each reads what an
 # earlier one wrote (`preflight`'s `reads`).
-def score(spec: RiskSpec, out: OutputPaths, overwrite: bool) -> None:
-    assert spec.score is not None  # `preflight`
+def score(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
+    fn = score_fn(spec)
     if overwrite:
         _delete_prefix(out.store)
-    spec.score(out)
+    fn(out, **kw)
 
 
 def _store(out: OutputPaths) -> icechunk.Repository:
@@ -235,7 +246,8 @@ def preflight(
 
 
 # Stage -> the util it calls, then the utils that util passes its **kwargs to. A stage accepts
-# their params that have defaults; the first util that names a param owns it.
+# their params that have defaults; the first util that names a param owns it. score's util is the
+# risk's own (`RiskSpec.score`).
 STAGE_KWARGS: dict[str, tuple[Callable[..., Any], ...]] = {
     'pyramid': (write_multiscales, create_pyramid),
     'buildings': (write_buildings, write_buildings_lod),
@@ -243,11 +255,15 @@ STAGE_KWARGS: dict[str, tuple[Callable[..., Any], ...]] = {
 }
 
 
-def stage_kwargs(stage: str, kw: Mapping[str, Any]) -> BaseModel:
-    """Validate `kw` against `stage`'s utils (`STAGE_KWARGS`). Unknown keys and bad types raise."""
+def stage_kwargs(stage: str, kw: Mapping[str, Any], spec: RiskSpec | None = None) -> BaseModel:
+    """Validate `kw` against `stage`'s utils (`STAGE_KWARGS`, or `spec`'s score). Unknown keys and
+    bad types raise."""
     fields: dict[str, Any] = {}
-    for fn in STAGE_KWARGS.get(stage, ()):
-        hints = get_type_hints(fn)
+    utils = STAGE_KWARGS.get(stage, ())
+    if stage == 'score' and spec is not None and spec.score is not None:
+        utils = (score_fn(spec),)
+    for fn in utils:
+        hints = get_type_hints(fn, include_extras=True)
         for p in signature(fn).parameters.values():
             # overwrite is the stage's own flag (--overwrite); metadata and log are passed by the
             # calling util (write_buildings), so a user value would collide.

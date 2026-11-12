@@ -2,7 +2,8 @@
 
 Converts the CONUS 100 m FDP GeoTIFF into group "0" of the flood output store (`OutputPaths.store`),
 GeoZarr-tagged on its native EPSG:5070 grid (no reprojection; joins should move points into 5070,
-not the raster out). Flood has no score step: FDP is the risk layer, so the ETL writes the store.
+not the raster out). The flood `score` stage writes the store from CarbonPlan's refit instead
+(`ocr.risks.flood.refit`); this ETL writes the published USGS surface, e.g. for a comparison version.
 
 Raw tif provenance (manual, one-time):
 1. Download Output_CONUS_FDP_100m.zip from SOURCE (ScienceBase only serves expiring presigned links).
@@ -10,7 +11,7 @@ Raw tif provenance (manual, one-time):
 2. Unzip Output_CONUS_FDP_100m/CONUS_FDP_100m.tif (striped GeoTIFF, 100 m, EPSG:5070).
 3. Upload it to RAW_KEY.
 
-Run before `ocr run`: pixi run -e flood flood-etl --version v2.0.0 [--prefix scratch/<you>] [--overwrite].
+Run, then `ocr run` without score: pixi run -e flood flood-etl --version v2.0.0 [--prefix scratch/<you>] [--overwrite].
 On Coiled: coiled batch run --vm-type r8g.xlarge --disk-size 50 --arm --tag Project=OCR -- python -m ocr.risks.flood.etl.flood --version v2.0.0
 """
 

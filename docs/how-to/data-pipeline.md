@@ -1,6 +1,6 @@
 # Data pipeline
 
-Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. Each risk's ETL runs on its own first (flood: `pixi run -e flood flood-etl`). Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
+Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. A risk without a `score` has its store written by its own ETL, run first. Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
 
 Fire still uses the older `ocr-deploy` CLI (`ocr-deploy --help`) until its refactor.
 
@@ -9,7 +9,6 @@ Fire still uses the older `ocr-deploy` CLI (`ocr-deploy --help`) until its refac
 A deployment is one committed TOML file under `runs/<risk>/`:
 
 ```bash
-pixi run -e flood flood-etl --version v2.0.0  # once: writes store.icechunk (--overwrite redoes it and drops the pyramid; rerun pyramid/buildings/regions)
 ocr run runs/flood/v2.0.0.toml --dry-run      # print the plan, check inputs, run nothing
 ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```
@@ -29,10 +28,12 @@ vm_type = ["r7g.8xlarge"]
 
 ## Stage kwargs
 
-`[kwargs.<stage>]` in a run file, or `--kwargs '{"<stage>": {...}}'`, sets keyword args of the stage's utils (`STAGE_KWARGS` in `ocr/stages.py`): pyramid `write_multiscales`, `create_pyramid`; buildings `write_buildings`, `write_buildings_lod`; regions `write_regions`. Names and types are checked before any job starts; a bad name fails and the error lists the valid ones. `--kwargs` on `ocr run` merges key by key over the file's `[kwargs.<stage>]`.
+`[kwargs.<stage>]` in a run file, or `--kwargs '{"<stage>": {...}}'`, sets keyword args of the stage's utils (`STAGE_KWARGS` in `ocr/stages.py`): score the risk's own (`RiskSpec.score`); pyramid `write_multiscales`, `create_pyramid`; buildings `write_buildings`, `write_buildings_lod`; regions `write_regions`. Names and types are checked before any job starts; a bad name fails and the error lists the valid ones. `--kwargs` on `ocr run` merges key by key over the file's `[kwargs.<stage>]`.
 
 | kwarg | default | meaning |
 | --- | --- | --- |
+| `score.run` (flood) | `noaa-200612-202512` | FDP refit model run to mosaic |
+| `score.hucs` (flood) | all 18 | HUC-2 watersheds, e.g. `["03"]` (a subset, see below) |
 | `pyramid.levels` | `"auto"` | number of levels, or `"auto"` |
 | `pyramid.branch` | `"main"` | icechunk branch to write |
 | `buildings.bbox` | CONUS | lon/lat subset (see below) |
@@ -79,10 +80,18 @@ Scratch runs: use a prerelease version (`v2.0.0-scratch`, `v0.0.0-nrh`), or a sc
 
 Local smoke run: `OCR_STORAGE_LOCAL_ROOT=~/ocr-data pixi run flood-local` (`runs/flood/local.toml`).
 
-Subset: `bbox` (lon/lat xmin, ymin, xmax, ymax) on `buildings` keeps only buildings inside it, and `regions` then covers only those, with partial stats for regions cut by the box. So a subset never replaces production outputs, `bbox` needs a scratch `prefix` or a prerelease version (the run fails before it starts otherwise):
+Subset: `hucs` on flood's `score` builds the store from only those watersheds, cropped to them. `bbox` (lon/lat xmin, ymin, xmax, ymax) on `buildings` keeps only buildings inside it, and `regions` then covers only those, with partial stats for regions cut by the box; pair it with `hucs` so buildings outside the watersheds aren't sampled as empty. So a subset never replaces production outputs, `hucs` and `bbox` need a scratch `prefix` or a prerelease version (the run fails before it starts otherwise):
 
 ```bash
 ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -122.3, 37.8]}}' flood buildings
+```
+
+One watershed end to end on Coiled (South Atlantic-Gulf, buildings around Charleston):
+
+```bash
+ocr stage --version v0.0.0-fdp-test --prefix scratch/<you> --coiled \
+  --kwargs '{"score": {"hucs": ["03"]}, "buildings": {"bbox": [-80.2, 32.6, -79.8, 33.0]}}' \
+  flood score pyramid buildings regions
 ```
 
 ## How it works
@@ -91,12 +100,12 @@ ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -
 
 | stage | util | reads | writes |
 | --- | --- | --- | --- |
-| score (fire only) | `RiskSpec.score` | ETL output (not checked) | `store.icechunk` group "0" |
+| score | `RiskSpec.score` | risk inputs (not checked) | `store.icechunk` group "0" |
 | pyramid | `write_multiscales` | `store.icechunk` | `store.icechunk` groups 1..N |
 | buildings | `write_buildings` | `store.icechunk` | `vector/buildings.geoparquet` |
 | regions | `write_regions` | `vector/buildings.geoparquet` | `vector/regions/` |
 
-The store is written by `score`, or by the risk's own ETL when it has no score (flood). Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so Coiled never boots a VM just to raise.
+The store is written by `score`, or by the risk's own ETL when it has no score. Flood's score (`ocr.risks.flood.refit`) mosaics the per-watershed outputs of the FDP refit (`input-data/tensor/fdp/`) into `fdp`, `fdp_se` and one `contribution_<driver>` per predictor; `buildings` samples all of them. Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so a bad stage name, kwarg or subset never boots a VM.
 
 ## Change the pipeline
 

@@ -50,7 +50,7 @@
         "typer>=0.27.3,<0.28",
         "xclim>=0.62.0,<0.63",
     ]
-    flood         = ["rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
+    flood         = ["dask>=2026.8.0", "rasterio>=1.5.2,<2", "rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
     coiled-deploy = ["coiled>=1.135.6,<2", "jupyter-server-proxy>=4.6.0,<5", "jupyterlab>=4.6.4,<5"]
     data-mgmt = [
         "boto3>=1.40.0,<2", # aiobotocore (via s3fs) pins botocore
@@ -150,6 +150,11 @@
     dev      = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
     docs     = ["coiled-deploy", "docs", "fire"]
     flood    = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
+    # Standalone: Coiled package sync replicates the whole environment, and the
+    # default one carries packages its solver cannot resolve.
+    fdp = { features = ["fdp"], no-default-feature = true }
+    # fdp plus R for train_fdp.R; run `pixi run -e fdp-r fdp-r-cran` once.
+    fdp-r = { features = ["fdp", "fdp-r"], no-default-feature = true }
 
 # Tasks grouped by features
 [tool.pixi.feature.dev.tasks]
@@ -169,6 +174,60 @@
 
 [tool.pixi.feature.data-mgmt.tasks]
     jupyter = { cmd = "jupyter lab" }
+
+# Just what input-data/tensor/fdp/fdp.py imports, so Coiled package sync has a
+# small environment to replicate.
+[tool.pixi.feature.fdp.dependencies]
+    coiled    = ">=1.120.0,<2"
+    duckdb    = ">=1.3.2,<2"
+    numpy     = ">=2,<3"
+    pyarrow   = ">=21.0.0,<22"
+    pyproj    = ">=3.7.2,<4"
+    python    = "3.13.*"
+    requests  = ">=2,<3"
+    rioxarray = ">=0.19.0,<0.20"
+    s3fs      = ">=2025.9.0,<2026"
+    xarray    = ">=2025.9.0,<2026"
+    zarr      = ">=3.2.1,<4"
+
+[tool.pixi.feature.fdp.pypi-dependencies]
+    topozarr = "==0.1.2"
+    xproj    = "*"
+
+# dismo, smoof, mlrMBO and tuneRanger have no osx-arm64 conda builds, so the
+# fdp-r-cran task compiles them from CRAN into the environment.
+[tool.pixi.feature.fdp-r]
+    platforms = ["linux-64", "osx-arm64-15"]
+
+[tool.pixi.feature.fdp-r.dependencies]
+    c-compiler        = "*"
+    cxx-compiler      = "*"
+    fortran-compiler  = "*"
+    make              = "*"
+    r-base            = "4.4.*"
+    r-bbmisc          = "*"
+    r-checkmate       = "*"
+    "r-data.table"    = "*"
+    r-dicekriging     = "*"
+    r-ggplot2         = "*"
+    r-jsonlite        = "*"
+    r-lhs             = "*"
+    r-lubridate       = "*"
+    r-mlr             = "*"
+    r-paramhelpers    = "*"
+    r-parallelmap     = "*"
+    r-plotly          = "*"
+    r-ranger          = "*"
+    r-raster          = "*"
+    r-rcolorbrewer    = "*"
+    r-rcpp            = "*"
+    r-rcpparmadillo   = "*"
+    r-snow            = "*"
+    r-sp              = "*"
+    r-terra           = "*"
+
+[tool.pixi.feature.fdp-r.tasks]
+    fdp-r-cran = { cmd = "Rscript -e 'options(Ncpus = 8); need <- setdiff(c(\"dismo\", \"smoof\", \"mlrMBO\", \"tuneRanger\"), rownames(installed.packages())); if (length(need)) install.packages(need, repos = \"https://cloud.r-project.org\", type = \"source\")'" }
 
 # Only python comes from conda-forge; all other deps live in the standard [project] / [dependency-groups] tables.
 [tool.pixi.dependencies]
