@@ -38,6 +38,8 @@ REGIONS = ('TX-AL', 'FL', 'GA-Car', 'VA-ME', 'other')
 TIME_FILL = -54786.0  # 1800-01-01 in days since 1950: CHAZ's marker for no data
 PUBLISHED = store.PUBLISHED_TRACKS
 OUT = 'validation/chaz/landfall'
+AROUND = (-24, -12, -6, 6, 12, 24, 36, 48)  # hours from US landfall with a wind column each
+END_RULES = ('track end', 'fell to 35 kt', 'other', 'observed')
 
 
 def wrap(lon):
@@ -70,6 +72,18 @@ class USLand:
 
     def water(self, lat, lon):
         return self._lookup(~self.land, lat, lon, outside=True)
+
+    def anywhere(self, lat, lon):
+        """Any land, not only US."""
+        return self._lookup(self.land, lat, lon, outside=False)
+
+    def inside(self, lat, lon):
+        lon = wrap(lon)
+        return (
+            np.isfinite(lat)
+            & (lat >= BOX[1]) & (lat < BOX[3])
+            & (lon >= BOX[0]) & (lon < BOX[2])
+        )  # fmt: skip
 
     def __call__(self, lat, lon):
         return self._lookup(self.mask, lat, lon, outside=False)
@@ -134,9 +148,14 @@ def crossings(lat_h, lon_h, land: USLand) -> np.ndarray:
 
 def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd.DataFrame:
     """One row per (member, storm): North Atlantic TS flag, lifetime peak, whether the track
-    crosses the US coast and whether the member has wind at its last track node, and US landfall
-    wind, region, 24 h approach peak and 12/24 h decay. lat, lon (node, storm); wind (member,
-    node, storm) in kt."""
+    crosses the US coast, how the member's wind ends, and US landfall wind, region, 24 h approach
+    peak, decay and wind at AROUND hours from landfall. lat, lon (node, storm); wind (member,
+    node, storm) in kt.
+
+    How a CHAZ member ends (`end_rule`): its wind runs to the end of its track ('track end'); the
+    intensity model stopped it after two 12-hourly steps at or below 35 kt following a peak above
+    35 kt ('fell to 35 kt'); or neither, which includes a step below 10 kt ('other'). Observed
+    storms are 'observed'."""
     lon = wrap(lon)
     n_m, n_n, n_s = wind.shape
     na = ((wind >= TS) & in_north_atlantic(lat, lon)[None] & np.isfinite(lat)[None]).any(axis=1)
@@ -146,6 +165,12 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     s_idx = np.arange(n_s)
     genesis_na = track.any(axis=0) & in_north_atlantic(lat[first, s_idx], lon[first, s_idx])
     wind_at_end = np.isfinite(wind[:, last, s_idx])
+    alive = np.isfinite(wind)
+    w_end = np.where(alive.any(axis=1), n_n - 1 - np.argmax(alive[:, ::-1], axis=1), -1)
+    ends = end_rules(wind, w_end, np.minimum(last, n_n - 5)[None], observed=source == 'IBTrACS')
+    m_idx = np.arange(n_m)[:, None]
+    safe = np.maximum(w_end, 0)
+    end_lat, end_lon = lat[safe, s_idx[None]], lon[safe, s_idx[None]]
     with np.errstate(all='ignore'):
         peak = np.nanmax(np.where(np.isfinite(wind), wind, -np.inf), axis=1)
     lat_h, lon_h = hourly(lat), wrap(hourly(unwrap(lon)))
@@ -165,9 +190,19 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
             'genesis_na': np.tile(genesis_na, n_m),
             'crosses': np.tile(cross.any(axis=0), n_m),
             'wind_at_end': wind_at_end.ravel(),
+            'end_rule': ends.ravel(),
+            'end_wind': np.where(w_end >= 0, wind[m_idx, safe, s_idx[None]], np.nan).ravel(),
+            'end_before_track_h': (6 * (last[None] - w_end)).ravel(),
+            'end_on_land': np.where(
+                land.inside(end_lat, end_lon), land.anywhere(end_lat, end_lon), np.nan
+            ).ravel(),
+            'end_h_after_lf': np.full(n_m * n_s, np.nan),
         }
     )
+    around = [f'lf_w{h:+d}' for h in AROUND]
     for k in ('lf_wind', 'lf_max_wind', 'lf_pre24', 'lf_post12', 'lf_post24', 'lf_lat', 'lf_lon'):
+        df[k] = np.nan
+    for k in around:
         df[k] = np.nan
     df['lf_region'] = None
     n_h = w_h.shape[0]
@@ -188,9 +223,29 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
         df.loc[idx, 'lf_region'] = region(lat_h[h, s], lon_h[h, s])
         df.loc[idx, 'lf_lat'] = lat_h[h, s]
         df.loc[idx, 'lf_lon'] = lon_h[h, s]
+        for k, dh in zip(around, AROUND, strict=True):
+            df.loc[idx, k] = w[h + dh] if 0 <= h + dh < n_h else np.nan
+        df.loc[idx, 'end_h_after_lf'] = np.where(w_end[:, s] >= 0, 6 * w_end[:, s] - h, np.nan)
     df = df[np.isfinite(df['peak']) & (df['peak'] > 0)]
     df.loc[~(df['lf_wind'] >= TS), ['lf_region']] = None
     return df
+
+
+def end_rules(wind, w_end, stop, observed: bool) -> np.ndarray:
+    """(member, storm) labels of how each member's wind ends; see storm_rows. wind (member,
+    node, storm); w_end, its last node with wind (-1 for none); stop, the last node the
+    intensity model may reach."""
+    out = np.full(w_end.shape, 'observed' if observed else 'other', dtype=object)
+    if observed:
+        return out
+    m, s = np.indices(w_end.shape)
+    with np.errstate(invalid='ignore'):
+        peak = np.nanmax(np.where(np.isfinite(wind), wind, -np.inf), axis=1)
+    w2 = np.where(w_end >= 2, wind[m, np.maximum(w_end - 2, 0), s], np.nan)
+    w4 = np.where(w_end >= 4, wind[m, np.maximum(w_end - 4, 0), s], np.nan)
+    out[(peak > 35) & (w2 <= 35) & (w4 <= 35)] = 'fell to 35 kt'
+    out[(w_end >= 0) & (w_end >= stop - 1)] = 'track end'
+    return out
 
 
 def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFrame:

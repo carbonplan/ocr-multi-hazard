@@ -15,6 +15,12 @@ class Land:
         lon = landfall.wrap(lon)
         return np.isfinite(lat) & ~((lon < -80) & (lat >= 22) & (lat < 45))
 
+    def anywhere(self, lat, lon):
+        return ~self.water(lat, lon) & np.isfinite(lat)
+
+    def inside(self, lat, lon):
+        return np.isfinite(lat)
+
 
 def test_unwrap_crosses_the_date_line():
     lon = np.array([[178.0], [-179.0], [-176.0], [np.nan]])
@@ -69,3 +75,27 @@ def test_landfall_share_splits_into_crossing_and_wind_at_crossing():
         s['NA TS storms crossing the US coast, share'] * s['crossings at >= 34 kt, share']
     )
     assert s['tracks from NA genesis crossing the US coast, share'] == pytest.approx(0.5)
+
+
+def test_end_rules_tell_track_end_from_the_35_kt_stop():
+    nan = np.nan
+    wind = np.array(
+        [
+            [[30], [50], [34], [50], [33], [30], [31], [nan], [nan], [nan]],  # fell to 35 kt
+            [[30], [50], [60], [55], [50], [45], [40], [38], [36], [nan]],  # runs to the stop
+            [[30], [50], [60], [55], [12], [nan], [nan], [nan], [nan], [nan]],  # other
+        ]
+    ).astype(float)
+    alive = np.isfinite(wind)
+    w_end = wind.shape[1] - 1 - np.argmax(alive[:, ::-1], axis=1)
+    got = landfall.end_rules(wind, w_end, np.array([[8]]), observed=False)
+    assert got[:, 0].tolist() == ['fell to 35 kt', 'track end', 'other']
+
+
+def test_wind_around_landfall_and_end_after_landfall():
+    lat, lon, wind = storm([[70] * 6, [70, 70, 70, 70, np.nan, np.nan]])
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
+    a, b = rows.iloc[0], rows.iloc[1]
+    assert a['lf_w+12'] == pytest.approx(70) and np.isnan(a['lf_w+48'])
+    assert b['end_h_after_lf'] == pytest.approx(2)  # last wind at 18 h, landfall at 16 h
+    assert b['end_before_track_h'] == 12 and b['end_on_land'] == 1.0
