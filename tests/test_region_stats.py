@@ -7,14 +7,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from ocr.config import OutputPaths, Risk
+from ocr.config import TIGER_VINTAGE, OutputPaths, Risk
 from ocr.duck import duckdb_connect
 from ocr.geoparquet import bbox_sql
-from ocr.regions import TIGER_VINTAGE, RegionLevel
+from ocr.regions import RegionLevel
 from ocr.regions.layout import write_level
 from ocr.regions.stats import Hist, write_region_stats
 from ocr.regions.tiger import nation_sql
-from ocr.stages import RISKS, RiskOutputs, write_regions
+from ocr.stages import RISKS, RiskSpec, write_regions
 
 BINS = [0.01, 0.1, 1, 100]
 HISTS = [Hist(['v'], BINS)]
@@ -173,7 +173,7 @@ def test_write_regions(paths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     (root / 'output/flood/v2.0.0/vector').mkdir(parents=True)
     shutil.copy(paths['buildings'], root / 'output/flood/v2.0.0/vector/buildings.geoparquet')
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(root))
-    monkeypatch.setitem(RISKS, Risk.FLOOD, RiskOutputs(HISTS, 'true', []))
+    monkeypatch.setitem(RISKS, Risk.FLOOD, RiskSpec(HISTS, 'true', []))
     # temp_dir is used: a missing one fails, an existing one is left empty.
     with pytest.raises(FileNotFoundError):
         write_regions(OutputPaths(Risk.FLOOD, 'v2.0.0'), levels, temp_dir=tmp_path / 'missing')
@@ -184,12 +184,12 @@ def test_write_regions(paths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     out = root / 'output/flood/v2.0.0/vector/regions'
     stats = ['building_count', 'v_median', 'v_hist', 'v_mean', 'v_missing']
     files = {
-        'blocks/state_fips=06/county_fips=001/data.parquet': (2, []),
-        'blocks/state_fips=06/county_fips=003/data.parquet': (1, []),
-        'counties/state_fips=06/data.parquet': (2, ['NAME']),
-        'nation.parquet': (1, ['NAME']),
+        'blocks/state_fips=06/county_fips=001/data.geoparquet': (2, []),
+        'blocks/state_fips=06/county_fips=003/data.geoparquet': (1, []),
+        'counties/state_fips=06/data.geoparquet': (2, ['NAME']),
+        'nation.geoparquet': (1, ['NAME']),
     }
-    assert sorted(str(p.relative_to(out)) for p in out.rglob('*.parquet')) == sorted(files)
+    assert sorted(str(p.relative_to(out)) for p in out.rglob('*parquet')) == sorted(files)
     for rel, (n, extra) in files.items():
         f = pq.ParquetFile(out / rel)
         meta = f.schema_arrow.metadata
@@ -255,7 +255,7 @@ def test_write_level_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         """)
     monkeypatch.setenv('OCR_STORAGE_LOCAL_ROOT', str(tmp_path / 'store'))
     write_level(src, RegionLevel.BLOCK, 'regions')
-    out = tmp_path / 'store/regions/blocks/state_fips=06/county_fips=037/data.parquet'
+    out = tmp_path / 'store/regions/blocks/state_fips=06/county_fips=037/data.geoparquet'
     geoids = pq.read_table(out, columns=['GEOID'])['GEOID'].to_pylist()
     assert len(geoids) == 70 and geoids == sorted(geoids)
     for column in ['GEOID', 'building_count', 'bbox.xmin', 'geometry']:

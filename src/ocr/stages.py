@@ -1,15 +1,22 @@
-"""Per-risk output settings and the shared stages: buildings, then regions."""
+"""Per-risk output settings and the shared stages: score, pyramid, buildings, regions."""
 
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
+from typing import Any, get_type_hints
 
+import icechunk
+import obstore
 import xarray as xr
+from pydantic import BaseModel, ConfigDict, create_model
+from topozarr import create_pyramid
 
-from ocr.buildings import PointSamplingStrategy, sample_buildings
+from ocr.buildings import CONUS, PointSamplingStrategy, sample_buildings
 from ocr.config import OutputPaths, Risk, StorageConfig
 from ocr.lod import write_buildings_lod
+from ocr.multiscales import write_multiscales
 from ocr.regions import RegionLevel
 from ocr.regions.layout import write_level
 from ocr.regions.stats import Hist, write_region_stats
@@ -30,29 +37,35 @@ def positive(*cols: str) -> str:
 
 
 @dataclass(frozen=True)
-class RiskOutputs:
-    hists: Sequence[Hist]  # region histograms, `write_regions`
-    lod_shown: str  # SQL predicate on building columns: what the coarsest zooms sample, `write_buildings_lod`
-    lod_carry: Sequence[
-        str | tuple[str, str]
-    ]  # columns map tiles carry for styling, `write_buildings_lod`
+class RiskSpec:
+    # Region histograms, `write_regions`.
+    hists: Sequence[Hist]
+    # SQL predicate on building columns: what the coarsest zooms sample, `write_buildings_lod`.
+    lod_shown: str
+    # Columns map tiles carry for styling, `write_buildings_lod`.
+    lod_carry: Sequence[str | tuple[str, str]]
+    # Store CRS, `write_multiscales`. None -> no pyramid.
+    crs: str | None = None
+    # Writes store.icechunk group "0". None -> the risk's own ETL writes it (flood: FDP is the risk layer).
+    score: Callable[[OutputPaths], None] | None = None
 
 
 RISKS = {
-    Risk.FIRE: RiskOutputs(
+    Risk.FIRE: RiskSpec(
         hists=[Hist(['rps_2011', 'rps_2047'], FIRE_RPS_BINS)],
         lod_shown=positive('rps_2011', 'rps_2047'),
         # half precision: the map colours by bins; selecting a building reads full precision by row
         lod_carry=[('rps_2011', 'halffloat'), ('rps_2047', 'halffloat')],
     ),
     # ponytail: even 0.1 bins from six city windows; revisit with a CONUS quantile pass (in-region Coiled).
-    Risk.FLOOD: RiskOutputs(
+    Risk.FLOOD: RiskSpec(
         hists=[Hist(['fdp'], FLOOD_FDP_BINS)],
         lod_shown=positive('fdp'),
         lod_carry=[('fdp', 'halffloat')],
+        crs='EPSG:5070',
     ),
     # TODO: hurricane bins, shown predicate and carried columns; empty hists write building_count only.
-    Risk.HURRICANE: RiskOutputs(hists=[], lod_shown='true', lod_carry=[]),
+    Risk.HURRICANE: RiskSpec(hists=[], lod_shown='true', lod_carry=[]),
 }
 
 
@@ -63,11 +76,13 @@ def write_buildings(
     blocks: str | Path | None = None,
     source: str | Path | None = None,
     point_strategy: PointSamplingStrategy = PointSamplingStrategy.CENTROID,
+    bbox: tuple[float, float, float, float] = CONUS.bbox,
     temp_dir: str | Path | None = None,
     **lod_kwargs,
 ) -> None:
     """Sample `ds` at every CONUS building, tag its block and write `out.buildings`
-    with LOD overviews (`out.risk`'s shown/carry) and `version` metadata. `blocks` and `source` go to `sample_buildings`;
+    with LOD overviews (`out.risk`'s shown/carry) and `version` metadata. `blocks`, `source` and `bbox`
+    (a dev subset; regions then cover only it) go to `sample_buildings`;
     `temp_dir` holds the staged file and LOD spill (on Coiled, a large volume); `lod_kwargs` go
     to `write_buildings_lod`. Region stats then read that file (`write_regions`).
     """
@@ -76,7 +91,13 @@ def write_buildings(
         # geoparquet-lod reads its source several times, so sampling stages a local file.
         src = Path(tmp) / 'buildings.parquet'
         sample_buildings(
-            ds, src, blocks=blocks, source=source, point_strategy=point_strategy, temp_dir=tmp
+            ds,
+            src,
+            blocks=blocks,
+            source=source,
+            point_strategy=point_strategy,
+            bbox=bbox,
+            temp_dir=tmp,
         )
         write_buildings_lod(
             src,
@@ -91,7 +112,7 @@ def write_buildings(
 
 def write_regions(
     out: OutputPaths,
-    levels: Iterable[RegionLevel] = tuple(RegionLevel),
+    levels: Sequence[RegionLevel] = tuple(RegionLevel),
     *,
     temp_dir: str | Path | None = None,
 ) -> None:
@@ -109,3 +130,128 @@ def write_regions(
             write_region_stats(buildings, level, hists, stats)
             write_level(stats, level, out.regions, shown, temp_dir=tmp)
             stats.unlink()
+
+
+def _exists(store: obstore.store.ObjectStore, key: str) -> bool:
+    # list matches whole path segments, so a file's own key lists nothing: head it first.
+    try:
+        obstore.head(store, key)
+        return True
+    except FileNotFoundError:
+        return any(obstore.list(store, prefix=key, chunk_size=1))
+
+
+def _delete_prefix(prefix: str) -> None:
+    store = StorageConfig().object_store()
+    for batch in obstore.list(store, prefix=prefix):
+        obstore.delete(store, [m['path'] for m in batch])
+
+
+# Stages take (spec, out, overwrite, **util kwargs). Storage is the hand-off: each reads what an
+# earlier one wrote (`preflight`'s `reads`).
+def score(spec: RiskSpec, out: OutputPaths, overwrite: bool) -> None:
+    assert spec.score is not None  # `preflight`
+    if overwrite:
+        _delete_prefix(out.store)
+    spec.score(out)
+
+
+def _store(out: OutputPaths) -> icechunk.Repository:
+    return icechunk.Repository.open(StorageConfig().icechunk_storage(out.store))
+
+
+def pyramid(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
+    # A rerun with the same settings replaces the levels; overwrite drops them first, base kept.
+    assert spec.crs is not None
+    write_multiscales(_store(out), spec.crs, overwrite=overwrite, **kw)
+
+
+def buildings(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
+    # One file, replaced by obstore.put; overwrite unused.
+    session = _store(out).readonly_session('main')
+    ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
+    write_buildings(ds, out, **kw)
+
+
+def regions(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
+    # Files replaced by obstore.put. overwrite also drops old per-state/county files of the levels run
+    # (a bbox run writes fewer); levels not run are kept. nation/states are single files, so no-ops.
+    if overwrite:
+        for level in kw.get('levels', tuple(RegionLevel)):
+            _delete_prefix(f'{out.regions}/{level}')
+    # ponytail: all levels in one job; fan out per TIGER level if the CONUS timing runs need it.
+    write_regions(out, **kw)
+
+
+# Run order.
+STAGES: dict[str, Callable[..., None]] = {
+    'score': score,
+    'pyramid': pyramid,
+    'buildings': buildings,
+    'regions': regions,
+}
+
+
+def preflight(
+    stages: Sequence[str],
+    spec: RiskSpec,
+    out: OutputPaths,
+    kwargs: Mapping[str, Mapping[str, Any]] = {},
+) -> list[str]:
+    """One message per problem that would otherwise surface only once a stage is running: no code
+    for this risk, input neither written in this run nor in storage, or TIGER missing.
+    `kwargs`: per stage, the kwargs it was given.
+    """
+    cfg = StorageConfig()
+    store = cfg.object_store()
+    store_writer = 'score' if spec.score else f'the {out.risk} ETL'
+    implemented = {'score': spec.score, 'pyramid': spec.crs}
+    reads = {  # stage -> (input key, what writes it)
+        'pyramid': (out.store, store_writer),
+        'buildings': (out.store, store_writer),
+        'regions': (out.buildings, 'buildings'),
+    }
+    tiger = {
+        'buildings': [] if kwargs.get('buildings', {}).get('blocks') else [RegionLevel.BLOCK],
+        'regions': kwargs.get('regions', {}).get('levels', tuple(RegionLevel)),
+    }
+    problems = []
+    for s in stages:
+        if s in implemented and implemented[s] is None:
+            problems.append(f'{s}: not implemented for {out.risk}')
+            continue
+        if s in reads:
+            key, writer = reads[s]
+            if writer not in stages and not _exists(store, key):
+                problems.append(f'{s} needs {writer} output at {cfg.uri(key)}: run {writer} first')
+        problems += [
+            f'{s} needs TIGER {level} at {level.uri}: run pixi run regions-etl'
+            for level in map(RegionLevel, tiger.get(s, ()))
+            if not _exists(store, level.key)
+        ]
+    return problems
+
+
+# Stage -> the util it calls, then the utils that util passes its **kwargs to. A stage accepts
+# their params that have defaults; the first util that names a param owns it.
+STAGE_KWARGS: dict[str, tuple[Callable[..., Any], ...]] = {
+    'pyramid': (write_multiscales, create_pyramid),
+    'buildings': (write_buildings, write_buildings_lod),
+    'regions': (write_regions,),
+}
+
+
+def stage_kwargs(stage: str, kw: Mapping[str, Any]) -> BaseModel:
+    """Validate `kw` against `stage`'s utils (`STAGE_KWARGS`). Unknown keys and bad types raise."""
+    fields: dict[str, Any] = {}
+    for fn in STAGE_KWARGS.get(stage, ()):
+        hints = get_type_hints(fn)
+        for p in signature(fn).parameters.values():
+            # overwrite is the stage's own flag (--overwrite); metadata and log are passed by the
+            # calling util (write_buildings), so a user value would collide.
+            if p.name in {'overwrite', 'metadata', 'log'}:
+                continue
+            if p.default is not p.empty and p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD):
+                fields.setdefault(p.name, (hints.get(p.name, Any), p.default))
+    config = ConfigDict(extra='forbid', arbitrary_types_allowed=True)
+    return create_model(f'{stage}_kwargs', __config__=config, **fields).model_validate(kw)

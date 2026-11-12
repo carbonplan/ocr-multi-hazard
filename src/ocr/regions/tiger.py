@@ -25,10 +25,10 @@ import typer
 from obstore.store import HTTPStore
 from upath import UPath
 
-from ocr.config import StorageConfig
+from ocr.config import TIGER_VINTAGE, StorageConfig
 from ocr.duck import duckdb_connect
 from ocr.geoparquet import bbox_sql, write_geoparquet
-from ocr.regions import TIGER_VINTAGE, RegionLevel
+from ocr.regions import RegionLevel
 
 TIGER = f'https://www2.census.gov/geo/tiger/TIGER{TIGER_VINTAGE}'
 # CONUS states + DC, copied from fire's census_tiger.FIPS_CODES (importing it pulls in coiled + geopandas).
@@ -69,13 +69,17 @@ SOURCES = {
 
 # obstore retries failed requests with backoff (default RetryConfig), so a flaky census.gov response
 # doesn't kill a 49-zip run. Its default 30 s timeout covers the whole body; big state zips need longer.
-STORE = HTTPStore.from_url(TIGER, client_options={'timeout': timedelta(minutes=30)})
+CLIENT_OPTIONS = {'timeout': timedelta(minutes=30)}
 
 
 def download(path: str, dest: Path) -> None:
     """Stream TIGER `path` (relative to TIGER) to `dest`."""
+    # census.gov's CDN can cache a "Request Rejected" page for a zip (2026: ND blocks), which obstore
+    # refuses (no Content-Length). A query string skips the cache; it sits in the store URL because
+    # obstore percent-encodes '?' in a path.
+    store = HTTPStore.from_url(f'{TIGER}/{path}?nocache', client_options=CLIENT_OPTIONS)
     with dest.open('wb') as f:
-        for chunk in obstore.get(STORE, path).stream():
+        for chunk in obstore.get(store, '').stream():
             f.write(chunk)
 
 
