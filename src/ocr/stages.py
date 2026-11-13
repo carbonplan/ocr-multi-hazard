@@ -211,6 +211,8 @@ def _store(out: OutputPaths) -> icechunk.Repository:
 def pyramid(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> None:
     # A rerun with the same settings replaces the levels; overwrite drops them first, base kept.
     assert spec.crs is not None
+    if 'levels' not in kw and 'factors' not in kw:
+        kw['levels'] = 'auto'  # create_pyramid requires one of them
     write_multiscales(_store(out), spec.crs, overwrite=overwrite, **kw)
 
 
