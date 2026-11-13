@@ -49,6 +49,7 @@ def test_coiled_job_config(batch: MagicMock) -> None:
         *('ocr', 'stage', '--version', 'v2.0.0', '--prefix', 'output', 'flood', 'buildings')
     ]
     assert kw['vm_type'] == ['r8g.8xlarge']
+    assert kw['name'] == 'ocr-flood-buildings-v2-0-0'  # Coiled rejects '.'
     assert kw['disk_size'] == '50 GiB' and kw['arm'] is True
 
 

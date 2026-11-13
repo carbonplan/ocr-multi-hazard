@@ -33,7 +33,7 @@ vm_type = ["r7g.8xlarge"]
 
 | kwarg | default | meaning |
 | --- | --- | --- |
-| `pyramid.levels` | from `create_pyramid` | number of levels, or `"auto"` |
+| `pyramid.levels` | `"auto"` | number of levels, or `"auto"` |
 | `pyramid.branch` | `"main"` | icechunk branch to write |
 | `buildings.bbox` | CONUS | lon/lat subset (see below) |
 | `buildings.point_strategy` | `"ST_Centroid"` | or `"ST_PointOnSurface"` |
