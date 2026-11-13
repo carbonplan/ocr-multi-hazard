@@ -7,7 +7,7 @@ coiled = true
 [kwargs.pyramid]
 x_dim = "longitude"
 y_dim = "latitude"
-variables = ["rps_2011", "rps_2047", "bp_2011", "bp_2047"]
+variables = ["rps_2011", "rps_2047", "bp_2011", "bp_2047","crps_scott"]
 levels = "auto"
 
 [kwargs.buildings]
