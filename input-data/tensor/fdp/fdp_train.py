@@ -17,9 +17,9 @@ prediction with the published surface, and uploads everything to
   input/flood/fdp-refit/runs/<run>/<distance>[-quick]/huc<NN>/
 
 `run` names a points set built by fdp_points.py; its absence seed also seeds
-the folds and tuning in train_fdp.R. `--distance lonlat` keeps the
-released script's spatial-sorting distances; `planar` corrects them (see
-train_fdp.R). `--quick` shrinks tuning and the forest for a smoke test.
+the folds and tuning in train_fdp.R. `--distance planar` (the default)
+measures the spatial-sorting distances in metres; `lonlat` reproduces the
+released script, which reads them as degrees (see train_fdp.R). `--quick` shrinks tuning and the forest for a smoke test.
 `--contributions` adds per-cell attributions of the prediction to each
 predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
 
@@ -482,7 +482,7 @@ def main() -> None:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--run', required=True, help='points set from fdp_points.py')
-    common.add_argument('--distance', choices=['lonlat', 'planar'], default='lonlat')
+    common.add_argument('--distance', choices=['planar', 'lonlat'], default='planar')
     common.add_argument('--quick', action='store_true')
 
     outputs = argparse.ArgumentParser(add_help=False)

@@ -31,7 +31,7 @@ pixi run -e fdp python input-data/tensor/fdp/fdp_points.py build --runs noaa-200
 
 # 3. every watershed of that run, one VM each, with the layers `score` reads
 pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-200612-202512 \
-  --distance planar --contributions --se --vm-type r7i.4xlarge
+  --contributions --se --vm-type r7i.4xlarge
 
 # then the flood pipeline: score, pyramid, buildings, regions
 ocr run runs/flood/v2.0.0.toml
@@ -54,8 +54,8 @@ Runs:
   `original` it isolates the effect of rebuilding the points; against
   `noaa-200612-202512`, the effect of the added years.
 
-`--distance planar` measures the spatial-sorting distances in metres; the default,
-`lonlat`, keeps the released script's degrees (see the overview). `--quick` shrinks tuning
+Training measures the spatial-sorting distances in metres; `--distance lonlat`
+reproduces the released script, which reads them as degrees (see the overview). `--quick` shrinks tuning
 and the forest for a smoke test.
 
 Points are reproducible across machines up to one PROJ quirk: reports on the 45th parallel
@@ -97,7 +97,7 @@ standard errors to a watershed that is already trained and uploaded, from its sa
 and prediction:
 
 ```bash
-pixi run -e fdp-r python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --distance planar --huc 03
+pixi run -e fdp-r python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --huc 03
 ```
 
 HUC 03 (67.6M cells) took 68 min locally on 18 workers for its standard errors, including a

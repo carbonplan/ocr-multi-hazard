@@ -59,11 +59,12 @@ training split. The refit differs in:
 - **Distances for spatial sorting.** The released script calls dismo's `ssb()` and
   `pwdSample()` with their default `lonlat = TRUE` on Albers metre coordinates, so the
   distances it uses to keep test points away from training points are haversine values of
-  metres read as degrees, unrelated to true separation. The served run measures true
-  distances (`--distance planar`). This changes the cross-validation folds, and through the
-  choice of best fold it can change the map. On the released points it left the map of HUC
-  03 and HUC 06 unchanged and lowered their CV AUC by 0.06–0.07, so the released script's
-  AUCs, like the paper's 0.750, are measured on test points close to their training points.
+  metres read as degrees, unrelated to true separation. The refit measures true distances
+  (`--distance lonlat` reproduces the released script). Correcting them changes the
+  cross-validation folds, and through the choice of best fold it can change the map. On the
+  released points it left the map of HUC 03 and HUC 06 unchanged and lowered their CV AUC by
+  0.06–0.07, so the released script's AUCs, like the paper's 0.750, are measured on test
+  points close to their training points.
 - **Watersheds.** The released code expects a HUC-2 raster that is not in the release; the
   refit rasterizes the USGS Watershed Boundary Dataset's HUC-2 regions onto the predictor
   grid.

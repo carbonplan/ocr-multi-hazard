@@ -10,8 +10,8 @@
 # The released script calls dismo's ssb() and pwdSample() with their default
 # lonlat = TRUE on Albers metre coordinates, so those distances are haversine
 # values of metres read as degrees, uncorrelated with true separation.
-# `--distance lonlat` (the default) keeps that behaviour; `--distance planar`
-# measures true distances.
+# `--distance planar` (the default) measures true distances; `--distance lonlat`
+# reproduces the released script.
 #
 # Inputs arrive already cropped to the watershed and masked to its HUC raster
 # cells, so the script stacks them directly. Partial dependence and standard
@@ -20,7 +20,7 @@
 # Usage:
 #   Rscript train_fdp.R --huc 03 --predictors DIR --points FILE --out DIR \
 #     --tmp DIR [--threads 16] [--iters 70] [--trees 1000] [--seed 20261022] \
-#     [--distance lonlat|planar]
+#     [--distance planar|lonlat]
 ################################################################################
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -40,7 +40,7 @@ threads <- as.integer(arg("threads", "8"))
 iters <- as.integer(arg("iters", "70"))
 trees <- as.integer(arg("trees", "1000"))
 seed <- as.integer(arg("seed", "20261022"))
-distance <- match.arg(arg("distance", "lonlat"), c("lonlat", "planar"))
+distance <- match.arg(arg("distance", "planar"), c("planar", "lonlat"))
 lonlat <- distance == "lonlat"
 
 suppressPackageStartupMessages({
