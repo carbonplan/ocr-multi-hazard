@@ -261,11 +261,11 @@ def end_rules(wind, w_end, reachable, observed: bool) -> np.ndarray:
     return out
 
 
-def chaz_arrays(ds: xr.Dataset):
+def chaz_arrays(ds: xr.Dataset, years: tuple[int, int] = YEARS):
     """lat, lon (node, storm), wind (member, node, storm) and year of the storms of a CHAZ track
-    file in YEARS, with CHAZ's padding nodes as NaN."""
+    file in `years`, with CHAZ's padding nodes as NaN."""
     year = ds['year'].values
-    sel = np.nonzero((year >= YEARS[0]) & (year <= YEARS[1]))[0]
+    sel = np.nonzero((year >= years[0]) & (year <= years[1]))[0]
     lat = ds['latitude'].values[:, sel]
     lon = ds['longitude'].values[:, sel]
     wind = ds['Mwspd'].transpose('ensembleNum', 'lifelength', 'stormID').values[:, :, sel]
@@ -276,9 +276,11 @@ def chaz_arrays(ds: xr.Dataset):
     return lat, lon, wind, year[sel]
 
 
-def chaz_rows(ds: xr.Dataset, land: USLand, source: str, unit: str) -> pd.DataFrame:
-    """storm_rows for the storms of a CHAZ track file in YEARS."""
-    return storm_rows(*chaz_arrays(ds), land, source, unit)
+def chaz_rows(
+    ds: xr.Dataset, land: USLand, source: str, unit: str, years: tuple[int, int] = YEARS
+) -> pd.DataFrame:
+    """storm_rows for the storms of a CHAZ track file in `years`."""
+    return storm_rows(*chaz_arrays(ds, years), land, source, unit)
 
 
 def observed_arrays(csv: bytes):
