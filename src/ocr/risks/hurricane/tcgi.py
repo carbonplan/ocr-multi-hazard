@@ -183,13 +183,14 @@ def moisture(t: xr.DataArray, w: xr.DataArray, p_bottom_hpa: xr.DataArray, top_h
     return (100 * w / ws).rename('CRH'), (w - ws).rename('SD')
 
 
-def potential_intensity(sst_c, msl_hpa, t_c, q_gkg) -> xr.DataArray:
-    """tcpyPI vmax (m s-1) with the tutorial's settings; NaN (land, no SST) set to 0 as the tutorial does."""
+def potential_intensity(sst_c, msl_hpa, t_c, q_gkg, flags: bool = False):
+    """tcpyPI vmax (m s-1) with the tutorial's settings; NaN (land, no SST) set to 0 as the
+    tutorial does. With `flags`, also tcpyPI's status flag (1 where it converged)."""
     from tcpyPI import pi
 
     t_c = t_c.sortby('level', ascending=False)
     q_gkg = q_gkg.sortby('level', ascending=False)
-    vmax, *_ = xr.apply_ufunc(
+    vmax, _, ifl, *_ = xr.apply_ufunc(
         pi,
         sst_c,
         msl_hpa,
@@ -201,6 +202,8 @@ def potential_intensity(sst_c, msl_hpa, t_c, q_gkg) -> xr.DataArray:
         output_core_dims=[[], [], [], [], []],
         vectorize=True,
     )
+    if flags:
+        return vmax.rename('PI'), ifl.rename('pi_flag')
     return vmax.fillna(0).rename('PI')
 
 

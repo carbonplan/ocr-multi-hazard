@@ -14,13 +14,13 @@ changes:
 
 Each track file records what it was made from in its attributes (`provenance`).
 
-Forcing comes from forcing.py (S3_ROOT/forcing/era5/{year}/); the intensity regressions,
+Forcing comes from forcing.py or cmip.py (S3_ROOT/forcing/{source}/{year}/); the intensity regressions,
 best-track predictors and land mask from the tutorial's Zenodo record (11631930, CC BY 4.0). The
 seeding ratio follows CHAZvBeta's get_seeding_ratio: observed storms 1981-2005 over a survival
 rate of 0.78, divided by the seeds our TCGI gives over those years. Storms that run past
 31 December stop there, as in the notebook.
 
-Output goes to S3_ROOT/runs/era5/{run}/{year}_r{NNN}.nc (`run_name`: the TCGI variant, plus
+Output goes to S3_ROOT/runs/{source}/{run}/{year}_r{NNN}.nc (`run_name`: the TCGI variant, plus
 any model option not at its default), in the layout of the published ERA5 track files, with each
 year's stage times in {year}_timing.csv.
 
@@ -58,8 +58,7 @@ from scipy.io import netcdf_file
 
 from ocr.risks.hurricane import batch, store
 
-FORCING = store.FORCING
-RUNS = store.RUNS
+ERA5 = 'era5'
 REALIZATIONS = 10  # track realizations per year, as in the published ERA5 set
 MEMBERS = 40  # intensity members per realization
 
@@ -68,8 +67,27 @@ def static(name: str) -> Path:
     return store.path(f'{store.TUTORIAL}/{name}')
 
 
-def forcing(name: str, year: int) -> Path:
-    return store.path(f'{FORCING}/{year}/{name}')
+def forcing(name: str, year: int, source: str | None = None) -> Path:
+    return store.path(f'forcing/{source or gv.source}/{year}/{name}')
+
+
+def normalization() -> Path:
+    """The intensity predictors' normalization: the tutorial's for ERA5, else the model's."""
+    return store.path(gv.meanstd) if gv.meanstd else static('coefficient_meanstd.nc')
+
+
+def ratio_source(source: str) -> str:
+    """Where the seeding ratio comes from: a model's historical run, for any of its experiments."""
+    if source == ERA5:
+        return ERA5
+    return '/'.join([*source.split('/')[:-1], 'historical'])
+
+
+def meanstd_for(source: str) -> str | None:
+    if source == ERA5:
+        return None
+    _, model, member, _ = source.split('/')
+    return f'forcing/cmip6/{model}/{member}/coefficient_meanstd.nc'
 
 
 OFF_DIAGONAL = [1, 3, 4, 6, 7, 8]  # of A's 10 lower-triangle entries over (u250, v250, u850, v850)
@@ -139,6 +157,8 @@ class gv:
     landDelta = 1.0
     survivalrate = 0.78
     obpath = 'bt_global_predictors.nc'
+    source = 'era5'  # forcing/{source}/, runs/{source}/: 'era5' or 'cmip6/{model}/{member}/{exp}'
+    meanstd = None  # key of the predictor normalization; None for the tutorial's
     llon = llat = lldmask = ldmask = None
 
 
@@ -834,7 +854,7 @@ def calIntensity(n_members: int):
     E0, v0E, cat1 = get_E1(bt2)
     bt2.close()
 
-    with nc.Dataset(static('coefficient_meanstd.nc'), 'r') as f:
+    with nc.Dataset(normalization(), 'r') as f:
         meanX_w = ma.getdata(f['meanX_w'][:])
         stdX_w = ma.getdata(f['stdX_w'][:])
         meanY_w = ma.getdata(f['meanY_w'][:])
@@ -914,6 +934,7 @@ def to_dataset(bt1) -> xr.Dataset:
     bt1.stochastic[:, *np.nonzero(max5 < 35)] = nan
     # storms that became unstable
     maxall = np.nanmax(bt1.stochastic, axis=0)
+    bt1.over_300 = int((maxall > 300).sum())
     bt1.stochastic[:, *np.nonzero(maxall > 300)] = nan
     # storms seeded within 2 degrees of the equator, or outside every basin
     iS1 = np.argwhere(np.abs(bt1.StormLat[0, :]) < 2)[:, 0]
@@ -951,7 +972,8 @@ def to_dataset(bt1) -> xr.Dataset:
 def run_one(task):
     """One track realization with its intensity members; returns stage times."""
     global yearTC
-    year, ichaz, ratio, n_members, tcgi_name, options = task
+    year, ichaz, ratio, n_members, tcgi_name, options, source = task
+    gv.source, gv.meanstd = source, meanstd_for(source)
     out = run_dir(run_name(tcgi_name, **options)) / f'{year}_r{ichaz:03d}.nc'
     if out.exists():
         return None
@@ -980,6 +1002,8 @@ def run_one(task):
     ds = to_dataset(bt)
     ds.attrs.update(provenance(year, ichaz, seed, ratio, n_members, tcgi_name))
     t['storms_kept'] = ds.sizes['stormID']
+    t['members_over_300kt'] = bt.over_300
+    ds.attrs['members_dropped_over_300kt'] = bt.over_300
     tmp = out.with_suffix('.nc.part')
     ds.to_netcdf(tmp)
     tmp.rename(out)
@@ -1005,7 +1029,9 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
         'steering_noise': gv.steering,
         'land_mean': gv.land,
         'survival_rate': gv.survivalrate,
-        'forcing': f'{store.S3_ROOT}/{FORCING}/{year}',
+        'forcing': f'{store.S3_ROOT}/forcing/{gv.source}/{year}',
+        'predictor_normalization': gv.meanstd or f'{store.TUTORIAL}/coefficient_meanstd.nc',
+        'predictor_normalization_sha256': store._hash(normalization()),
         f'{tcgi_name}_sha256': store._hash(forcing(f'{tcgi_name}_{year}.nc', year)),
         'I_MLR_sha256': store._hash(forcing(f'I_MLR_{year}.nc', year)),
         'chaz_py_sha256': store._hash(Path(__file__)),
@@ -1015,20 +1041,22 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
 
 
 def run_dir(name: str) -> Path:
-    out = store.CACHE / RUNS / name
+    out = store.CACHE / 'runs' / gv.source / name
     out.mkdir(parents=True, exist_ok=True)
     return out
 
 
-def seeding_ratio(tcgi_name: str) -> float:
+def seeding_ratio(tcgi_name: str, source: str = ERA5) -> float:
     """CHAZvBeta's get_seeding_ratio: observed storms 1981-2005 / survival rate, over the seeds
-    our TCGI gives over those years at ratio 1 (each month rint of its global total)."""
+    our TCGI gives over those years at ratio 1 (each month rint of its global total). A model
+    run takes the ratio of its historical run, so a future run keeps it."""
+    source = ratio_source(source)
     with nc.Dataset(static(gv.obpath), 'r') as bt_obs:
         years = np.asarray(bt_obs['StormYear'][:])
     observed = ((years >= 1981) & (years <= 2005)).sum()
     seeds = 0.0
     for year in range(1981, 2006):
-        with xr.open_dataset(forcing(f'{tcgi_name}_{year}.nc', year)) as ds:
+        with xr.open_dataset(forcing(f'{tcgi_name}_{year}.nc', year, source)) as ds:
             seeds += np.rint(ds['TCGI'].sum(('lat', 'lon')).values).sum()
     return float(observed / gv.survivalrate / seeds)
 
@@ -1047,7 +1075,7 @@ def run(
 
     options = options or {}
     out_dir = run_dir(run_name(tcgi_name, **options))
-    tasks = [(year, r, ratio, members, tcgi_name, options) for r in realizations]
+    tasks = [(year, r, ratio, members, tcgi_name, options, gv.source) for r in realizations]
     timing_path = out_dir / f'{year}_timing.csv'
     t_start = time.perf_counter()
     # a worker killed by the OS breaks the pool and raises here, so the task fails and retries
@@ -1083,6 +1111,7 @@ def prefetch(year: int, tcgi_name: str) -> None:
     """Cache a year's inputs before the worker pool starts, so workers only read them."""
     for name in STATIC:
         static(name)
+    normalization()
     for name in [
         f'{tcgi_name}_{year}.nc',
         f'I_MLR_{year}.nc',
@@ -1093,14 +1122,14 @@ def prefetch(year: int, tcgi_name: str) -> None:
 
 def task(year: int, tcgi_name: str, options: dict[str, str] | None = None) -> None:
     options = options or {}
-    ratio = seeding_ratio(tcgi_name)
-    print(f'{tcgi_name}: seeding ratio {ratio:.4f}; options {options}', flush=True)
+    ratio = seeding_ratio(tcgi_name, gv.source)
+    print(f'{gv.source} {tcgi_name}: seeding ratio {ratio:.4f}; options {options}', flush=True)
     prefetch(year, tcgi_name)
     run(year, tcgi_name, list(range(REALIZATIONS)), MEMBERS, os.cpu_count() or 1, ratio, options)
     name = run_name(tcgi_name, **options)
     files = store.push(
-        f'{RUNS}/{name}',
-        fragment=f'run-era5-{name}-{year}',
+        f'runs/{gv.source}/{name}',
+        fragment=f'run-{gv.source.replace("/", "-")}-{name}-{year}',
         pattern=f'{year}_*',
         replace=True,
     )
@@ -1119,12 +1148,25 @@ def launch(
     name = run_name(tcgi_name, **options)
     batch.run(
         'chaz',
-        ['task', '--tcgi', tcgi_name, *(f'--{k}={v}' for k, v in options.items())],
-        name=f'chaz-run-era5-{name}-{years[0]}-{years[-1]}',
+        [
+            'task',
+            '--tcgi',
+            tcgi_name,
+            '--source',
+            gv.source,
+            *(f'--{k}={v}' for k, v in options.items()),
+        ],
+        name=f'chaz-run-{gv.source}-{name}-{years[0]}-{years[-1]}',
         over=years,
         vm_type=vm_type,
         max_workers=max_workers,
         spot=spot,
+    )
+
+
+def add_source(parser) -> None:
+    parser.add_argument(
+        '--source', default=ERA5, help="forcing source: 'era5' or 'cmip6/{model}/{member}/{exp}'"
     )
 
 
@@ -1146,10 +1188,12 @@ def main():
     q.add_argument('--workers', type=int, default=max((os.cpu_count() or 2) - 2, 1))
     q.add_argument('--ratio', type=float, help='seeding ratio; default from 1981-2005 TCGI')
     add_options(q)
+    add_source(q)
     t = sub.add_parser('task')
     t.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
     t.add_argument('--year', type=int)
     add_options(t)
+    add_source(t)
     la = sub.add_parser('launch')
     la.add_argument('--years', default='1981-2019')
     la.add_argument('--tcgi', default='TCGI_CRH_PI', choices=['TCGI_CRH_PI', 'TCGI_SD_PI'])
@@ -1157,10 +1201,12 @@ def main():
     la.add_argument('--max-workers', type=int, default=20)
     la.add_argument('--on-demand', action='store_true', help='on-demand VMs instead of spot')
     add_options(la)
+    add_source(la)
     a = p.parse_args()
+    gv.source, gv.meanstd = a.source, meanstd_for(a.source)
     options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
     if a.cmd == 'run':
-        ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi)
+        ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi, a.source)
         prefetch(a.year, a.tcgi)
         realizations = list(range(a.realizations))
         print(run(a.year, a.tcgi, realizations, a.members, a.workers, ratio, options))

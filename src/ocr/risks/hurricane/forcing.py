@@ -251,11 +251,13 @@ def _daily_winds(year: int) -> xr.Dataset:
 
 def covariance(year: int, daily: xr.Dataset, monthly: xr.Dataset) -> xr.Dataset:
     """Per-month covariance of daily wind anomalies from the monthly means interpolated to each day
-    (the tutorial's cell 13)."""
+    (the tutorial's cell 13). Month lengths come from the daily data, so a model calendar of
+    30-day months works as the real one does."""
     ndays = daily.sizes['time']
+    month = daily['time.month'].values
     mid, start = [], 0
     for m in range(1, 13):
-        n = calendar.monthrange(year, m)[1]
+        n = int((month == m).sum())
         mid.append(int(n / 2 + start) - 1)
         start += n
     d = np.arange(ndays)
@@ -265,7 +267,6 @@ def covariance(year: int, daily: xr.Dataset, monthly: xr.Dataset) -> xr.Dataset:
             mid, monthly[v].values, bounds_error=False, fill_value='extrapolate', axis=0
         )(d)
         anom[f'{v}p'] = daily[v].values - clim
-    month = daily['time.month'].values
     cov = {}
     for pair in COV_PAIRS:
         x, y = anom[pair[:5]], anom[pair[5:]]
