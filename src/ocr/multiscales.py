@@ -6,6 +6,9 @@ import xproj  # noqa: F401 - registers .proj accessor
 import zarr
 from topozarr import create_pyramid
 
+# icechunk<=2.3.1 str(store) waits on the session lock holding the GIL; zarr>=3.4.1 calls it: hang
+icechunk.IcechunkStore.__str__ = lambda self: 'icechunk.IcechunkStore'
+
 
 def drop_levels(session: icechunk.Session) -> None:
     """Delete the pyramid levels (every group but "0") and the root multiscales attrs; uncommitted."""
