@@ -24,14 +24,6 @@ nlcd` (EPSG:5070 metres) and a `points.json` summary:
 - `noaa-200612-202005`: the same construction over the released points'
   window, so that comparing runs separates the effect of this construction
   from that of the added years.
-- `noaa-200612-202312`: the same through December 2023, leaving 2024-2025
-  (including Hurricane Helene) out for a temporal holdout.
-- `noaa-200612-202312-storms`: the same presences, with absences drawn only
-  from cells holding a non-flood storm report (STORM_TYPES). Those reports
-  share the flood reports' bias toward roads and towns, so the model has to
-  separate flood reports from other reports rather than from random cells.
-- `noaa-200612-202312-storms-fp`: the same, with absences allowed inside the
-  floodplain.
 
 `--seeds 1 2 ...` adds `<run>-seed<k>` runs whose absences are drawn with seed
 SEED + k; seed 0 is the unsuffixed run. `--noaa-from <run>` reuses the NOAA
@@ -40,7 +32,7 @@ built later share its presences even after NOAA reissues a year's file. Existing
 runs are not overwritten without `--overwrite`.
 
 Absences for the NOAA runs are resampled with the paper's rules (Collins et al.
-2022, section 2), except where a run says otherwise: within each HUC-2, as many
+2022, section 2): within each HUC-2, as many
 absences as presences in each land cover class, outside the combined 100-year
 floodplain, and never in a cell holding a presence. Absences sit at cell centres, as the released ones do.
 
@@ -56,7 +48,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import hashlib
 import io
 import json
@@ -83,24 +74,8 @@ NOAA_ARCHIVE = f'{BUCKET}/input/flood/raw/noaa-storm-events'
 NOAA_START, NOAA_END = pd.Timestamp('2006-12-01'), pd.Timestamp('2026-01-01')
 ORIGINAL_END = pd.Timestamp('2020-06-01')
 FLOOD_TYPES = ['Flood', 'Flash Flood']
-STORM_TYPES = ['Thunderstorm Wind', 'Hail', 'Tornado', 'Lightning', 'Funnel Cloud']
-
-
-@dataclasses.dataclass(frozen=True)
-class Run:
-    end: pd.Timestamp
-    storm_absences: bool = False
-    floodplain_absences: bool = False
-
-
-HOLDOUT_END = pd.Timestamp('2024-01-01')
-NOAA_RUNS = {
-    'noaa-200612-202512': Run(NOAA_END),
-    'noaa-200612-202005': Run(ORIGINAL_END),
-    'noaa-200612-202312': Run(HOLDOUT_END),
-    'noaa-200612-202312-storms': Run(HOLDOUT_END, storm_absences=True),
-    'noaa-200612-202312-storms-fp': Run(HOLDOUT_END, storm_absences=True, floodplain_absences=True),
-}
+# Run -> end of its report window (exclusive).
+NOAA_RUNS = {'noaa-200612-202512': NOAA_END, 'noaa-200612-202005': ORIGINAL_END}
 SEED = 20261022
 NODATA = 255
 
@@ -213,7 +188,7 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
                 'BEGIN_LON',
             ],
         )
-        frames.append(df[df.EVENT_TYPE.isin(FLOOD_TYPES + STORM_TYPES)])
+        frames.append(df[df.EVENT_TYPE.isin(FLOOD_TYPES)])
     events = pd.concat(frames, ignore_index=True)
     if not events.EVENT_ID.is_unique:
         sys.exit('duplicate NOAA EVENT_ID across details files')
@@ -221,10 +196,7 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
     return events, provenance
 
 
-def noaa_cells(
-    events: pd.DataFrame, grid: Grid, end: pd.Timestamp, types: list[str] = FLOOD_TYPES
-) -> tuple[pd.DataFrame, dict]:
-    events = events[events.EVENT_TYPE.isin(types)]
+def noaa_cells(events: pd.DataFrame, grid: Grid, end: pd.Timestamp) -> tuple[pd.DataFrame, dict]:
     window = events[(events.date >= NOAA_START) & (events.date < end)]
     conus = window[(window.STATE_FIPS < 60) & ~window.STATE_FIPS.isin([2, 15])]
     located = conus.dropna(subset=['BEGIN_LAT', 'BEGIN_LON'])
@@ -264,20 +236,16 @@ def sample_absences(
     nlcd,
     floodplain,
     rng: np.random.Generator,
-    candidates: pd.DataFrame | None = None,
-    in_floodplain: bool = False,
 ) -> tuple[pd.DataFrame, list[dict]]:
-    """Draw absences per HUC and land cover class, from `candidates` cells if given."""
+    """Draw absences per HUC and land cover class, outside the floodplain."""
     rows, cols, table = [], [], []
     for huc in HUCS:
         r0, c0, h, w = grid.windows[huc]
-        eligible = (hucs[r0 : r0 + h, c0 : c0 + w] == int(huc)) & ~window_mask(
-            presence, r0, c0, h, w
+        eligible = (
+            (hucs[r0 : r0 + h, c0 : c0 + w] == int(huc))
+            & ~window_mask(presence, r0, c0, h, w)
+            & (floodplain[r0 : r0 + h, c0 : c0 + w] == 0)
         )
-        if not in_floodplain:
-            eligible &= floodplain[r0 : r0 + h, c0 : c0 + w] == 0
-        if candidates is not None:
-            eligible &= window_mask(candidates, r0, c0, h, w)
         classes = nlcd[r0 : r0 + h, c0 : c0 + w]
 
         need = presence[(presence.huc2 == int(huc)) & (presence.nlcd != NODATA)].nlcd.value_counts()
@@ -409,13 +377,9 @@ def cmd_build(args) -> None:
         released_cells = set(zip(pres.row, pres.col))
         overlap = sum(c in released_cells for c in zip(rebuilt.row, rebuilt.col))
     for run in runs:
-        spec = NOAA_RUNS[run]
-        end = spec.end
+        end = NOAA_RUNS[run]
         presence, counts = noaa_cells(events, grid, end)
         presence = tag(presence[['x', 'y']], grid, hucs, nlcd)
-        storms, storm_counts = (
-            noaa_cells(events, grid, end, STORM_TYPES) if spec.storm_absences else (None, None)
-        )
         for seed in args.seeds:
             name = seeded(run, seed)
             print(f'{name}:')
@@ -428,8 +392,6 @@ def cmd_build(args) -> None:
                 nlcd,
                 floodplain,
                 rng,
-                candidates=storms,
-                in_floodplain=spec.floodplain_absences,
             )
             absence = tag(absence[['x', 'y']], grid, hucs, nlcd)
             summary = {
@@ -451,12 +413,6 @@ def cmd_build(args) -> None:
                 },
                 'absence_sampling': {
                     'seed': SEED + seed,
-                    'storm_report_cells': (
-                        {'event_types': STORM_TYPES, 'counts': storm_counts}
-                        if spec.storm_absences
-                        else None
-                    ),
-                    'in_floodplain': spec.floodplain_absences,
                     'by_huc_class': table,
                 },
                 'noaa_files': provenance,
