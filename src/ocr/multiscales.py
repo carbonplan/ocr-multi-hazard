@@ -7,6 +7,18 @@ import xproj  # noqa: F401 - registers .proj accessor
 import zarr
 from topozarr import create_pyramid
 
+# icechunk<=2.3.1 str(store) waits on the session lock holding the GIL; zarr>=3.4.1 calls it: hang
+icechunk.IcechunkStore.__str__ = lambda self: 'icechunk.IcechunkStore'
+
+
+def drop_levels(session: icechunk.Session) -> None:
+    """Delete the pyramid levels (numbered groups but "0") and the root multiscales attrs;
+    other groups are kept. Uncommitted."""
+    root = zarr.open_group(session.store, mode='r+')
+    for name in [n for n in root.group_keys() if n.isdigit() and n != '0']:
+        del root[name]
+    root.attrs.pop('multiscales', None)
+
 
 def write_multiscales(
     repo: icechunk.Repository,
@@ -29,10 +41,7 @@ def write_multiscales(
     """
     session = repo.writable_session(branch)
     if overwrite:
-        root = zarr.open_group(session.store, mode='r+')
-        for name in [n for n in root.group_keys() if n.isdigit() and n != '0']:
-            del root[name]
-        root.attrs.pop('multiscales', None)
+        drop_levels(session)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
     # Packed ints stay packed: topozarr re-packs decoded ones with eager, whole-array math.
     raw = xr.open_zarr(
@@ -42,16 +51,10 @@ def write_multiscales(
     ds = ds.assign({name: raw[name].variable for name in packed})
     ds = ds.proj.assign_crs(spatial_ref=crs)
     derived = {name: write for name, write in (derived or {}).items() if name in ds}
-    # One variable per write: Pyramid.write looks up each variable's array while earlier
-    # variables' writes are in flight, and on an S3 icechunk store that lookup blocks zarr's
-    # event loop (IcechunkStore.__str__) that those writes need, so 2+ variables deadlock.
-    levels = []
-    for name in variables if variables is not None else list(ds.data_vars):
-        if name in derived:
-            continue
-        pyramid = create_pyramid(ds[[name]], **pyramid_kwargs)
-        levels = list(range(1, pyramid.levels))
-        pyramid.write(session.store, mode='a', levels=levels)
+    names = [n for n in (variables if variables is not None else ds.data_vars) if n not in derived]
+    pyramid = create_pyramid(ds[names], **pyramid_kwargs)
+    levels = list(range(1, pyramid.levels))
+    pyramid.write(session.store, mode='a', levels=levels)
     for level in levels:
         group = zarr.open_group(session.store, path=str(level), mode='r+')
         for write in derived.values():

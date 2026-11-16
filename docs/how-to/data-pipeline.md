@@ -2,7 +2,7 @@
 
 Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. A risk without a `score` has its store written by its own ETL, run first. Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
 
-Fire still uses the older `ocr-deploy` CLI (`ocr-deploy --help`) until its refactor.
+Fire runs `score`, `pyramid`, `buildings` and `regions` (`pixi run fire-all`).
 
 ## Run a deployment
 
@@ -94,18 +94,29 @@ ocr stage --version v0.0.0-fdp-test --prefix scratch/<you> --coiled \
   flood score pyramid buildings regions
 ```
 
+## Fire score
+
+`score` writes the fire store one region of the 30 m grid at a time. With `--coiled` it is one Coiled map job, one VM per region, all regions at once. Each region commits to the store with its `region_id` in the commit metadata, so:
+
+- After the job, the regions missing from the commit history are resubmitted, up to 3 rounds; a round that writes none of its regions stops the run. If any are still missing, the run fails with their ids and `pyramid` doesn't start.
+- A rerun writes only the missing regions. `--overwrite` deletes the store first and writes every region; with `region_ids` it raises before deleting anything.
+- A run that writes any region first drops the pyramid levels (groups 1..N), so they never go stale over group "0" (as `flood-etl --overwrite`); rerun `pyramid` after. A rerun with nothing missing keeps them.
+- `region_ids` subsets `score` for dev runs (`--kwargs '{"score": {"region_ids": ["y14_x5"]}}'`). `pyramid` still coarsens the full CONUS grid; unwritten regions are NaN.
+
 ## How it works
 
 `ocr run` and `ocr stage` (`ocr/cli.py`) run a risk's stages one at a time, in `STAGES` order (`ocr/stages.py`). There is no graph and no scheduler, only a for-loop in `execute()`. Paths are under `<prefix>/<risk>/v<version>/` (prefix default `output`) (`OutputPaths.store`, `.buildings`, `.regions`).
 
 | stage | util | reads | writes |
 | --- | --- | --- | --- |
-| score | `RiskSpec.score` | risk inputs (not checked) | `store.icechunk` group "0" |
+| score | `RiskSpec.score`; fire calls it once per part from `RiskSpec.score_parts` | risk inputs (not checked) | `store.icechunk` group "0" |
 | pyramid | `write_multiscales` | `store.icechunk` | `store.icechunk` groups 1..N |
 | buildings | `write_buildings` | `store.icechunk` | `vector/buildings.geoparquet` |
 | regions | `write_regions` | `vector/buildings.geoparquet` | `vector/regions/` |
 
 The store is written by `score`, or by the risk's own ETL when it has no score. Flood's score (`ocr.risks.flood.refit`) mosaics the per-watershed outputs of the FDP refit (`input-data/tensor/fdp/`) into `fdp`, `fdp_se`, `contribution(driver, y, x)` (int16, packed) and `dominant_driver` (uint8 class codes, the argmax of `contribution`). `dominant_driver` is a derived variable (`RiskSpec.derived`): `pyramid` recomputes it on each level from that level's averaged contributions, and `regions` skips it. `buildings` samples everything, one `contribution_<driver>` column per driver. Score also writes group `point`: the same 13 layers (`fdp`, `fdp_se` and the 11 contributions) at full resolution in one `values(layer, y, x)` array, chunked 13 × 32 × 32 so a map click reads every layer of a cell in one small request. `pyramid --overwrite` drops only the numbered level groups, so `point` survives it. Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so a bad stage name, kwarg or subset never boots a VM.
+
+Fire `score` is the one map job (`run_score`): `score_parts` plans the regions missing from the store's commit metadata (`region_id`), one task per region (`COILED_BATCH_TASK_INPUT`), all at once. After every task finishes it plans again, up to `SCORE_ROUNDS`, then raises with the missing ids. Only round 1 gets `--overwrite`; tasks never get `--overwrite` or kwargs.
 
 ## Change the pipeline
 

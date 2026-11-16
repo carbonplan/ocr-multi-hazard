@@ -8,6 +8,11 @@ coiled = true
 run = "noaa-200612-202512"
 distance = "planar"
 
+[job.score]  # one task, which runs on the scheduler VM; JOBS.score is sized for fire's regions
+vm_type = ["r8g.xlarge"]
+scheduler_vm_type = ["r8g.xlarge"]
+spot_policy = "on-demand"
+
 [kwargs.pyramid]
 levels = "auto"
 
