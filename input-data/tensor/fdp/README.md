@@ -119,13 +119,6 @@ ocr run runs/flood/v2.0.0.toml
 obstore reads AWS credentials from the environment only, so locally export them first with
 `eval "$(aws configure export-credentials --format env)"`.
 
-## Temporal validation
-
-[Temporal validation](../../../docs/methods/flood-risk/temporal-validation.ipynb) tests the
-published map against NOAA reports from June 2020 through December 2025.
-`validation-2026-10-15/` holds its run record, archived results and input hashes, and
-`validate_fdp.py` reruns it.
-
 ## Outputs
 
 ```
