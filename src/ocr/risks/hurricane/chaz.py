@@ -109,7 +109,7 @@ def steering_factor(a: xr.DataArray) -> xr.DataArray:
 # default first; normalization 'tutorial' runs a model's forcing with the tutorial's ERA5 one
 OPTIONS = {
     'steering': ('lower', 'diagonal'),
-    'land': ('shared', 'separate'),
+    'land': ('shared', 'separate', 'fine'),
     'normalization': ('model', 'tutorial'),
 }
 
@@ -148,7 +148,9 @@ class gv:
     steering = 'lower'
     # 'shared': get_predictors writes the 300 km land mean and then the centre cell into one array
     # that landmask and landmaskMean share, as the public code does, so the intensity model reads
-    # the centre cell; 'separate' keeps the mean in its own array, as the regressions were fit on
+    # the centre cell; 'separate' keeps the mean in its own array, as the regressions were fit on;
+    # 'fine' is 'shared' with the centre value read at the storm's own position on the 1/12-degree
+    # mask instead of one sample per 2-degree cell, so open water near a coast stays water
     land = 'shared'
     # land in the intensity model (ocean -1, land 0). get_predictors writes the
     # mean over cells within landRadius km and then the centre-cell value into
@@ -509,7 +511,8 @@ class fst2bt:
         ):  # fmt: skip
             setattr(self, name, np.empty(shape, dtype=float) * nan)
         self.landmask = data['ldmask']
-        self.landmaskMean = data['ldmask'] if gv.land == 'shared' else data['ldmask'].copy()
+        shared = gv.land in ('shared', 'fine')
+        self.landmaskMean = data['ldmask'] if shared else data['ldmask'].copy()
         self.trSpeed = np.zeros(shape) * nan
         self.trDir = np.zeros(shape) * nan
         self.dVdt = np.zeros(shape)
@@ -616,7 +619,18 @@ def get_predictors(iiS):
                 ring = (distance <= radius2) & (distance >= radius1) & (var == var)
                 bt.landmaskMean[it, iS] = np.mean(var[ring])
                 bt.landmask[it, iS] = var[j0, i0]
+                if gv.land == 'fine':
+                    bt.landmask[it, iS] = fine_land(bt.StormLat[it, iS], bt.StormLon[it, iS])
     return iS
+
+
+def fine_land(lat: float, lon: float) -> float:
+    """Land at a point on the 1/12-degree mask: -1 ocean, 0 land. gv.lldmask's rows run south to
+    north (the file's run north to south)."""
+    n_lat, n_lon = gv.lldmask.shape
+    row = n_lat - 1 - int(np.floor((90.0 - lat) * 12))
+    col = int(np.floor((lon % 360) * 12)) % n_lon
+    return 0.0 if gv.lldmask[min(max(row, 0), n_lat - 1), col] == 3 else -1.0
 
 
 def calPredictors(fst):

@@ -6,6 +6,10 @@ distance in km). A step starts at an even node of a CHAZ track, where the model 
 predictions; IBTrACS steps start at every 6-hourly record. Members count when they reach 34 kt
 inside the North Atlantic, as in landfall.py.
 
+Each step also records where it starts: the distance to the nearest US coast, the US coastal
+region that coast belongs to (landfall.region), and the share of land among the 2-degree cells
+within 500 km, the ring whose mean potential intensity the model reads (land cells carry 0).
+
   run    the step and member tables for IBTrACS, the published ERA5 tracks and one of our runs,
          under validation/chaz/intensity
 """
@@ -63,13 +67,75 @@ def model_cell(lat, lon) -> tuple[np.ndarray, np.ndarray]:
     return row, col
 
 
+RING_KM = 500.0
+LOOKUP = 0.25  # degrees, the grid ring land shares are looked up on
+LOOKUP_BOX = (0.0, 60.0, 240.0, 360.0)  # lat0, lat1, lon0, lon1
+
+
+class Coast:
+    """Distance to the US coast and ring land share at any point of the North Atlantic."""
+
+    def __init__(self, ocean: np.ndarray):
+        from scipy.spatial import cKDTree
+
+        land = landfall.USLand()
+        us = land.mask
+        water = ~land.land
+        edge = np.zeros_like(us)
+        edge[1:-1, 1:-1] = us[1:-1, 1:-1] & (
+            water[:-2, 1:-1] | water[2:, 1:-1] | water[1:-1, :-2] | water[1:-1, 2:]
+        )
+        i, j = np.nonzero(edge)
+        self.coast_lat, self.coast_lon = land.lats[i], land.lons[j]
+        self.coast_region = landfall.region(self.coast_lat, self.coast_lon)
+        self.tree = cKDTree(self._xyz(self.coast_lat, self.coast_lon))
+        self.lut_lat = np.arange(LOOKUP_BOX[0], LOOKUP_BOX[1] + LOOKUP, LOOKUP)
+        self.lut_lon = np.arange(LOOKUP_BOX[2], LOOKUP_BOX[3] + LOOKUP, LOOKUP)
+        self.lut = self._ring_land(ocean)
+
+    @staticmethod
+    def _xyz(lat, lon):
+        la, lo = np.deg2rad(lat), np.deg2rad(lon)
+        return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], -1)
+
+    def _ring_land(self, ocean: np.ndarray) -> np.ndarray:
+        """Share of land among the 2-degree cells within RING_KM, by get_predictors' distance."""
+        glon, glat = np.meshgrid(GRID_LON, GRID_LAT)
+        londis = 2 * np.pi * 6371.0 * np.cos(np.deg2rad(glat)) / 360
+        land = ~ocean
+        out = np.zeros((self.lut_lat.size, self.lut_lon.size), 'float32')
+        for a, lat in enumerate(self.lut_lat):
+            for b, lon in enumerate(self.lut_lon):
+                d = np.hypot(londis * (glon - lon), 110 * (glat - lat))
+                ring = d <= RING_KM
+                out[a, b] = land[ring].mean() if ring.any() else np.nan
+        return out
+
+    def __call__(self, lat, lon):
+        """Distance to the US coast (km), its region, and the ring land share; NaN outside."""
+        lat = np.asarray(lat, float)
+        lon = np.asarray(lon, float) % 360
+        ok = np.isfinite(lat) & np.isfinite(lon)
+        dist = np.full(lat.shape, np.nan, 'float32')
+        reg = np.full(lat.shape, None, object)
+        chord, idx = self.tree.query(self._xyz(lat[ok], lon[ok]))
+        dist[ok] = 2 * 6371.0 * np.arcsin(np.clip(chord / 2, 0, 1))
+        reg[ok] = self.coast_region[idx]
+        a = np.round((lat - LOOKUP_BOX[0]) / LOOKUP).astype('int64', copy=False)
+        b = np.round((lon - LOOKUP_BOX[2]) / LOOKUP).astype('int64', copy=False)
+        inside = ok & (a >= 0) & (a < self.lut_lat.size) & (b >= 0) & (b < self.lut_lon.size)
+        ring = np.full(lat.shape, np.nan, 'float32')
+        ring[inside] = self.lut[a[inside], b[inside]]
+        return dist, reg, ring
+
+
 def over_water(ocean: np.ndarray, lat, lon) -> np.ndarray:
     ok = np.isfinite(lat) & np.isfinite(lon)
     row, col = model_cell(np.where(ok, lat, 0), np.where(ok, lon, 0))
     return ok & ocean[row, col]
 
 
-def tables(lat, lon, wind, ocean, source: str, every_node: bool):
+def tables(lat, lon, wind, ocean, source: str, every_node: bool, coast: Coast | None = None):
     """(steps, members) for the members of one track set that reach 34 kt in the North Atlantic.
 
     steps: one row per 12-hour step over water, with the wind at its start (v0), the change over
@@ -105,6 +171,14 @@ def tables(lat, lon, wind, ocean, source: str, every_node: bool):
             'h_since_peak': (6 * (starts[k] - peak_node[m, s])).astype('int16'),
         }
     )
+    if coast is not None:
+        node = starts[k]
+        dist, reg, ring = coast(lat[node, s], lon[node, s])
+        steps['lat'] = lat[node, s].astype('float32')
+        steps['lon'] = landfall.wrap(lon[node, s]).astype('float32')
+        steps['coast_km'] = dist
+        steps['coast_region'] = pd.Categorical(reg)
+        steps['ring_land'] = ring
     m, s = np.nonzero(keep)
     members = pd.DataFrame(
         {
@@ -121,17 +195,18 @@ def tables(lat, lon, wind, ocean, source: str, every_node: bool):
 def run(run_name: str = 'TCGI_CRH_PI') -> None:
     fs = store.s3()
     ocean = ocean_mask()
+    coast = Coast(ocean)
     out = {}
 
     lat, lon, wind, _ = landfall.observed_arrays(landfall.ibtracs_csv(fs))
-    out['ibtracs'] = tables(lat, lon, wind, ocean, 'IBTrACS', every_node=True)
+    out['ibtracs'] = tables(lat, lon, wind, ocean, 'IBTrACS', every_node=True, coast=coast)
 
     parts = []
     for i in range(10):
         with fs.open(f'{landfall.PUBLISHED}/global_2019_2ens{i:03d}_pre.nc', 'rb') as f:
             ds = xr.open_dataset(f, engine='scipy', decode_times=False).load()
         lat, lon, wind, _ = landfall.chaz_arrays(ds)
-        parts.append(tables(lat, lon, wind, ocean, 'published', every_node=False))
+        parts.append(tables(lat, lon, wind, ocean, 'published', every_node=False, coast=coast))
         print('published file', i, flush=True)
     out['published'] = tuple(pd.concat(x, ignore_index=True) for x in zip(*parts, strict=True))
 
@@ -141,7 +216,7 @@ def run(run_name: str = 'TCGI_CRH_PI') -> None:
             key = f'{store.RUNS}/{run_name}/{year}_r{r:03d}.nc'
             with xr.open_dataset(store.path(key), decode_times=False) as ds:
                 lat, lon, wind, _ = landfall.chaz_arrays(ds.load())
-            parts.append(tables(lat, lon, wind, ocean, 'ours', every_node=False))
+            parts.append(tables(lat, lon, wind, ocean, 'ours', every_node=False, coast=coast))
         print('our realization', r, flush=True)
     out[f'ours_{run_name}'] = tuple(
         pd.concat(x, ignore_index=True) for x in zip(*parts, strict=True)
