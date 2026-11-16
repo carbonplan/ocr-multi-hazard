@@ -157,10 +157,17 @@ def _exists(store: obstore.store.ObjectStore, key: str) -> bool:
         return any(obstore.list(store, prefix=key, chunk_size=1))
 
 
-def _delete_prefix(prefix: str) -> None:
+def _delete_prefix(prefix: str, chunk: int = 20_000) -> None:
+    """Delete every object under `prefix`. obstore sends S3 DeleteObjects of 1000 keys, 20 at a
+    time, and retries (`object_store` config); chunks only give progress output.
+    """
     store = StorageConfig().object_store()
-    for batch in obstore.list(store, prefix=prefix):
-        obstore.delete(store, [m['path'] for m in batch])
+    paths = [m['path'] for batch in obstore.list(store, prefix=prefix) for m in batch]
+    for i in range(0, len(paths), chunk):
+        obstore.delete(store, paths[i : i + chunk])
+        print(f'\rdeleting {prefix}: {min(i + chunk, len(paths))}/{len(paths)}', end='', flush=True)
+    if paths:
+        print()
 
 
 # Stages take (spec, out, overwrite, **util kwargs). Storage is the hand-off: each reads what an

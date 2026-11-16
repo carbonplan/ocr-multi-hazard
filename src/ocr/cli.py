@@ -218,7 +218,7 @@ def run_score(cfg: RunFile, kwargs: BaseModel | None, job: JobConfig, overwrite:
         typer.echo(f'{cfg.risk} score: round {attempt}/{SCORE_ROUNDS}, {len(todo)} parts')
         j = coiled.batch.run(
             command=command,
-            name=f'ocr-{cfg.risk}-score-{cfg.version}-{attempt}',
+            name=re.sub(r'[^A-Za-z0-9_-]', '-', f'ocr-{cfg.risk}-score-{cfg.version}-{attempt}'),
             map_over_values=todo,
             **job,
         )

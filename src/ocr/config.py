@@ -1,5 +1,6 @@
 """Risk-agnostic storage config and output paths."""
 
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -35,8 +36,19 @@ class StorageConfig(pydantic_settings.BaseSettings):
         if self.local_root:
             return LocalStore(self.local_root, mkdir=True)
         # boto3's chain covers SSO profiles, which obstore's own (env/IMDS only) misses on laptops.
+        # Default 5 s connect timeout and 100 ms backoff failed bulk deletes (connect timeouts on
+        # POST are never retried; S3 503 SlowDown outlasted 10 fast retries).
         return S3Store(
-            self.bucket, region=self.region, credential_provider=Boto3CredentialProvider()
+            self.bucket,
+            region=self.region,
+            credential_provider=Boto3CredentialProvider(),
+            client_options={'connect_timeout': '30s'},
+            retry_config={
+                'backoff': {
+                    'init_backoff': timedelta(seconds=1),
+                    'max_backoff': timedelta(seconds=30),
+                }
+            },
         )
 
     def uri(self, key: str) -> str:
