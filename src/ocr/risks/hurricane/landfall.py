@@ -17,6 +17,7 @@ reproduced and our runs compared on the same footing:
     the crossing share counts tracks, not storms that still exist
 
   run    tables for IBTrACS, the published ERA5 tracks and our runs, under validation/chaz/landfall
+  rows   rows and per-file statistics of one run of any forcing source over a span of years
 """
 
 from __future__ import annotations
@@ -423,6 +424,58 @@ def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     return tab
 
 
+def rows_key(source: str, run_name: str, years: tuple[int, int]) -> str:
+    return f'{OUT}/rows_{source.replace("/", "-")}_{run_name}_{years[0]}-{years[1]}'
+
+
+def source_rows(
+    source: str, run_name: str, years: tuple[int, int], land: USLand, realizations: int = 10
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """storm_rows for the run runs/{source}/{run_name} over `years`, and one row per track file:
+    storms kept, global storms reaching 34 kt per member, members dropped above 300 kt, the
+    seeding ratio and the normalization the intensity model read."""
+    rows, files = [], []
+    for r in range(realizations):
+        for year in range(years[0], years[1] + 1):
+            key = f'runs/{source}/{run_name}/{year}_r{r:03d}.nc'
+            with xr.open_dataset(store.path(key), decode_times=False) as ds:
+                ds = ds.load()
+            part = chaz_rows(ds, land, run_name, f'r{r:03d}', years)
+            part['storm'] = part['storm'] + year * 10_000
+            rows.append(part)
+            n, m = ds.sizes['stormID'], ds.sizes['ensembleNum']
+            files.append(
+                {
+                    'year': year,
+                    'realization': r,
+                    'storms': n,
+                    'members': n * m,
+                    'ts_storms_per_member': float((ds['Mwspd'].max('lifelength') >= TS).sum()) / m,
+                    'dropped_over_300kt': float(
+                        ds.attrs.get('members_dropped_over_300kt', np.nan)
+                    ),  # runs made before chaz.py recorded it have none
+                    'seeding_ratio': float(ds.attrs.get('seeding_ratio', np.nan)),
+                    'normalization': ds.attrs.get('predictor_normalization', ''),
+                }
+            )
+    return pd.concat(rows, ignore_index=True), pd.DataFrame(files)
+
+
+def save_rows(source: str, run_name: str, years: tuple[int, int]) -> None:
+    rows, files = source_rows(source, run_name, years, USLand())
+    key = rows_key(source, run_name, years)
+    local = store.CACHE / key
+    local.parent.mkdir(parents=True, exist_ok=True)
+    rows.to_parquet(f'{local}.parquet')
+    files.to_csv(f'{local}_files.csv', index=False)
+    store.push(
+        fragment=f'landfall-rows-{source.replace("/", "-")}-{run_name}',
+        replace=True,
+        keys=[f'{key}.parquet', f'{key}_files.csv'],
+    )
+    print(key, len(rows), 'rows', flush=True)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -430,7 +483,15 @@ def main() -> None:
     sub = p.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run')
     r.add_argument('--run', default='TCGI_CRH_PI', help='run under runs/era5 (chaz.run_name)')
+    w = sub.add_parser('rows')
+    w.add_argument('--source', default='era5', help="'era5' or 'cmip6/{model}/{member}/{exp}'")
+    w.add_argument('--run', default='TCGI_CRH_PI', help='chaz.run_name')
+    w.add_argument('--years', required=True, help='first-last, e.g. 1995-2014')
     a = p.parse_args()
+    if a.cmd == 'rows':
+        y0, y1 = (int(x) for x in a.years.split('-'))
+        save_rows(a.source, a.run, (y0, y1))
+        return
     pd.set_option('display.width', 250)
     pd.set_option('display.max_columns', 20)
     print(run(a.run).round(3).to_string())

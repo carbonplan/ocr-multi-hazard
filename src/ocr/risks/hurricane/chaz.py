@@ -83,8 +83,10 @@ def ratio_source(source: str) -> str:
     return '/'.join([*source.split('/')[:-1], 'historical'])
 
 
-def meanstd_for(source: str) -> str | None:
-    if source == ERA5:
+def meanstd_for(source: str, normalization: str = 'model') -> str | None:
+    """Key of a source's predictor normalization; None (the tutorial's) for ERA5, or for a model
+    run with normalization='tutorial'."""
+    if source == ERA5 or normalization == 'tutorial':
         return None
     _, model, member, _ = source.split('/')
     return f'forcing/cmip6/{model}/{member}/coefficient_meanstd.nc'
@@ -104,7 +106,12 @@ def steering_factor(a: xr.DataArray) -> xr.DataArray:
     return a
 
 
-OPTIONS = {'steering': ('lower', 'diagonal'), 'land': ('shared', 'separate')}  # default first
+# default first; normalization 'tutorial' runs a model's forcing with the tutorial's ERA5 one
+OPTIONS = {
+    'steering': ('lower', 'diagonal'),
+    'land': ('shared', 'separate'),
+    'normalization': ('model', 'tutorial'),
+}
 
 
 def run_name(tcgi_name: str, **options: str) -> str:
@@ -159,6 +166,7 @@ class gv:
     obpath = 'bt_global_predictors.nc'
     source = 'era5'  # forcing/{source}/, runs/{source}/: 'era5' or 'cmip6/{model}/{member}/{exp}'
     meanstd = None  # key of the predictor normalization; None for the tutorial's
+    normalization = 'model'  # a model run's: 'model' (its own file) or 'tutorial'
     llon = llat = lldmask = ldmask = None
 
 
@@ -973,7 +981,8 @@ def run_one(task):
     """One track realization with its intensity members; returns stage times."""
     global yearTC
     year, ichaz, ratio, n_members, tcgi_name, options, source = task
-    gv.source, gv.meanstd = source, meanstd_for(source)
+    gv.source = source
+    gv.meanstd = meanstd_for(source, options.get('normalization', 'model'))
     out = run_dir(run_name(tcgi_name, **options)) / f'{year}_r{ichaz:03d}.nc'
     if out.exists():
         return None
@@ -1203,7 +1212,7 @@ def main():
     add_options(la)
     add_source(la)
     a = p.parse_args()
-    gv.source, gv.meanstd = a.source, meanstd_for(a.source)
+    gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization)
     options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
     if a.cmd == 'run':
         ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi, a.source)
