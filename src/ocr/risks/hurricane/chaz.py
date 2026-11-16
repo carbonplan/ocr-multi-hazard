@@ -118,6 +118,7 @@ OPTIONS = {
     'steering': ('lower', 'diagonal'),
     'land': ('shared', 'separate', 'fine'),
     'normalization': ('model', 'tutorial', 'port', 'env'),
+    'genesis': ('tcgi', 'calibrated'),
 }
 
 
@@ -175,7 +176,9 @@ class gv:
     obpath = 'bt_global_predictors.nc'
     source = 'era5'  # forcing/{source}/, runs/{source}/: 'era5' or 'cmip6/{model}/{member}/{exp}'
     meanstd = None  # key of the predictor normalization; None for the tutorial's
-    normalization = 'model'  # a model run's: 'model' (its own file) or 'tutorial'
+    normalization = 'model'  # see meanstd_for
+    # 'calibrated' multiplies the genesis index by calibrate.py's regional map when seeding
+    genesis = 'tcgi'
     llon = llat = lldmask = ldmask = None
 
 
@@ -218,10 +221,25 @@ def TCgiSeeding(gxlon, gxlat, gi, climInitLon, climInitLat, climInitDate, ratio,
     return climInitLon, climInitLat, climInitDate
 
 
+def genesis_multiplier(tcgi_name: str) -> np.ndarray | float:
+    """calibrate.py's map on the TCGI grid when gv.genesis is 'calibrated', else 1."""
+    if gv.genesis != 'calibrated':
+        return 1.0
+    from ocr.risks.hurricane import calibrate
+
+    with xr.open_dataset(store.path(calibrate.key(tcgi_name))) as ds:
+        return ds['multiplier'].values
+
+
+def apply_options(options: dict[str, str]) -> None:
+    for key, choices in OPTIONS.items():
+        setattr(gv, key, options.get(key, choices[0]))
+
+
 def getSeeding(iy, ratio):
     climInitLon, climInitLat, climInitDate = [], [], []
     ds = xr.open_dataset(forcing(f'{gv.TCGIinput}_{iy:04d}.nc', iy))
-    gi = ds.TCGI.values
+    gi = ds.TCGI.values * genesis_multiplier(gv.TCGIinput)
     gxlon, gxlat = np.meshgrid(ds['lon'], ds['lat'])
     climInitLon, climInitLat, climInitDate = TCgiSeeding(
         gxlon, gxlat, gi, climInitLon, climInitLat, climInitDate, ratio, iy
@@ -1009,8 +1027,7 @@ def run_one(task):
         return None
     yearTC = year
     gv.TCGIinput = tcgi_name
-    for key, choices in OPTIONS.items():
-        setattr(gv, key, options.get(key, choices[0]))
+    apply_options(options)
     seed = year * 1000 + ichaz
     random.seed(seed)
     np.random.seed(seed)
@@ -1058,6 +1075,7 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
         'beta_drift_uv_ms': f'{gv.uBeta}, {gv.vBeta}',
         'steering_noise': gv.steering,
         'land_mean': gv.land,
+        'genesis': gv.genesis,
         'survival_rate': gv.survivalrate,
         'forcing': f'{store.S3_ROOT}/forcing/{gv.source}/{year}',
         'predictor_normalization': gv.meanstd or f'{store.TUTORIAL}/coefficient_meanstd.nc',
@@ -1085,9 +1103,10 @@ def seeding_ratio(tcgi_name: str, source: str = ERA5) -> float:
         years = np.asarray(bt_obs['StormYear'][:])
     observed = ((years >= 1981) & (years <= 2005)).sum()
     seeds = 0.0
+    m = genesis_multiplier(tcgi_name)
     for year in range(1981, 2006):
         with xr.open_dataset(forcing(f'{tcgi_name}_{year}.nc', year, source)) as ds:
-            seeds += np.rint(ds['TCGI'].sum(('lat', 'lon')).values).sum()
+            seeds += np.rint((ds['TCGI'] * m).sum(('lat', 'lon')).values).sum()
     return float(observed / gv.survivalrate / seeds)
 
 
@@ -1142,6 +1161,7 @@ def prefetch(year: int, tcgi_name: str) -> None:
     for name in STATIC:
         static(name)
     normalization()
+    genesis_multiplier(tcgi_name)
     for name in [
         f'{tcgi_name}_{year}.nc',
         f'I_MLR_{year}.nc',
@@ -1152,6 +1172,7 @@ def prefetch(year: int, tcgi_name: str) -> None:
 
 def task(year: int, tcgi_name: str, options: dict[str, str] | None = None) -> None:
     options = options or {}
+    apply_options(options)
     ratio = seeding_ratio(tcgi_name, gv.source)
     print(f'{gv.source} {tcgi_name}: seeding ratio {ratio:.4f}; options {options}', flush=True)
     prefetch(year, tcgi_name)
@@ -1235,6 +1256,7 @@ def main():
     a = p.parse_args()
     gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization)
     options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
+    apply_options(options)
     if a.cmd == 'run':
         ratio = a.ratio if a.ratio is not None else seeding_ratio(a.tcgi, a.source)
         prefetch(a.year, a.tcgi)
