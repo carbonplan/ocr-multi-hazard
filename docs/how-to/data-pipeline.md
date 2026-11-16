@@ -1,6 +1,6 @@
 # Data pipeline
 
-Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. Each risk's ETL runs on its own first (flood: `pixi run -e flood flood-etl`). Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`. With `--coiled`, a small driver job runs the stages and submits their jobs, so nothing reads or writes storage on your machine and no local AWS login is needed.
+Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. Each risk's ETL runs on its own first (flood: `pixi run -e flood flood-etl`). Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or with `--coiled` as one Coiled batch job. With `--coiled`, a small driver job, also on Coiled, submits the stage jobs and waits for each; your machine only submits the driver, so it needs no AWS login.
 
 Fire runs `score`, `pyramid`, `buildings` and `regions` (`pixi run fire-all`).
 
@@ -10,7 +10,7 @@ A deployment is one committed TOML file under `runs/<risk>/`:
 
 ```bash
 pixi run -e flood flood-etl --version v2.0.0  # once: writes store.icechunk (--overwrite redoes it and drops the pyramid; rerun pyramid/buildings/regions)
-ocr run runs/flood/v2.0.0.toml --dry-run      # print the plan, check kwargs, run nothing (coiled: inputs are checked in the driver job)
+ocr run runs/flood/v2.0.0.toml --dry-run      # print the plan and check kwargs; inputs are checked when the run starts
 ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```
 
@@ -63,7 +63,7 @@ ocr stage --version v2.0.0 --coiled flood pyramid
 - A stage you skip must already have its input in storage, or the run fails before it starts (with `--coiled`, in the driver job, before any stage job). So must TIGER (`pixi run regions-etl`) for `buildings` and `regions`.
 - A stage the risk has no code for also fails before any job starts.
 - `--overwrite` deletes a stage's old output first, where that applies (`score`, `pyramid`, `regions`). `buildings` and `regions` replace their files on every run; pass `--overwrite` to `regions` after a smaller run (`bbox`, fewer `levels`) so no old files stay.
-- Coiled jobs print their job and cluster id and a `coiled batch logs <cluster id>` command when submitted. Follow the driver's logs for the stage jobs it starts.
+- Coiled jobs print their job and cluster id and a `coiled batch logs <cluster id>` command when submitted. The driver's logs show the same for each stage job it starts.
 - Ctrl-C deletes the driver's cluster. A stage job it started keeps running: stop it in the Coiled UI or with `coiled cluster stop`.
 - `--vm TYPE` sets the Coiled VM type for every stage in the run.
 
@@ -106,7 +106,7 @@ ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -
 | buildings | `write_buildings` | `store.icechunk` | `vector/buildings.geoparquet` |
 | regions | `write_regions` | `vector/buildings.geoparquet` | `vector/regions/` |
 
-The store is written by `score`, or by the risk's own ETL when it has no score (flood). Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so Coiled never boots a VM just to raise. With `--coiled`, your machine checks stage names, kwargs and subsets, then submits the driver job (`run_driver`), which runs `ocr drive`: the storage checks, fire's score planning and the stage jobs, with the VM's AWS role.
+The store is written by `score`, or by the risk's own ETL when it has no score (flood). Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so a missing input fails before any stage job starts. With `--coiled`, your machine runs the checks that need no storage (stage names, kwargs, subsets, stages the risk has no code for), then submits the driver job (`run_driver`). The driver runs `ocr drive` with the VM's AWS role: the storage checks, fire's score planning and the stage jobs.
 
 Fire `score` is the one map job (`run_score`): `score_parts` plans the regions missing from the store's commit metadata (`region_id`), one task per region (`COILED_BATCH_TASK_INPUT`), all at once. After every task finishes it plans again, up to `SCORE_ROUNDS`, then raises with the missing ids. Only round 1 gets `--overwrite`; tasks never get `--overwrite` or kwargs.
 

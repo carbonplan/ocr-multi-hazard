@@ -277,8 +277,8 @@ def run_coiled(
 
 
 def run_driver(cfg: RunFile, vm: str | None, overwrite: bool) -> None:
-    """One small Coiled job that runs `execute` with the VM's AWS role, so this machine never
-    reads or writes storage; it submits the stage jobs from there. Blocks until it ends."""
+    """One small Coiled job that runs `execute` with the VM's AWS role and submits the stage jobs,
+    so this machine never reads or writes storage. Blocks until it ends."""
     import coiled
 
     job = job_config('driver', {}, None)
@@ -354,7 +354,7 @@ def stage(
     version: Annotated[str, typer.Option(help='Output version, e.g. v2.0.0')],
     prefix: Annotated[str, typer.Option(help='Output prefix, e.g. scratch/<you>')] = OUTPUT_PREFIX,
     coiled: Annotated[
-        bool, typer.Option(help='Run on Coiled: a driver job, which runs one job per stage')
+        bool, typer.Option(help='Run on Coiled: a driver job, which submits one job per stage')
     ] = False,
     vm: Vm = None,
     dry_run: DryRun = False,
@@ -389,8 +389,8 @@ def execute(
     cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool, driver: bool = False
 ) -> None:
     """Run the requested stages one at a time, in `STAGES` order. Unrequested stages are
-    assumed done (their outputs already in storage). With `cfg.coiled`, this machine only checks
-    the kwargs; the driver job (`run_driver`) does the rest.
+    assumed done (their outputs already in storage). With `cfg.coiled`, this machine runs only the
+    checks that need no storage; the driver job (`run_driver`) does the rest.
     """
     risk, out, storage = cfg.risk, cfg.out, StorageConfig()
     if cfg.coiled and storage.local_root:
