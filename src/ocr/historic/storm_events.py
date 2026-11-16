@@ -104,7 +104,8 @@ def processing_metadata() -> dict[str, str]:
 
 def date_sql(prefix: str) -> str:
     """SQL for the date in `prefix`_YEARMONTH ('201905') and `prefix`_DAY ('9'). Raises on digits that are no date."""
-    return f"CAST(strptime({prefix}_YEARMONTH || lpad({prefix}_DAY, 2, '0'), '%Y%m%d') AS DATE)"
+    day = f"printf('%02d', CAST({prefix}_DAY AS INTEGER))"
+    return f"CAST(strptime({prefix}_YEARMONTH || {day}, '%Y%m%d') AS DATE)"
 
 
 def dollars_sql(column: str) -> str:

@@ -244,12 +244,21 @@ def test_title_sql_capitalises_words_and_keeps_a_possessive_s_lower(name, titled
     assert got == titled
 
 
-def test_reports_raise_on_a_day_that_is_no_date(tmp_path):
-    path = write_details(
-        tmp_path / details_name(2019, 20260323), [row(END_YEARMONTH='201902', END_DAY='30')]
-    )
+@pytest.mark.parametrize(
+    ('changes', 'error', 'message'),
+    [
+        (
+            {'END_YEARMONTH': '201902', 'END_DAY': '30'},
+            duckdb.ConversionException,
+            'Date out of range: 2019-2-30',
+        ),
+        ({'BEGIN_DAY': '100'}, duckdb.InvalidInputException, 'Could not parse string "201905100"'),
+    ],
+)
+def test_reports_raise_on_a_day_that_is_no_date(tmp_path, changes, error, message):
+    path = write_details(tmp_path / details_name(2019, 20260323), [row(**changes)])
     with duckdb_connect() as con:
-        with pytest.raises(duckdb.ConversionException, match='Date out of range: 2019-2-30'):
+        with pytest.raises(error, match=message):
             storm_events.reports(con, [path]).fetchall()
 
 
