@@ -254,13 +254,14 @@ def preflight(
     spec: RiskSpec,
     out: OutputPaths,
     kwargs: Mapping[str, Mapping[str, Any]] = {},
+    storage: bool = True,
 ) -> list[str]:
     """One message per problem that would otherwise surface only once a stage is running: no code
     for this risk, input neither written in this run nor in storage, or TIGER missing.
-    `kwargs`: per stage, the kwargs it was given.
+    `kwargs`: per stage, the kwargs it was given. `storage=False` skips the storage checks.
     """
     cfg = StorageConfig()
-    store = cfg.object_store()
+    store = cfg.object_store() if storage else None
     store_writer = 'score' if spec.score else f'the {out.risk} ETL'
     implemented = {'score': spec.score, 'pyramid': spec.crs}
     reads = {  # stage -> (input key, what writes it)
@@ -276,6 +277,8 @@ def preflight(
     for s in stages:
         if s in implemented and implemented[s] is None:
             problems.append(f'{s}: not implemented for {out.risk}')
+            continue
+        if store is None:
             continue
         if s in reads:
             key, writer = reads[s]

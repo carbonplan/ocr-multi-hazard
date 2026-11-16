@@ -1,6 +1,7 @@
 """`ocr run` / `ocr stage`: run a risk's stages in order, in process or one Coiled job each."""
 
 import json
+import os
 import re
 import time
 import tomllib
@@ -46,8 +47,12 @@ DEFAULT: JobConfig = {
 }
 # `ocr stage --kwargs` from env: how Coiled jobs get their stage kwargs (`run_coiled`).
 KWARGS_ENV = 'OCR_STAGE_KWARGS'
+# The run the driver job executes (`run_driver`), as JSON.
+DRIVER_ENV = 'OCR_DRIVER_RUN'
 # Estimates from data size until CONUS timing/RAM runs; vm_type lists are first-available.
 JOBS: dict[str, JobConfig] = {
+    # Runs `execute` (`run_driver`): preflight, score planning and polling the stage jobs.
+    'driver': {'vm_type': ['m8g.large', 'm7g.large']},
     # One task per fire region (cli.run_score). No max_workers: Coiled starts 1 VM per task (up to
     # 1,000), so all ~405 regions run at once, as the old fire pipeline did. Commits spread out with compute
     # time; contended ones rebase, and disjoint regions never conflict. If AWS vCPU quota bites, set
@@ -182,8 +187,8 @@ def stopped_by_hand(cluster_id: int) -> str | None:
 
 
 def run_score(cfg: RunFile, kwargs: BaseModel | None, job: JobConfig, overwrite: bool) -> None:
-    """Score fans out, one Coiled task per part. Each round plans on this machine (commit history),
-    runs a map job over the missing parts and waits for every task; up to SCORE_ROUNDS.
+    """Score fans out, one Coiled task per part. Each round plans in the driver job (commit
+    history), runs a map job over the missing parts and waits for every task; up to SCORE_ROUNDS.
     """
     import coiled
 
@@ -271,6 +276,22 @@ def run_coiled(
         raise RuntimeError(f'{stage}: coiled job {j["job_id"]} failed; logs: {logs}')
 
 
+def run_driver(cfg: RunFile, vm: str | None, overwrite: bool) -> None:
+    """One small Coiled job that runs `execute` with the VM's AWS role, so this machine never
+    reads or writes storage; it submits the stage jobs from there. Blocks until it ends."""
+    import coiled
+
+    job = job_config('driver', {}, None)
+    run = {'run': cfg.model_dump(mode='json'), 'vm': vm, 'overwrite': overwrite}
+    job['env'] = {**job.get('env', {}), DRIVER_ENV: json.dumps(run)}
+    name = re.sub(r'[^A-Za-z0-9_-]', '-', f'ocr-{cfg.risk}-driver-{cfg.version}')
+    j = coiled.batch.run(command=['ocr', 'drive'], name=name, **job)
+    logs = f'coiled batch logs {j["cluster_id"]}'
+    typer.echo(f'{cfg.risk} driver: job {j["job_id"]}, cluster {j["cluster_id"]}; logs: {logs}')
+    if wait(j, job_state) == 'error':
+        raise RuntimeError(f'driver: coiled job {j["job_id"]} failed; logs: {logs}')
+
+
 def load(data: dict[str, Any], hint: str) -> RunFile:
     try:
         return RunFile.model_validate(data)
@@ -332,7 +353,9 @@ def stage(
     stages: Annotated[list[Stage], typer.Argument()],
     version: Annotated[str, typer.Option(help='Output version, e.g. v2.0.0')],
     prefix: Annotated[str, typer.Option(help='Output prefix, e.g. scratch/<you>')] = OUTPUT_PREFIX,
-    coiled: Annotated[bool, typer.Option(help='One Coiled batch job per stage')] = False,
+    coiled: Annotated[
+        bool, typer.Option(help='Run on Coiled: a driver job, which runs one job per stage')
+    ] = False,
     vm: Vm = None,
     dry_run: DryRun = False,
     overwrite: Overwrite = False,
@@ -355,9 +378,19 @@ def stage(
     execute(load(data, '--version / --prefix / --kwargs'), vm, dry_run, overwrite)
 
 
-def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> None:
+@app.command(hidden=True)
+def drive() -> None:
+    """What the driver job runs (`run_driver`)."""
+    run = json.loads(os.environ[DRIVER_ENV])
+    execute(load(run['run'], DRIVER_ENV), run['vm'], False, run['overwrite'], driver=True)
+
+
+def execute(
+    cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool, driver: bool = False
+) -> None:
     """Run the requested stages one at a time, in `STAGES` order. Unrequested stages are
-    assumed done (their outputs already in storage).
+    assumed done (their outputs already in storage). With `cfg.coiled`, this machine only checks
+    the kwargs; the driver job (`run_driver`) does the rest.
     """
     risk, out, storage = cfg.risk, cfg.out, StorageConfig()
     if cfg.coiled and storage.local_root:
@@ -377,13 +410,14 @@ def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> Non
     ordered = [s for s in STAGES if s in cfg.stages]
     if unused := sorted(set(cfg.kwargs) - set(ordered)):
         typer.echo(f'warning: kwargs for stages not run, ignored: {unused}', err=True)
-    if problems := preflight(ordered, RISKS[risk], out, given):
+    remote = cfg.coiled and not driver
+    if problems := preflight(ordered, RISKS[risk], out, given, storage=not remote):
         raise typer.BadParameter('\n'.join(problems), param_hint='stages')
 
     if dry_run:
         typer.echo(
             f'{risk} {storage.uri(out.root)}'
-            + (' (coiled)' if cfg.coiled else '')
+            + (' (coiled; storage checks run in the driver job)' if cfg.coiled else '')
             + (' (overwrite)' if overwrite else '')
         )
         for i, stage in enumerate(ordered, 1):
@@ -392,6 +426,9 @@ def execute(cfg: RunFile, vm: str | None, dry_run: bool, overwrite: bool) -> Non
                 extra += f'  kwargs={checked[stage].model_dump(mode="json", exclude_unset=True)}'
             typer.echo(f'  {i}. {stage}{extra}')
         return
+
+    if remote:
+        return run_driver(cfg, vm, overwrite)
 
     # ponytail: stages run back to back, so pyramid and buildings don't overlap on Coiled.
     # If wall time matters, start both jobs and poll them in one loop.

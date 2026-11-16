@@ -17,7 +17,18 @@ from ocr.stages import RISKS, STAGES
 @pytest.fixture(autouse=True)
 def inputs_present(monkeypatch: pytest.MonkeyPatch) -> None:
     # Most tests run a single stage; skip the storage check (`test_preflight*` covers it).
-    monkeypatch.setattr(cli, 'preflight', lambda *_: [])
+    monkeypatch.setattr(cli, 'preflight', lambda *_, **__: [])
+
+
+RUN_DRIVER = cli.run_driver
+
+
+@pytest.fixture(autouse=True)
+def driver_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    # --coiled tests check the stage jobs, which the driver job submits: run it here.
+    monkeypatch.setattr(
+        cli, 'run_driver', lambda cfg, vm, overwrite: cli.execute(cfg, vm, False, overwrite, True)
+    )
 
 
 def jobs(state: str, exit_code: int | None = None, cluster_state: str = 'ready') -> list[dict]:
@@ -187,6 +198,32 @@ def test_score_dry_run_does_not_plan(batch: MagicMock, monkeypatch: pytest.Monke
     assert r.exit_code == 0, r.output
     plan.assert_not_called()
     batch.run.assert_not_called()
+
+
+def test_coiled_runs_a_driver_job(batch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    # This machine checks kwargs only; storage checks and stage jobs run in the driver job.
+    monkeypatch.setattr(cli, 'run_driver', RUN_DRIVER)
+    monkeypatch.setattr(cli, 'preflight', stages.preflight)
+    monkeypatch.setattr(cli.StorageConfig, 'object_store', MagicMock(side_effect=AssertionError))
+    r = invoke('pyramid', 'buildings', '--overwrite', '--vm', 'r8g.4xlarge')
+    assert r.exit_code == 0, r.output
+    batch.run.assert_called_once()
+    kw = batch.run.call_args.kwargs
+    assert kw['command'] == ['ocr', 'drive']
+    assert kw['vm_type'] == cli.JOBS['driver']['vm_type']
+    run = json.loads(kw['env'][cli.DRIVER_ENV])
+    assert run['run']['stages'] == ['pyramid', 'buildings'] and run['run']['coiled']
+    assert run['vm'] == 'r8g.4xlarge' and run['overwrite'] is True
+
+
+def test_drive_runs_the_stage_jobs(batch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = cli.RunFile(risk=Risk.FLOOD, version='v2.0.0', stages=['pyramid'], coiled=True)
+    env = {'run': run.model_dump(mode='json'), 'vm': None, 'overwrite': True}
+    monkeypatch.setenv(cli.DRIVER_ENV, json.dumps(env))
+    r = CliRunner().invoke(cli.app, ['drive'])
+    assert r.exit_code == 0, r.output
+    command = batch.run.call_args.kwargs['command']
+    assert command[0:2] == ['ocr', 'stage'] and command[-2:] == ['pyramid', '--overwrite']
 
 
 def test_coiled_forwards_overwrite(batch: MagicMock) -> None:
