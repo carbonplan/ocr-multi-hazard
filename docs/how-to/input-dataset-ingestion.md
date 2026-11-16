@@ -80,7 +80,9 @@ pixi run ocr-ingest download scott-et-al-2024
 pixi run ocr-ingest process scott-et-al-2024 --use-coiled
 ```
 
+:::{note}
 `download` caches the TIFFs in the system temp dir of the machine running `ocr-ingest`. On a Coiled VM (`coiled run`), pass `--env TMPDIR=/scratch` so they land on the VM disk, not the small overlay `/tmp`.
+:::
 
 **Outputs**:
 
