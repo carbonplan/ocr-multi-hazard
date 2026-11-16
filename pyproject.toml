@@ -149,8 +149,6 @@
     # Standalone: Coiled package sync replicates the whole environment, and the
     # default one carries packages its solver cannot resolve.
     fdp = { features = ["fdp"], no-default-feature = true }
-    # fdp plus R for train_fdp.R; run `pixi run -e fdp-r fdp-r-cran` once.
-    fdp-r = { features = ["fdp", "fdp-r"], no-default-feature = true }
 
 # Tasks grouped by features
 [tool.pixi.feature.dev.tasks]
@@ -164,7 +162,6 @@
     docs-serve = { cmd = "sphinx-autobuild docs _build/html" }
 
 [tool.pixi.feature.flood.tasks]
-    flood-etl   = { cmd = "python -m ocr.risks.flood.etl.flood" }  # pixi run flood-etl --version v2.0.0 [--overwrite]
     flood-all   = { cmd = "ocr run runs/flood/v2.0.0.toml" }
     flood-local = { cmd = "ocr run runs/flood/local.toml" }
 
@@ -196,41 +193,6 @@
     requests = ">=2,<3"
     s3fs     = ">=2025.9.0,<2026"
     zarr     = ">=3.2.1,<4"
-
-# dismo, smoof, mlrMBO and tuneRanger have no osx-arm64 conda builds, so the
-# fdp-r-cran task compiles them from CRAN into the environment.
-[tool.pixi.feature.fdp-r]
-    platforms = ["linux-64", "osx-arm64-15"]
-
-[tool.pixi.feature.fdp-r.dependencies]
-    c-compiler        = "*"
-    cxx-compiler      = "*"
-    fortran-compiler  = "*"
-    make              = "*"
-    r-base            = "4.4.*"
-    r-bbmisc          = "*"
-    r-checkmate       = "*"
-    "r-data.table"    = "*"
-    r-dicekriging     = "*"
-    r-ggplot2         = "*"
-    r-jsonlite        = "*"
-    r-lhs             = "*"
-    r-lubridate       = "*"
-    r-mlr             = "*"
-    r-paramhelpers    = "*"
-    r-parallelmap     = "*"
-    r-plotly          = "*"
-    r-ranger          = "*"
-    r-raster          = "*"
-    r-rcolorbrewer    = "*"
-    r-rcpp            = "*"
-    r-rcpparmadillo   = "*"
-    r-snow            = "*"
-    r-sp              = "*"
-    r-terra           = "*"
-
-[tool.pixi.feature.fdp-r.tasks]
-    fdp-r-cran = { cmd = "Rscript -e 'options(Ncpus = 8); need <- setdiff(c(\"dismo\", \"smoof\", \"mlrMBO\", \"tuneRanger\"), rownames(installed.packages())); if (length(need)) install.packages(need, repos = \"https://cloud.r-project.org\", type = \"source\")'" }
 
 # Only python (and fire's PROJ stack, above) comes from conda-forge; all other deps live in the standard [project] / [dependency-groups] tables.
 [tool.pixi.dependencies]

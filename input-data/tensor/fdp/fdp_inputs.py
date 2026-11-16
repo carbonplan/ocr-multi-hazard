@@ -14,7 +14,7 @@
 Copies the eleven predictor rasters and the released presence/absence points
 from the USGS data release (doi:10.5066/P954TTQN) into `input/flood/fdp-refit/inputs/`,
 rasterizes the HUC-2 watersheds onto the predictor grid, and copies the published surface to
-`input/flood/raw/usgs-fdp/` for fdp_train's comparison and the flood ETL.
+`input/flood/raw/usgs-fdp/` for fdp_train's comparison.
 
 The predictors are rewritten as tiled, deflate-compressed COGs so a training
 task can window-read one watershed straight from S3. Values, dtype and nodata

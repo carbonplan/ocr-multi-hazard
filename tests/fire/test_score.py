@@ -158,7 +158,7 @@ def test_stage_overwrite_rewrites_every_region() -> None:
 
 
 def test_new_regions_drop_stale_pyramid() -> None:
-    # Group "0" changing under a pyramid drops its levels, as flood-etl --overwrite does.
+    # Group "0" changing under a pyramid drops its levels.
     spec = stages.RISKS[Risk.FIRE]
     kw = {'x_dim': 'longitude', 'y_dim': 'latitude', 'levels': 2}
     stages.score(spec, OUT, overwrite=False, region_ids=IDS[:2])

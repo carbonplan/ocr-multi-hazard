@@ -199,8 +199,8 @@ TASK_INPUT = 'COILED_BATCH_TASK_INPUT'
 
 def plan_score(spec: RiskSpec, out: OutputPaths, overwrite: bool, **kw: Any) -> list[str]:
     """Parts not written yet (`spec.score_parts`); overwrite deletes the store first.
-    Parts to write drop the pyramid levels first, so they never go stale over group "0" (as
-    flood-etl --overwrite); rerun `pyramid`. Only the driver plans, so tasks never drop.
+    Parts to write drop the pyramid levels first, so they never go stale over group "0"; rerun
+    `pyramid`. Only the driver plans, so tasks never drop.
     """
     assert spec.score_parts is not None  # `preflight`
     if overwrite and kw.get('region_ids') is not None:

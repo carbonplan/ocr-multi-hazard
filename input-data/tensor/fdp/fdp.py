@@ -21,7 +21,7 @@ import s3fs
 
 BUCKET = 'carbonplan-ocr'
 REFIT = 'input/flood/fdp-refit'  # training inputs and model runs, read by ocr.risks.flood.refit
-# The published surface, as ocr.risks.flood.etl.flood reads it; fdp_train compares each refit with it.
+# The published surface; fdp_train compares each refit with it.
 PUBLISHED_ZIP = 'Output_CONUS_FDP_100m.zip'
 PUBLISHED_KEY = f'{BUCKET}/input/flood/raw/usgs-fdp/CONUS_FDP_100m.tif'
 PROJ4 = (

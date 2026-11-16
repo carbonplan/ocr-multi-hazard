@@ -14,7 +14,7 @@ and how the refit differs from the published one, and
 
 The refit's inputs and model runs go under `input/flood/fdp-refit/`. The published raster
 (100 m, 31327 × 48357, EPSG:5070) goes under `input/flood/raw/usgs-fdp/`, where training
-compares each refit with it and the flood ETL reads it.
+compares each refit with it.
 
 ## Retraining
 
@@ -65,14 +65,9 @@ Mac) on Coiled moves 51 of its 103,331 presences by up to 0.25 m, each within it
 
 ### Environment and resources
 
-Locally, the `fdp-r` environment needs four CRAN packages that conda-forge does not build
-for macOS. Compile them once:
-
-```bash
-pixi run -e fdp-r fdp-r-cran
-```
-
-On Coiled, `launch` adds the R packages to the synced `fdp` environment as conda extras,
+Locally, training runs the `Rscript` on your PATH, or the one given with `--rscript`. That R
+needs the packages in `fdp_train.R_PACKAGES`; on macOS, conda-forge has no builds of dismo,
+smoof, mlrMBO and tuneRanger, so install those four from CRAN. On Coiled, `launch` adds the R packages to the synced `fdp` environment as conda extras,
 one x86 VM per watershed (dismo has no ARM build). The paper reports an average of 5.55 h
 per watershed on 8 cores with ~23 GB RAM; each task's `run.json` records its actual time,
 peak memory, disk and VM type. Peak memory sums the forked R workers, so it overstates what
@@ -97,7 +92,7 @@ standard errors to a watershed that is already trained and uploaded, from its sa
 and prediction:
 
 ```bash
-pixi run -e fdp-r python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --huc 03
+pixi run -e fdp python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --huc 03 --rscript <path>
 ```
 
 HUC 03 (67.6M cells) took 68 min locally on 18 workers for its standard errors, including a

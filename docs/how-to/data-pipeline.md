@@ -100,7 +100,7 @@ ocr stage --version v0.0.0-fdp-test --prefix scratch/<you> --coiled \
 
 - After the job, the regions missing from the commit history are resubmitted, up to 3 rounds; a round that writes none of its regions stops the run. If any are still missing, the run fails with their ids and `pyramid` doesn't start.
 - A rerun writes only the missing regions. `--overwrite` deletes the store first and writes every region; with `region_ids` it raises before deleting anything.
-- A run that writes any region first drops the pyramid levels (groups 1..N), so they never go stale over group "0" (as `flood-etl --overwrite`); rerun `pyramid` after. A rerun with nothing missing keeps them.
+- A run that writes any region first drops the pyramid levels (groups 1..N), so they never go stale over group "0"; rerun `pyramid` after. A rerun with nothing missing keeps them.
 - `region_ids` subsets `score` for dev runs (`--kwargs '{"score": {"region_ids": ["y14_x5"]}}'`). `pyramid` still coarsens the full CONUS grid; unwritten regions are NaN.
 
 ## How it works
@@ -125,5 +125,5 @@ New stage: a function `(spec, out, overwrite, **kw)` in `STAGES` at its place in
 `test_run_files_dry_run` dry-runs every `runs/**/*.toml`. After a change, run:
 
 ```bash
-pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_flood_etl.py
+pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_refit.py
 ```
