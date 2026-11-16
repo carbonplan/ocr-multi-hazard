@@ -37,9 +37,8 @@ class JobConfig(TypedDict, total=False):  # keys = coiled.batch.run kwargs
 DEFAULT: JobConfig = {
     'arm': True,
     'forward_aws_credentials': False,
-    # Fire values need the local proj (9.9.0 changed them) and proj-data's datum grids
-    # (check_proj_grids). Coiled ignores proj, so it installs the newest, unless it's a conda extra:
-    # then ~=local. (Strict doesn't help: it skips ignored packages too, and halts on mac-only libcxx.)
+    # Fire needs the pinned proj and proj-data (check_proj_grids); package sync skips both
+    # unless they're conda extras.
     'package_sync_conda_extras': ['proj', 'proj-data'],
     'spot_policy': 'on-demand',
     'tag': {'Project': 'OCR'},

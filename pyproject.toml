@@ -167,9 +167,8 @@
     fire-all   = { cmd = "ocr run runs/fire/v2.0.0.toml" }
     fire-local = { cmd = "ocr run runs/fire/local.toml" }
 
-# Fire values match production v1.1.0 only with PROJ 9.8.1 (9.9.0 picks other HARN grids where they
-# overlap) and its datum grids, from proj-data (~800 MiB; its activation turns PROJ_NETWORK off).
-# Conda rasterio links this proj; Coiled syncs both only as conda extras (cli.DEFAULT).
+# Fire's PROJ stack, pinned to match production (ocr.risks.fire.model.check_proj_grids).
+# proj-data is ~800 MiB of datum grids. Coiled gets both via cli.DEFAULT's conda extras.
 [tool.pixi.feature.fire.dependencies]
     proj         = "==9.8.1"
     proj-data    = "==1.25"

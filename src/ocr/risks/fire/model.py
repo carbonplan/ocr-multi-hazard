@@ -11,39 +11,27 @@ from odc.geo.xr import assign_crs, xr_reproject
 from ocr import catalog
 from ocr.risks.fire.utils import geo_sel
 
-# The Riley EPSG:5070 -> 4326 reprojection needs PROJ's datum grids: without them, ~0.3 m shifts
-# change ~30% of wind-adjusted pixels. Production v1.1.0 fetched them from cdn.proj.org (conda
-# turns PROJ_NETWORK on when proj-data is absent); the conda proj-data package installs the same
-# grids locally, and its activation turns the network off. Bit-identical to the CDN on y5_x34
-# (2026-11-16); notebooks/fire/check_vs_v1_1_0.py diffs regions against production.
-
-# EPSG:5070 (-1e6, 2e6) -> 4326 longitude with the NAD83 -> WGS 84 grid. The null transform
-# (no grid) gives -107.92266736878591, 2.1e-6 deg away.
-PROJ_PROBE_LON = -107.92266951038741
-# Where HARN grids overlap, PROJ's pick depends on its version: 9.9.0 changes 8 SE regions
-# (0.004% of pixels) vs 9.8.1 = production. Both pinned in pixi.lock; Coiled gets them via
-# cli.DEFAULT's conda extras, which resolve ~= the local version, so a newer patch (proj) or
-# minor (proj-data) release fails here until re-compared.
-PROJ_VERSION = '9.8.1'
+# Values match production v1.1.0 only with this PROJ and its datum grids (conda proj-data; without
+# them ~30% of pixels shift). Rerun notebooks/fire/check_vs_v1_1_0.py before bumping either.
+PROJ_VERSION = '9.8.1'  # 9.9.0 picks other HARN grids where they overlap
 PROJ_DATA_VERSION = '1.25'
+# EPSG:5070 (-1e6, 2e6) -> 4326 longitude with the datum grid; without it, 2.1e-6 deg off
+PROJ_PROBE_LON = -107.92266951038741
 
 
 def check_proj_grids() -> None:
-    """Raise unless GDAL's PROJ and proj-data are production's versions and the datum grid is used."""
+    """Raise unless rasterio's PROJ and proj-data are the pinned versions and the grid is used."""
     import rasterio
     import rasterio.warp
 
     if rasterio.__proj_version__ != PROJ_VERSION:
-        raise RuntimeError(
-            f'rasterio PROJ {rasterio.__proj_version__}, want {PROJ_VERSION} (picks differ where HARN grids overlap)'
-        )
+        raise RuntimeError(f'rasterio PROJ {rasterio.__proj_version__}, want {PROJ_VERSION}')
     if not any(Path(sys.prefix, 'conda-meta').glob(f'proj-data-{PROJ_DATA_VERSION}-*.json')):
         raise RuntimeError(f'conda proj-data {PROJ_DATA_VERSION} not installed in {sys.prefix}')
     (lon,), _ = rasterio.warp.transform('EPSG:5070', 'EPSG:4326', [-1e6], [2e6])
     if abs(lon - PROJ_PROBE_LON) > 5e-7:
         raise RuntimeError(
-            f'PROJ datum grid not used (lon {lon!r}, want {PROJ_PROBE_LON!r}): is PROJ_DATA '
-            'pointing away from the env share/proj?'
+            f'PROJ datum grid not used (lon {lon!r}, want {PROJ_PROBE_LON!r}); check PROJ_DATA'
         )
 
 
