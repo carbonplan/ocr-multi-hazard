@@ -21,7 +21,7 @@ R = 512  # big enough that topozarr's chunks (256) sit inside a region shard
 LAT, LON = 0.5 + np.arange(2.0 * R), -100.5 + np.arange(2.0 * R)
 IDS = ['y0_x0', 'y0_x1', 'y1_x0', 'y1_x1']
 OUT = OutputPaths(Risk.FIRE, 'v0.0.1')
-CHECK_PROJ_NETWORK = model.check_proj_network  # the fixture no-ops it
+CHECK_PROJ_GRIDS = model.check_proj_grids  # the fixture no-ops it
 
 
 def _slices(region_id: str) -> tuple[slice, slice]:
@@ -54,7 +54,7 @@ def grid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(score, '_grid', lambda: g)
     monkeypatch.setattr(model, 'calculate_wind_adjusted_risk', _risk)
-    monkeypatch.setattr(model, 'check_proj_network', lambda: None)  # offline; tested below
+    monkeypatch.setattr(model, 'check_proj_grids', lambda: None)  # offline; tested below
 
 
 def _repo() -> icechunk.Repository:
@@ -69,24 +69,30 @@ def _open() -> xr.Dataset:
 @pytest.mark.parametrize(
     ('lon', 'ok'), [(model.PROJ_PROBE_LON, True), (-107.92266736878591, False)]
 )
-def test_check_proj_network(lon: float, ok: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Grid transform passes; the null transform (network off or CDN down) raises.
+def test_check_proj_grids(lon: float, ok: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Grid transform passes; the null transform (grids missing) raises.
     import rasterio.warp
 
     monkeypatch.setattr(rasterio.warp, 'transform', lambda *_: ([lon], [40.448]))
     if ok:
-        CHECK_PROJ_NETWORK()
+        CHECK_PROJ_GRIDS()
     else:
         with pytest.raises(RuntimeError, match='datum grid'):
-            CHECK_PROJ_NETWORK()
+            CHECK_PROJ_GRIDS()
 
 
-def test_check_proj_network_rejects_other_proj(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_proj_grids_rejects_other_proj(monkeypatch: pytest.MonkeyPatch) -> None:
     import rasterio
 
     monkeypatch.setattr(rasterio, '__proj_version__', '9.9.0')
     with pytest.raises(RuntimeError, match='want 9.8.1'):
-        CHECK_PROJ_NETWORK()
+        CHECK_PROJ_GRIDS()
+
+
+def test_check_proj_grids_rejects_other_proj_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(model, 'PROJ_DATA_VERSION', '0.0')
+    with pytest.raises(RuntimeError, match='proj-data 0.0 not installed'):
+        CHECK_PROJ_GRIDS()
 
 
 def test_store_values_are_the_computation() -> None:

@@ -168,9 +168,11 @@
     fire-local = { cmd = "ocr run runs/fire/local.toml" }
 
 # Fire values match production v1.1.0 only with PROJ 9.8.1 (9.9.0 picks other HARN grids where they
-# overlap). Conda rasterio links this proj; Coiled syncs it only as a conda extra (cli.DEFAULT).
+# overlap) and its datum grids, from proj-data (~800 MiB; its activation turns PROJ_NETWORK off).
+# Conda rasterio links this proj; Coiled syncs both only as conda extras (cli.DEFAULT).
 [tool.pixi.feature.fire.dependencies]
     proj         = "==9.8.1"
+    proj-data    = "==1.25"
     rasterio     = "==1.5.2"
 
 [tool.pixi.feature.data-mgmt.tasks]
@@ -185,5 +187,5 @@
     historic-mtbs = { cmd = "python -m ocr.historic.mtbs" }
     historic-ibtracs = { cmd = "python -m ocr.historic.ibtracs" }
     # Package-syncs the local env. Bigger VM: `pixi run start-coiled-notebook m8g.2xlarge`.
-    # It has no conda-extras option, so its kernel gets the newest proj: fire scoring there fails check_proj_network.
+    # It has no conda-extras option, so its kernel gets the newest proj and no proj-data: fire scoring there fails check_proj_grids.
     start-coiled-notebook = { cmd = "coiled notebook start --sync --vm-type {{ vm }} --sync-ignore .pixi --sync-ignore .venv --sync-ignore .git --sync-ignore notebooks/layout-experiment/data --sync-ignore .env --sync-ignore '*.env' --tag Project=OCR", args = [{ arg = "vm", default = "m8g.xlarge" }] }

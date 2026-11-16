@@ -87,9 +87,8 @@ def parts(out: OutputPaths, region_ids: list[str] | None = None) -> list[str]:
 
 def write_region(out: OutputPaths, region_id: str) -> None:
     """Compute one region and commit it into group "0" of the store `parts` created."""
-    from ocr.risks.fire.model import calculate_wind_adjusted_risk, check_proj_network
+    from ocr.risks.fire.model import calculate_wind_adjusted_risk
 
-    check_proj_network()  # fails the task (next round retries) instead of writing drifted values
     grid = _grid()
     y_slice, x_slice = grid.region_id_to_latlon_slices(region_id=region_id)
     ds = calculate_wind_adjusted_risk(y_slice=y_slice, x_slice=x_slice).chunk(grid.chunks)

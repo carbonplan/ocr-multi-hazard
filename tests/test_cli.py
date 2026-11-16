@@ -282,7 +282,8 @@ def test_coiled_forwards_storage_env_and_package_syncs(
         'OCR_STORAGE_REGION': 'us-west-2',
     }
     assert kw['spot_policy'] == 'on-demand'
-    assert kw['package_sync_conda_extras'] == ['proj']  # else Coiled installs the newest proj
+    # else Coiled installs the newest proj and no datum grids
+    assert kw['package_sync_conda_extras'] == ['proj', 'proj-data']
     assert 'software' not in kw
 
 

@@ -1,7 +1,8 @@
-import os
+import sys
 import typing
 import warnings
 from math import asin, cos, radians, sin, sqrt
+from pathlib import Path
 
 import numpy as np
 import xarray as xr
@@ -10,25 +11,25 @@ from odc.geo.xr import assign_crs, xr_reproject
 from ocr import catalog
 from ocr.risks.fire.utils import geo_sel
 
-# Production v1.1.0 ran in conda, which sets PROJ_NETWORK=ON: PROJ fetches datum grids from
-# cdn.proj.org for the Riley EPSG:5070 -> 4326 reprojection. Off (pip wheels' default), ~0.3 m
-# shifts change ~30% of wind-adjusted pixels; see notebooks/fire/proj_network_reproducer.py.
-# Set before the first transform (PROJ reads it once per thread); setdefault lets the reproducer
-# turn it off. `check_proj_network` catches a CDN outage or an earlier transform.
-# ponytail: needs cdn.proj.org at run time; vendor the grids to run offline.
-os.environ.setdefault('PROJ_NETWORK', 'ON')
+# The Riley EPSG:5070 -> 4326 reprojection needs PROJ's datum grids: without them, ~0.3 m shifts
+# change ~30% of wind-adjusted pixels. Production v1.1.0 fetched them from cdn.proj.org (conda
+# turns PROJ_NETWORK on when proj-data is absent); the conda proj-data package installs the same
+# grids locally, and its activation turns the network off. Bit-identical to the CDN on y5_x34
+# (2026-11-16); notebooks/fire/check_vs_v1_1_0.py diffs regions against production.
 
 # EPSG:5070 (-1e6, 2e6) -> 4326 longitude with the NAD83 -> WGS 84 grid. The null transform
-# (network off) gives -107.92266736878591, 2.1e-6 deg away.
+# (no grid) gives -107.92266736878591, 2.1e-6 deg away.
 PROJ_PROBE_LON = -107.92266951038741
 # Where HARN grids overlap, PROJ's pick depends on its version: 9.9.0 changes 8 SE regions
-# (0.004% of pixels) vs 9.8.1 = production. Pinned in pixi.lock; Coiled gets it via
-# cli.DEFAULT's conda extras (~=9.8.1, so a 9.8.x patch release fails here until re-compared).
+# (0.004% of pixels) vs 9.8.1 = production. Both pinned in pixi.lock; Coiled gets them via
+# cli.DEFAULT's conda extras, which resolve ~= the local version, so a newer patch (proj) or
+# minor (proj-data) release fails here until re-compared.
 PROJ_VERSION = '9.8.1'
+PROJ_DATA_VERSION = '1.25'
 
 
-def check_proj_network() -> None:
-    """Raise unless GDAL's PROJ is production's version and uses the CDN datum grid."""
+def check_proj_grids() -> None:
+    """Raise unless GDAL's PROJ and proj-data are production's versions and the datum grid is used."""
     import rasterio
     import rasterio.warp
 
@@ -36,11 +37,13 @@ def check_proj_network() -> None:
         raise RuntimeError(
             f'rasterio PROJ {rasterio.__proj_version__}, want {PROJ_VERSION} (picks differ where HARN grids overlap)'
         )
+    if not any(Path(sys.prefix, 'conda-meta').glob(f'proj-data-{PROJ_DATA_VERSION}-*.json')):
+        raise RuntimeError(f'conda proj-data {PROJ_DATA_VERSION} not installed in {sys.prefix}')
     (lon,), _ = rasterio.warp.transform('EPSG:5070', 'EPSG:4326', [-1e6], [2e6])
     if abs(lon - PROJ_PROBE_LON) > 5e-7:
         raise RuntimeError(
-            f'PROJ datum grid not used (lon {lon!r}, want {PROJ_PROBE_LON!r}): cdn.proj.org '
-            'unreachable, or a transform ran before ocr.risks.fire.model set PROJ_NETWORK'
+            f'PROJ datum grid not used (lon {lon!r}, want {PROJ_PROBE_LON!r}): is PROJ_DATA '
+            'pointing away from the env share/proj?'
         )
 
 
@@ -791,6 +794,7 @@ def calculate_wind_adjusted_risk(
     fire_risk : xr.Dataset
         Dataset containing wind-adjusted fire risk variables.
     """
+    check_proj_grids()  # raise, rather than compute values that drift from production
 
     buffered_x_slice = slice(x_slice.start - buffer, x_slice.stop + buffer, x_slice.step)
     buffered_y_slice = slice(y_slice.start - buffer, y_slice.stop + buffer, y_slice.step)
