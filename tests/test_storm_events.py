@@ -145,8 +145,8 @@ def test_reports_fields(csv_paths):
             824116,
             137295,
             'Flash Flood',
-            date(2019, 5, 9),
-            date(2019, 5, 10),
+            '2019-05-09',
+            '2019-05-10',
             2019,
             'Texas',
             'Bexar',
@@ -263,6 +263,10 @@ def test_write_local_builds_geoparquet_and_overviews_with_provenance(csv_paths, 
         ids = con.execute(
             'SELECT list(event_id ORDER BY event_id) FROM read_parquet($p)', {'p': str(out)}
         ).fetchone()[0]
+        dates = con.execute(
+            'SELECT begin_date, end_date FROM read_parquet($p) WHERE event_id = 824116',
+            {'p': str(out)},
+        ).fetchone()
         kv = dict(
             con.execute(
                 'SELECT decode(key), decode(value) FROM parquet_kv_metadata($p)', {'p': str(out)}
@@ -272,6 +276,7 @@ def test_write_local_builds_geoparquet_and_overviews_with_provenance(csv_paths, 
     geoparquet_lod.validate(str(out))
     assert out.name == 'storm_events_floods.parquet'
     assert ids == KEPT
+    assert dates == ('2019-05-09', '2019-05-10')
     assert {k: v for k, v in kv.items() if k.startswith('storm_events_')} == {
         'storm_events_index': 'https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/',
         'storm_events_files': json.dumps(files),

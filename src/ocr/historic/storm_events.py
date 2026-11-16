@@ -7,7 +7,7 @@ location is inside the CONUS box, so a few placed just across the Canadian or Me
 reports without a location are dropped, which removes nearly all of 1996 to 2004. Coastal Flood, Lakeshore Flood
 and Storm Surge/Tide reports are located by forecast zone only and are not read. `event_id` and `episode_id` are
 NCEI's. `damage` is property plus crop dollars, null when neither amount was entered. `deaths` and `injuries`
-sum direct and indirect. `year` is the begin date's
+sum direct and indirect. `begin_date` and `end_date` are `YYYY-MM-DD` text, and `year` is the begin date's
 
 writes input/historic/storm_events/<YYYYMMDD>/storm_events_floods.parquet. NCEI publishes one details file a
 year and reissues it under a new creation stamp as reports are revised; the build reads each year's newest
@@ -144,8 +144,8 @@ def reports(
             SELECT CAST(EVENT_ID AS BIGINT) AS event_id,
                    CAST(EPISODE_ID AS BIGINT) AS episode_id,
                    EVENT_TYPE AS type,
-                   {date_sql('BEGIN')} AS begin_date,
-                   {date_sql('END')} AS end_date,
+                   CAST({date_sql('BEGIN')} AS VARCHAR) AS begin_date,
+                   CAST({date_sql('END')} AS VARCHAR) AS end_date,
                    year({date_sql('BEGIN')}) AS year,
                    {title_sql('STATE')} AS state,
                    {title_sql('CZ_NAME')} AS county,
