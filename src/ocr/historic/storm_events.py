@@ -117,7 +117,7 @@ def dollars_sql(column: str) -> str:
         "WHEN 'B' THEN 1e9 ELSE 1 END"
     )
     return (
-        rf"CASE WHEN {amount} <> '' AND regexp_full_match({amount}, '[0-9]*\.?[0-9]*[HKMB]?') "
+        rf"CASE WHEN {amount} <> '' AND regexp_full_match({amount}, '(?:[0-9]+\.?[0-9]*|\.[0-9]+)?[HKMB]?') "
         f"THEN coalesce(TRY_CAST(regexp_extract({amount}, '^[0-9.]+') AS DOUBLE), 0) * {scale} END"
     )
 

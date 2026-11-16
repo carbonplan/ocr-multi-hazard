@@ -197,9 +197,13 @@ def test_reports_leave_text_and_amounts_that_were_not_entered_null(csv_paths):
         ('500', 500),
         ('0.00K', 0),
         ('K', 0),
+        ('.5K', 500),
+        ('5.', 5),
         ('', None),
         (None, None),
         ('about 5K', None),
+        ('.', None),
+        ('.K', None),
     ],
 )
 def test_dollars_sql_scales_an_amount_by_its_suffix(amount, dollars):
