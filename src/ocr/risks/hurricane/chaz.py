@@ -84,10 +84,17 @@ def ratio_source(source: str) -> str:
 
 
 def meanstd_for(source: str, normalization: str = 'model') -> str | None:
-    """Key of a source's predictor normalization; None (the tutorial's) for ERA5, or for a model
-    run with normalization='tutorial'."""
-    if source == ERA5 or normalization == 'tutorial':
+    """Key of a source's predictor normalization; None means the tutorial's. 'model' is the
+    tutorial's for ERA5 and the model's own for a model; for ERA5, 'port' is meanstd's port of
+    getMeanStd and 'env' the tutorial's with the port's environment entries."""
+    if source == ERA5:
+        return {'port': 'validation/meanstd/era5.nc', 'env': 'validation/meanstd/era5_env.nc'}.get(
+            normalization
+        )
+    if normalization == 'tutorial':
         return None
+    if normalization in ('port', 'env'):
+        raise ValueError(f'normalization={normalization!r} is only defined for ERA5')
     _, model, member, _ = source.split('/')
     return f'forcing/cmip6/{model}/{member}/coefficient_meanstd.nc'
 
@@ -106,11 +113,11 @@ def steering_factor(a: xr.DataArray) -> xr.DataArray:
     return a
 
 
-# default first; normalization 'tutorial' runs a model's forcing with the tutorial's ERA5 one
+# default first; normalization: see meanstd_for
 OPTIONS = {
     'steering': ('lower', 'diagonal'),
     'land': ('shared', 'separate', 'fine'),
-    'normalization': ('model', 'tutorial'),
+    'normalization': ('model', 'tutorial', 'port', 'env'),
 }
 
 

@@ -200,6 +200,46 @@ def compose(model_port: xr.Dataset, era5_port: xr.Dataset, shipped: xr.Dataset) 
     return out
 
 
+ERA5_ENV = 'validation/meanstd/era5_env.nc'
+ENVIRONMENT = {'dPIwspd', 'SHRD', 'rhMean', 'dPIwspd2', 'dPIwspd3'}
+
+
+def environment_only(port: xr.Dataset, shipped: xr.Dataset) -> xr.Dataset:
+    """The shipped normalization with the potential intensity, shear and humidity entries
+    replaced by the port's, so those are standardized by the forcing's own statistics; the land
+    term, the entries from the tracks alone and the predictand keep the shipped values."""
+    out = shipped.copy()
+    for tag, preds, _, _ in SETS:
+        mean, std = shipped[f'meanX_{tag}'].values.copy(), shipped[f'stdX_{tag}'].values.copy()
+        for i, p in enumerate(preds, start=1):
+            if p in ENVIRONMENT:
+                mean[i] = port[f'meanX_{tag}'].values[i]
+                std[i] = port[f'stdX_{tag}'].values[i]
+        out[f'meanX_{tag}'] = (shipped[f'meanX_{tag}'].dims, mean)
+        out[f'stdX_{tag}'] = (shipped[f'stdX_{tag}'].dims, std)
+    return out
+
+
+def era5_env() -> None:
+    with (
+        xr.open_dataset(store.path(ERA5_PORT)) as port,
+        xr.open_dataset(chaz.static('coefficient_meanstd.nc')) as shipped,
+    ):
+        ds = environment_only(port.load(), shipped.load())
+    ds.attrs.update(
+        {
+            'method': 'meanstd.environment_only: the tutorial coefficient_meanstd.nc with the '
+            'environment entries from this port on ERA5',
+            'port': ERA5_PORT,
+        }
+    )
+    local = store.CACHE / ERA5_ENV
+    local.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(local)
+    store.push(keys=[ERA5_ENV], replace=True)
+    print(ds)
+
+
 def model(model_name: str, member: str) -> None:
     from ocr.risks.hurricane import cmip
 
@@ -245,11 +285,14 @@ def main() -> None:
     b = sub.add_parser('build')
     b.add_argument('--forcing', required=True, help='forcing prefix, e.g. forcing/era5')
     b.add_argument('--out', required=True, help='key for the normalization file')
+    sub.add_parser('era5-env')
     m = sub.add_parser('model')
     m.add_argument('--model', default='UKESM1-0-LL')
     m.add_argument('--member', default='r1i1p1f2')
     a = p.parse_args()
-    if a.cmd == 'build':
+    if a.cmd == 'era5-env':
+        era5_env()
+    elif a.cmd == 'build':
         build(a.forcing, a.out)
     else:
         model(a.model, a.member)
