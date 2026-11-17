@@ -46,7 +46,12 @@ recent climate and diverge in the future ([Lee et al. 2020](https://doi.org/10.1
 We use the ERA5 coefficients of
 [Fosu et al. (2024)](https://doi.org/10.63024/dpva-2pa1).
 The ERA5 runs use TCGI-CRH; the climate-model runs are made once with each. `ocr.risks.hurricane.tcgi` computes
-TCGI, and our 2017 TCGI is within about 1% of the tutorial's.
+TCGI. It computes the saturation column water vapour, which both moisture variables depend on, as
+Yi Xia's TCGI code does ([yixia23/TCGI](https://github.com/yixia23/TCGI);
+[Xia et al. 2026](https://doi.org/10.1175/JCLI-D-25-0317.1)). Like that code, it converts kelvin
+to Celsius by subtracting 273.3, where 273.15 is correct, because the TCGI coefficients were
+presumably fit with that offset. With this W\*, our 2017 TCGI matches the tutorial's to within
+0.01% in every basin.
 
 CHAZ seeds storm precursors each month in proportion to TCGI. One ratio per run scales TCGI to
 seeds. As in the public code, it is set so that the seeds over 1981–2005, times a survival rate of
@@ -86,6 +91,8 @@ main ones:
   coefficients.
 - `--intensity refit-pi` also draws the random error from observed steps with similar PI, and
   `--intensity refit-basin` from steps with similar PI in the same basin.
+- With a refit intensity option, `--fit 1981-1999` fits the regressions on those years only, so
+  that the storms of 2000–2019 can test them.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
@@ -101,7 +108,8 @@ environment, sampled at the positions and dates of the observed tracks ([Fosu et
 [Camargo et al. 2025](https://doi.org/10.1175/JCLI-D-24-0629.1)). `ocr.risks.hurricane.cmip` and
 `ocr.risks.hurricane.meanstd` build the forcing and normalization. So far CHAZ has run on one
 model, UKESM1-0-LL r1i1p1f2, for 1995–2014 (historical) and 2081–2100 (SSP5-8.5), with both TCGI
-versions; a notebook on it is in progress.
+versions. [cmip.ipynb](cmip.ipynb) reviews that run; its TCGI fields are to be rebuilt with the
+W\* of section 2.
 
 ### 5. Wind fields and hazard maps (not started)
 
@@ -168,6 +176,9 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 - Camargo, S. J., et al. (2025). Tropical cyclones and associated environmental fields in CMIP6
   models. _Journal of Climate_.
   [doi:10.1175/JCLI-D-24-0629.1](https://doi.org/10.1175/JCLI-D-24-0629.1)
+- Xia, Y., et al. (2026). Dependence of global tropical cyclones on the tropical Pacific mean state
+  in the HighResMIP models. _Journal of Climate_, 39, 1099–1118.
+  [doi:10.1175/JCLI-D-25-0317.1](https://doi.org/10.1175/JCLI-D-25-0317.1)
 - Gilford, D. M. (2021). pyPI (v1.3): tropical cyclone potential intensity calculations in Python.
   _Geoscientific Model Development_, 14.
   [doi:10.5194/gmd-14-2351-2021](https://doi.org/10.5194/gmd-14-2351-2021)
@@ -202,6 +213,7 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 | ERA5 | forcing, TCGI, PI | Copernicus Climate Data Store: [hourly on pressure levels](https://doi.org/10.24381/cds.bd0915c6), [monthly on pressure levels](https://doi.org/10.24381/cds.6860a573), [monthly on single levels](https://doi.org/10.24381/cds.f17050d7) |
 | IBTrACS v04r01 | the regional genesis calibration and validation, with the US agencies' 1-minute maximum wind (`USA_WIND`) at the 6-hourly synoptic times | [NOAA NCEI](https://doi.org/10.25921/82ty-9e16) |
 | CHAZ code | the model we port | [github.com/cl3225/CHAZ](https://github.com/cl3225/CHAZ) |
+| TCGI code | how the saturation column water vapour is computed | [github.com/yixia23/TCGI](https://github.com/yixia23/TCGI) |
 | CHAZ tutorial data | reference forcing and TCGI for 2017, the land masks, the intensity coefficients, and the observed tracks with their environment | [Zenodo 11631930](https://doi.org/10.5281/zenodo.11631930) (CC BY 4.0) |
 | CMIP6 | climate-model forcing: daily 250 and 850 hPa winds, monthly winds, temperature, humidity, column water vapour, sea-level pressure and surface temperature; historical and SSP5-8.5 so far | [CMIP6 on AWS](https://registry.opendata.aws/cmip6/) (`s3://cmip6-pds`) |
 | CHAZ wind hazard maps | comparison target | [Zenodo 16058513](https://doi.org/10.5281/zenodo.16058513), [Dryad](https://doi.org/10.5061/dryad.qfttdz0vz) |
@@ -229,3 +241,4 @@ credentials for the bucket. `manifest.json` there lists each file's source and c
 | [forcing.ipynb](forcing.ipynb) | our ERA5 forcing against the tutorial's |
 | [genesis-index.ipynb](genesis-index.ipynb) | our TCGI against the tutorial's, and the seeding ratio |
 | [tracks.ipynb](tracks.ipynb) | our ERA5 CHAZ run against IBTrACS and the CHAZ team's tracks |
+| [cmip.ipynb](cmip.ipynb) | CHAZ on one CMIP6 model, UKESM1-0-LL |
