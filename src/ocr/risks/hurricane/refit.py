@@ -17,8 +17,9 @@ The stochastic term draws, for a storm at wind v0, one 12-hour error from the ob
 start in v0's 10 kt bin (chaz.get_E1, chaz.findError). The errors are the fitted model's
 prediction minus the observed wind 12 hours on, kept at the step's first node, as in the
 tutorial's bt_global_predictors.nc. chaz --intensity refit reads all four files. errors.nc also
-keeps each step's ring PI (PIstep), for chaz --intensity refit-pi, which draws from the steps
-that start in v0's wind bin and the same tercile of ring PI (chaz.error_pool_pi).
+keeps each step's ring PI (PIstep) and regression (water), for chaz --intensity refit-pi, which
+draws a water step's error from water steps that start in v0's wind bin and the same tercile of
+ring PI, and a land step's from land steps in v0's wind bin (chaz.error_pool_pi).
 
     python -m ocr.risks.hurricane.refit fit
     python -m ocr.risks.hurricane.refit check   # the same fit on the tutorial's own environment
@@ -71,7 +72,8 @@ def fit(env: dict[str, np.ndarray], years: tuple[int, int] = meanstd.YEARS) -> d
     bt = meanstd.observed()
     errors = np.full(bt['StormMwspd'].shape, np.nan)
     pi_step = np.full(bt['StormMwspd'].shape, np.nan)
-    out = {'errors': errors, 'PIstep': pi_step}
+    water_step = np.full(bt['StormMwspd'].shape, np.nan)
+    out = {'errors': errors, 'PIstep': pi_step, 'water': water_step}
     for tag, preds, water, _ in meanstd.SETS:
         X, Y, ok = meanstd.samples(env, preds, water, years)
         rows = meanstd.steps(env['landmaskMean'], water, years, bt)[ok]
@@ -83,6 +85,7 @@ def fit(env: dict[str, np.ndarray], years: tuple[int, int] = meanstd.YEARS) -> d
         start = rows[:, 1] - meanstd.LEAD, rows[:, 0]
         errors[start] = dy - Y
         pi_step[start] = X[:, preds.index('dPIwspd')] + X[:, preds.index('StormMwspd')]
+        water_step[start] = float(water)
         out[tag] = {
             'params': params,
             'meanX': np.r_[0.0, mX],
@@ -92,6 +95,9 @@ def fit(env: dict[str, np.ndarray], years: tuple[int, int] = meanstd.YEARS) -> d
             'n': len(Y),
             'r2': 1 - np.var(dy - Y) / np.var(Y),
             'rmse': float(np.sqrt(np.mean((dy - Y) ** 2))),
+            'v0': X[:, preds.index('StormMwspd')],
+            'pi': pi_step[start],
+            'gain': Y - dy,
         }
     return out
 
@@ -125,6 +131,11 @@ def datasets(f: dict, attrs: dict) -> dict[str, xr.Dataset]:
                     ('d1', 'd2'),
                     f['PIstep'],
                     {'units': 'kt', 'long_name': 'ring PI averaged over the step'},
+                ),
+                'water': (
+                    ('d1', 'd2'),
+                    f['water'],
+                    {'long_name': '1 for a step under the water regression, 0 under land'},
                 ),
                 'StormMwspd': (('d1', 'd2'), bt['StormMwspd'].values, {'units': 'kt'}),
                 'StormYear': ('d2', bt['StormYear'].values),
@@ -170,6 +181,33 @@ def shipped() -> dict:
     return out
 
 
+def residuals_by_pi(f: dict):
+    """Each regression's residuals in 20 kt bins of starting wind, split at the bin's terciles of
+    ring PI over the step."""
+    import pandas as pd
+
+    d = pd.concat(
+        pd.DataFrame(
+            {'regression': tag, 'v0': f[tag]['v0'], 'pi': f[tag]['pi'], 'gain': f[tag]['gain']}
+        )
+        for tag in 'wl'
+    )
+    d['wind'] = pd.cut(d['v0'], [0, 40, 60, 80, 100, 120, 200])
+    d['PI tercile'] = d.groupby(['regression', 'wind'], observed=True)['pi'].transform(
+        lambda x: pd.qcut(x, 3, labels=False, duplicates='drop')
+    )
+    g = d.groupby(['regression', 'wind', 'PI tercile'], observed=True)
+    return pd.DataFrame(
+        {
+            'n': g.size(),
+            'PI median': g['pi'].median(),
+            'mean': g['gain'].mean(),
+            'sd': g['gain'].std(),
+            'P(> +10 kt)': g['gain'].apply(lambda x: (x > 10).mean()),
+        }
+    )
+
+
 def report(f: dict) -> None:
     import pandas as pd
 
@@ -193,6 +231,8 @@ def report(f: dict) -> None:
                 index=['const', *preds],
             ).round(3)
         )
+    print('\nObserved minus predicted 12-hour change (kt) by starting wind and ring PI tercile')
+    print(residuals_by_pi(f).round(2).to_string())
     winds, pis = (40, 60, 80, 100, 120, 140), (40, 70, 100, 130, 160, 190)
     for name, c in (('refit', f['w']), ('shipped', ref['w'])):
         args = (c['params'], c['meanX'], c['stdX'], c['meanY'], c['stdY'])

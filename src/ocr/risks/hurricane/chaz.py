@@ -744,38 +744,50 @@ PI_BIN_MIN = 150
 
 
 def error_pool_pi(f):
-    """intensity 'refit-pi': the error pool of each wind bin split at the bin's terciles of ring
-    PI over the step (refit's errors.nc PIstep), so a step draws from errors of storms of its
-    wind in a similar environment. Wind bins: below cat1[1], [cat1[j], cat1[j + 1]), and at or
-    above cat1[-1]; a bin with fewer than PI_BIN_MIN errors is not split."""
+    """intensity 'refit-pi': separate error pools for water and land steps (refit's errors.nc
+    'water'). A water step draws from errors of steps that start in its wind bin and the same
+    tercile of ring PI over the step (PIstep); a land step from its wind bin alone. Wind bins:
+    below cat1[1], [cat1[j], cat1[j + 1]), and at or above cat1[-1]; a bin with fewer than
+    PI_BIN_MIN errors is not split, repeated terciles merge, and a draw from an empty cell takes
+    the whole wind bin. Returns {True: water pool, False: land pool}, each (cat1, per-bin
+    (PI edges, cells, whole bin))."""
     NS = np.argwhere((f['StormYear'][:] >= 1981) & (f['StormYear'][:] <= 2012))[:, 0]
-    e, v, pi = (ma.getdata(f[k][:])[:, NS].ravel() for k in ('errors', 'StormMwspd', 'PIstep'))
-    ok = np.isfinite(e) & np.isfinite(v) & np.isfinite(pi)
-    e, v, pi = e[ok], v[ok], pi[ok]
-    cat1 = wind_bins(v)
-    k = wind_bin(v, cat1)
-    pools = []
-    for j in range(len(cat1)):
-        ej, pj = e[k == j], pi[k == j]
-        edges = np.quantile(pj, np.arange(1, PI_BINS) / PI_BINS) if ej.size >= PI_BIN_MIN else []
-        cell = np.searchsorted(edges, pj, side='right')
-        pools.append((np.asarray(edges), [ej[cell == i] for i in range(len(edges) + 1)], ej))
-    return cat1, pools
+    keys = ('errors', 'StormMwspd', 'PIstep', 'water')
+    e, v, pi, water = (ma.getdata(f[k][:])[:, NS].ravel() for k in keys)
+    ok = np.isfinite(e) & np.isfinite(v) & np.isfinite(pi) & np.isfinite(water)
+    out = {}
+    for regime, n_pi in ((True, PI_BINS), (False, 1)):
+        sel = ok & ((water == 1) == regime)
+        er, vr, pr = e[sel], v[sel], pi[sel]
+        cat1 = wind_bins(vr)
+        k = wind_bin(vr, cat1)
+        pools = []
+        for j in range(len(cat1)):
+            ej, pj = er[k == j], pr[k == j]
+            edges = (
+                np.unique(np.quantile(pj, np.arange(1, n_pi) / n_pi))
+                if ej.size >= PI_BIN_MIN
+                else np.array([])
+            )
+            cell = np.searchsorted(edges, pj, side='right')
+            pools.append((edges, [ej[cell == i] for i in range(len(edges) + 1)], ej))
+        out[regime] = (cat1, pools)
+    return out
 
 
 def wind_bin(v, cat1):
     return np.clip(np.searchsorted(cat1, v, side='right') - 1, 0, len(cat1) - 1)
 
 
-def find_error_pi(v0, pi):
+def find_error_pi(v0, pi, water: bool):
     """findError for 'refit-pi'; v0 and pi may be one-element arrays, as get_stochastic has them."""
     v0, pi = np.asarray(v0, dtype=float).item(), np.asarray(pi, dtype=float).item()
     if v0 != v0:
         return 0
-    edges, cells, everything = pool_pi[1][int(wind_bin(v0, pool_pi[0]))]
-    if pi != pi:
-        return random.choice(everything)
-    return random.choice(cells[int(np.searchsorted(edges, pi, side='right'))])
+    cat1, pools = pool_pi[water]
+    edges, cells, everything = pools[int(wind_bin(v0, cat1))]
+    pool = everything if pi != pi else cells[int(np.searchsorted(edges, pi, side='right'))]
+    return random.choice(pool if len(pool) else everything)
 
 
 def findError(errort, v0E, v0, cat1):
@@ -833,9 +845,10 @@ def getPrediction_v0input_result(
             elif var in 'dVdt':
                 rvar = dvdt
             elif var in 'landmaskMean':
-                rvar = gv.landDelta * (
-                    getattr(bt, var)[it + lT + 1, index] - getattr(bt, var)[it, index]
-                )
+                # the public code reads land one node past the step's end; the refit was fit on
+                # the change over the step itself
+                end = it + lT + 1 if gv.intensity == 'tutorial' else it + lT
+                rvar = gv.landDelta * (getattr(bt, var)[end, index] - getattr(bt, var)[it, index])
             elif var in 'StormMwspd2':
                 rvar = (getattr(bt, 'StormMwspd')[it, index]) ** 2
             elif var in 'StormMwspd3':
@@ -929,7 +942,11 @@ def get_stochastic(iiS):
                     dvdt,
                 )
                 if gv.intensity == 'refit-pi':
-                    error = find_error_pi(v0, nanmean(bt.PIwspdMean[it : it + lT + 1, iS]))
+                    error = find_error_pi(
+                        v0,
+                        nanmean(bt.PIwspdMean[it : it + lT + 1, iS]),
+                        predictors is PREDICTORS_W,
+                    )
                 else:
                     error = findError(E0, v0E, v0, cat1)
                 bt.error[it, iS, iNN] = error
@@ -1154,6 +1171,14 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
         'intensity_regressions': gv.intensity,
         'result_w_sha256': store._hash(intensity_file('result_w.nc')),
         'result_l_sha256': store._hash(intensity_file('result_l.nc')),
+        **(
+            {}
+            if gv.intensity == 'tutorial'
+            else {
+                'error_pool': str(intensity_file('errors.nc')),
+                'error_pool_sha256': store._hash(intensity_file('errors.nc')),
+            }
+        ),
         'survival_rate': gv.survivalrate,
         'forcing': f'{store.S3_ROOT}/forcing/{gv.source}/{year}',
         'predictor_normalization': gv.meanstd or f'{store.TUTORIAL}/coefficient_meanstd.nc',

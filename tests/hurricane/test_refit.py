@@ -38,23 +38,70 @@ def test_refit_normalization_is_only_for_era5():
         chaz.meanstd_for('cmip6/UKESM1-0-LL/r1i1p1f2/historical', 'model', 'refit')
 
 
-def test_pi_error_pool_draws_from_the_storms_wind_bin_and_pi_tercile(monkeypatch):
-    rng = np.random.default_rng(0)
-    n = 3000
-    v = rng.uniform(20, 140, n)
-    pi = rng.uniform(40, 190, n)
-    errors = np.where(pi > 140, 100.0, -100.0) + v / 1000  # the sign marks the environment
-    f = {
+def pool_file(v, pi, errors, water):
+    n = v.size
+    return {
         'errors': errors[None, :],
         'StormMwspd': v[None, :],
         'PIstep': pi[None, :],
+        'water': water[None, :],
         'StormYear': np.full(n, 2000),
     }
-    monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f), raising=False)
-    cat1 = chaz.pool_pi[0]
+
+
+def test_pi_error_pool_draws_water_steps_by_wind_and_pi_and_land_steps_by_wind(monkeypatch):
+    rng = np.random.default_rng(0)
+    n = 6000
+    v = rng.uniform(20, 140, n)
+    pi = rng.uniform(40, 190, n)
+    water = (np.arange(n) % 2).astype(float)
+    # the sign marks the environment; land errors are offset by 1000 to tell the pools apart
+    errors = np.where(pi > 140, 100.0, -100.0) + v / 1000 + 1000 * (1 - water)
+    monkeypatch.setattr(
+        chaz, 'pool_pi', chaz.error_pool_pi(pool_file(v, pi, errors, water)), raising=False
+    )
+    cat1 = chaz.pool_pi[True][0]
     for v0 in (25.0, np.array([75.0]), 135.0):  # get_stochastic passes one-element arrays
-        lo, hi = chaz.find_error_pi(v0, np.float64(45.0)), chaz.find_error_pi(v0, 185.0)
-        assert lo < 0 < hi
+        lo = chaz.find_error_pi(v0, np.float64(45.0), True)
+        hi = chaz.find_error_pi(v0, 185.0, True)
+        assert lo < 0 < hi < 500
         k = chaz.wind_bin(np.ravel(v0), cat1)[0]
         assert chaz.wind_bin(np.array([(lo + 100) * 1000]), cat1)[0] == k
-    assert chaz.find_error_pi(np.nan, 100.0) == 0
+        land = [chaz.find_error_pi(v0, 45.0, False) for _ in range(50)]
+        assert min(land) > 500 and max(land) > 1050  # land draws ignore PI
+    assert chaz.find_error_pi(np.nan, 100.0, True) == 0
+
+
+def test_pi_error_pool_with_tied_pi_falls_back_to_the_wind_bin(monkeypatch):
+    n = 400
+    v = np.full(n, 50.0)
+    pi = np.full(n, 100.0)
+    f = pool_file(v, pi, np.linspace(-5, 5, n), (np.arange(n) % 2).astype(float))
+    monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f), raising=False)
+    for p in (90.0, 100.0, 110.0):
+        assert -5 <= chaz.find_error_pi(50.0, p, True) <= 5
+
+
+def land_step_prediction(intensity, monkeypatch):
+    """The land regression's 12-hour change for a storm whose centre is over water at the start,
+    land 12 hours on, and water again 18 hours on, with only the land predictor (coefficient 1)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(chaz.gv, 'intensity', intensity)
+    bt = SimpleNamespace(
+        Time=np.array([[datetime(2017, 9, 1)]] * 4),
+        landmaskMean=np.array([[-1.0], [-1.0], [0.0], [-1.0]]),
+    )
+    z = np.zeros(2)
+    one = np.array([0.0, 1.0])
+    _, v1 = chaz.getPrediction_v0input_result(
+        bt, z, 0.0, one, 1.0, 0, 0, [12], one, ['landmaskMean'], [], 50.0, 0.0
+    )
+    return v1[1] - 50.0
+
+
+def test_refit_reads_the_land_change_over_the_step_itself(monkeypatch):
+    assert land_step_prediction('refit', monkeypatch) == 1.0
+    assert land_step_prediction('refit-pi', monkeypatch) == 1.0
+    assert land_step_prediction('tutorial', monkeypatch) == 0.0  # the public code's t+18h
