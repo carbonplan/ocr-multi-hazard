@@ -90,9 +90,9 @@ def meanstd_for(
     tutorial's for ERA5 and the model's own for a model; for ERA5, 'port' is meanstd's port of
     getMeanStd and 'env' the tutorial's with the port's environment entries. The refit
     regressions (intensity 'refit') carry their own normalization."""
-    if intensity == 'refit':
+    if intensity != 'tutorial':
         if source != ERA5 or normalization != 'model':
-            raise ValueError('intensity=refit is only defined for ERA5 with its own normalization')
+            raise ValueError(f'intensity={intensity} is only for ERA5 with its own normalization')
         from ocr.risks.hurricane import refit
 
         return refit.key(ERA5, 'coefficient_meanstd.nc')
@@ -128,7 +128,7 @@ OPTIONS = {
     'land': ('shared', 'separate', 'fine'),
     'normalization': ('model', 'tutorial', 'port', 'env'),
     'genesis': ('tcgi', 'calibrated'),
-    'intensity': ('tutorial', 'refit'),
+    'intensity': ('tutorial', 'refit', 'refit-pi'),
 }
 
 
@@ -189,7 +189,9 @@ class gv:
     normalization = 'model'  # see meanstd_for
     # 'calibrated' multiplies the genesis index by calibrate.py's regional map when seeding
     genesis = 'tcgi'
-    intensity = 'tutorial'  # 'refit': refit.py's regressions, normalization and error pool
+    # 'refit': refit.py's regressions, normalization and error pool; 'refit-pi' also splits the
+    # error pool by ring PI (error_pool_pi)
+    intensity = 'tutorial'
     llon = llat = lldmask = ldmask = None
 
 
@@ -245,14 +247,14 @@ def genesis_multiplier(tcgi_name: str) -> np.ndarray | float:
 def apply_options(options: dict[str, str]) -> None:
     for key, choices in OPTIONS.items():
         setattr(gv, key, options.get(key, choices[0]))
-    if gv.intensity == 'refit' and gv.land != 'fine':
-        raise ValueError('intensity=refit was fit on the land values of land=fine')
+    if gv.intensity != 'tutorial' and gv.land != 'fine':
+        raise ValueError(f'intensity={gv.intensity} was fit on the land values of land=fine')
 
 
 def intensity_file(name: str) -> Path:
     """result_w.nc, result_l.nc, or the error pool (bt_global_predictors.nc's errors, or the
     refit's errors.nc), for gv.intensity."""
-    if gv.intensity != 'refit':
+    if gv.intensity == 'tutorial':
         return static(gv.obpath if name == 'errors.nc' else name)
     from ocr.risks.hurricane import refit
 
@@ -719,6 +721,11 @@ def get_E1(bt):
     E0 = E0[E2 == E2]
     E1 = E1[E2 == E2]
     v0E = v0E[E2 == E2]
+    return E0, v0E, wind_bins(v0E)
+
+
+def wind_bins(v0E):
+    """findError's 10 kt bin edges of starting wind, the end bins holding at least 50 errors."""
     c1 = v0E.min()
     c2 = v0E.max()
     for iC in np.arange(v0E.min(), v0E.max(), 10):
@@ -729,8 +736,44 @@ def get_E1(bt):
         if v0E[v0E > iC].shape[0] > 50:
             c2 = iC
             break
-    cat1 = np.arange(c1, c2 + 10, 10)
-    return E0, v0E, cat1
+    return np.arange(c1, c2 + 10, 10)
+
+
+PI_BINS = 3
+PI_BIN_MIN = 150
+
+
+def error_pool_pi(f):
+    """intensity 'refit-pi': the error pool of each wind bin split at the bin's terciles of ring
+    PI over the step (refit's errors.nc PIstep), so a step draws from errors of storms of its
+    wind in a similar environment. Wind bins: below cat1[1], [cat1[j], cat1[j + 1]), and at or
+    above cat1[-1]; a bin with fewer than PI_BIN_MIN errors is not split."""
+    NS = np.argwhere((f['StormYear'][:] >= 1981) & (f['StormYear'][:] <= 2012))[:, 0]
+    e, v, pi = (ma.getdata(f[k][:])[:, NS].ravel() for k in ('errors', 'StormMwspd', 'PIstep'))
+    ok = np.isfinite(e) & np.isfinite(v) & np.isfinite(pi)
+    e, v, pi = e[ok], v[ok], pi[ok]
+    cat1 = wind_bins(v)
+    k = wind_bin(v, cat1)
+    pools = []
+    for j in range(len(cat1)):
+        ej, pj = e[k == j], pi[k == j]
+        edges = np.quantile(pj, np.arange(1, PI_BINS) / PI_BINS) if ej.size >= PI_BIN_MIN else []
+        cell = np.searchsorted(edges, pj, side='right')
+        pools.append((np.asarray(edges), [ej[cell == i] for i in range(len(edges) + 1)], ej))
+    return cat1, pools
+
+
+def wind_bin(v, cat1):
+    return np.clip(np.searchsorted(cat1, v, side='right') - 1, 0, len(cat1) - 1)
+
+
+def find_error_pi(v0, pi):
+    if v0 != v0:
+        return 0
+    edges, cells, everything = pool_pi[1][int(wind_bin(v0, pool_pi[0]))]
+    if pi != pi:
+        return random.choice(everything)
+    return random.choice(cells[int(np.searchsorted(edges, pi, side='right'))])
 
 
 def findError(errort, v0E, v0, cat1):
@@ -883,7 +926,10 @@ def get_stochastic(iiS):
                     v0,
                     dvdt,
                 )
-                error = findError(E0, v0E, v0, cat1)
+                if gv.intensity == 'refit-pi':
+                    error = find_error_pi(v0, nanmean(bt.PIwspdMean[it : it + lT + 1, iS]))
+                else:
+                    error = findError(E0, v0E, v0, cat1)
                 bt.error[it, iS, iNN] = error
                 v1 = v1[1] - error
                 if v1 < 10:
@@ -912,7 +958,7 @@ def calIntensity(n_members: int):
     reads, so it is skipped."""
     global result_w, meanY_w, stdX_w, meanX_w, stdY_w
     global result_l, meanY_l, stdX_l, meanX_l, stdY_l
-    global E0, v0E, cat1, intV, iNN
+    global E0, v0E, cat1, intV, iNN, pool_pi
 
     bt2 = nc.Dataset(static(gv.obpath), 'r')
     with nc.Dataset(intensity_file('result_w.nc'), 'r') as f:
@@ -924,6 +970,7 @@ def calIntensity(n_members: int):
     bt2.close()
     with nc.Dataset(intensity_file('errors.nc'), 'r') as f:
         E0, v0E, cat1 = get_E1(f)
+        pool_pi = error_pool_pi(f) if gv.intensity == 'refit-pi' else None
 
     with nc.Dataset(normalization(), 'r') as f:
         meanX_w = ma.getdata(f['meanX_w'][:])

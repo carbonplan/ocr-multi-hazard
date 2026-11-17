@@ -16,7 +16,9 @@ on the 300 km land mean instead, which the public intensity model does not read.
 The stochastic term draws, for a storm at wind v0, one 12-hour error from the observed steps that
 start in v0's 10 kt bin (chaz.get_E1, chaz.findError). The errors are the fitted model's
 prediction minus the observed wind 12 hours on, kept at the step's first node, as in the
-tutorial's bt_global_predictors.nc. chaz --intensity refit reads all four files.
+tutorial's bt_global_predictors.nc. chaz --intensity refit reads all four files. errors.nc also
+keeps each step's ring PI (PIstep), for chaz --intensity refit-pi, which draws from the steps
+that start in v0's wind bin and the same tercile of ring PI (chaz.error_pool_pi).
 
     python -m ocr.risks.hurricane.refit fit
     python -m ocr.risks.hurricane.refit check   # the same fit on the tutorial's own environment
@@ -68,7 +70,8 @@ def fit(env: dict[str, np.ndarray], years: tuple[int, int] = meanstd.YEARS) -> d
     """Coefficients, normalization and error pool for each regression, and fit statistics."""
     bt = meanstd.observed()
     errors = np.full(bt['StormMwspd'].shape, np.nan)
-    out = {'errors': errors}
+    pi_step = np.full(bt['StormMwspd'].shape, np.nan)
+    out = {'errors': errors, 'PIstep': pi_step}
     for tag, preds, water, _ in meanstd.SETS:
         X, Y, ok = meanstd.samples(env, preds, water, years)
         rows = meanstd.steps(env['landmaskMean'], water, years, bt)[ok]
@@ -77,7 +80,9 @@ def fit(env: dict[str, np.ndarray], years: tuple[int, int] = meanstd.YEARS) -> d
         Z = np.c_[np.ones(len(Y)), (X - mX) / sX]
         params = np.linalg.lstsq(Z, (Y - mY) / sY, rcond=None)[0]
         dy = (Z @ params) * sY + mY
-        errors[rows[:, 1] - meanstd.LEAD, rows[:, 0]] = dy - Y
+        start = rows[:, 1] - meanstd.LEAD, rows[:, 0]
+        errors[start] = dy - Y
+        pi_step[start] = X[:, preds.index('dPIwspd')] + X[:, preds.index('StormMwspd')]
         out[tag] = {
             'params': params,
             'meanX': np.r_[0.0, mX],
@@ -116,6 +121,11 @@ def datasets(f: dict, attrs: dict) -> dict[str, xr.Dataset]:
         'errors.nc': xr.Dataset(
             {
                 'errors': (('d1', 'd2'), f['errors'], {'units': 'kt'}),
+                'PIstep': (
+                    ('d1', 'd2'),
+                    f['PIstep'],
+                    {'units': 'kt', 'long_name': 'ring PI averaged over the step'},
+                ),
                 'StormMwspd': (('d1', 'd2'), bt['StormMwspd'].values, {'units': 'kt'}),
                 'StormYear': ('d2', bt['StormYear'].values),
             },
