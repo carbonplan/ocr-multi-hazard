@@ -768,6 +768,8 @@ def wind_bin(v, cat1):
 
 
 def find_error_pi(v0, pi):
+    """findError for 'refit-pi'; v0 and pi may be one-element arrays, as get_stochastic has them."""
+    v0, pi = np.asarray(v0, dtype=float).item(), np.asarray(pi, dtype=float).item()
     if v0 != v0:
         return 0
     edges, cells, everything = pool_pi[1][int(wind_bin(v0, pool_pi[0]))]

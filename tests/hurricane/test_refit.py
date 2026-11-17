@@ -52,9 +52,9 @@ def test_pi_error_pool_draws_from_the_storms_wind_bin_and_pi_tercile(monkeypatch
     }
     monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f), raising=False)
     cat1 = chaz.pool_pi[0]
-    for v0 in (25.0, 75.0, 135.0):
-        lo, hi = chaz.find_error_pi(v0, 45.0), chaz.find_error_pi(v0, 185.0)
+    for v0 in (25.0, np.array([75.0]), 135.0):  # get_stochastic passes one-element arrays
+        lo, hi = chaz.find_error_pi(v0, np.float64(45.0)), chaz.find_error_pi(v0, 185.0)
         assert lo < 0 < hi
-        k = chaz.wind_bin(np.array([v0]), cat1)[0]
+        k = chaz.wind_bin(np.ravel(v0), cat1)[0]
         assert chaz.wind_bin(np.array([(lo + 100) * 1000]), cat1)[0] == k
     assert chaz.find_error_pi(np.nan, 100.0) == 0
