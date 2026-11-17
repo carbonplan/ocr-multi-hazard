@@ -748,8 +748,8 @@ def error_pool_pi(f):
     'water'). A step draws from errors of steps of its regime that start in its wind bin and the
     same tercile of ring PI over the step (PIstep). Wind bins:
     below cat1[1], [cat1[j], cat1[j + 1]), and at or above cat1[-1]; a bin with fewer than
-    PI_BIN_MIN errors is not split, repeated terciles merge, and a draw from an empty cell takes
-    the whole wind bin. Returns {True: water pool, False: land pool}, each (cat1, per-bin
+    PI_BIN_MIN errors is not split, repeated terciles merge, a draw from an empty cell takes the
+    whole wind bin, and an empty wind bin takes the nearest populated one (the lower on a tie). Returns {True: water pool, False: land pool}, each (cat1, per-bin
     (PI edges, cells, whole bin))."""
     NS = np.argwhere((f['StormYear'][:] >= 1981) & (f['StormYear'][:] <= 2012))[:, 0]
     keys = ('errors', 'StormMwspd', 'PIstep', 'water')
@@ -759,6 +759,8 @@ def error_pool_pi(f):
     for regime in (True, False):
         sel = ok & ((water == 1) == regime)
         er, vr, pr = e[sel], v[sel], pi[sel]
+        if er.size == 0:
+            raise ValueError(f'no {"water" if regime else "land"} errors in the error pool')
         cat1 = wind_bins(vr)
         k = wind_bin(vr, cat1)
         pools = []
@@ -771,6 +773,8 @@ def error_pool_pi(f):
             )
             cell = np.searchsorted(edges, pj, side='right')
             pools.append((edges, [ej[cell == i] for i in range(len(edges) + 1)], ej))
+        filled = [j for j, pool in enumerate(pools) if pool[2].size]
+        pools = [pools[min(filled, key=lambda i: abs(i - j))] for j in range(len(pools))]
         out[regime] = (cat1, pools)
     return out
 

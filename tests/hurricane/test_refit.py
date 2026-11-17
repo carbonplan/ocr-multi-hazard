@@ -106,3 +106,16 @@ def test_refit_reads_the_land_change_over_the_step_itself(monkeypatch):
     assert land_step_prediction('refit', monkeypatch) == 1.0
     assert land_step_prediction('refit-pi', monkeypatch) == 1.0
     assert land_step_prediction('tutorial', monkeypatch) == 0.0  # the public code's t+18h
+
+
+def test_pi_error_pool_empty_wind_bins_take_the_nearest_populated_bin(monkeypatch):
+    v = np.r_[np.linspace(20, 25, 60), np.linspace(70, 75, 60)]  # nothing between 30 and 70 kt
+    errors = np.r_[np.full(60, -1.0), np.full(60, 1.0)]
+    water = np.r_[np.ones(30), np.zeros(30), np.ones(30), np.zeros(30)]
+    f = pool_file(v, np.full(v.size, 100.0), errors, water)
+    monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f), raising=False)
+    for regime in (True, False):
+        assert chaz.find_error_pi(35.0, 100.0, regime) == -1.0
+        assert chaz.find_error_pi(65.0, 100.0, regime) == 1.0
+    with pytest.raises(ValueError):
+        chaz.error_pool_pi(pool_file(v, v, errors, np.ones(v.size)))
