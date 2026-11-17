@@ -44,7 +44,7 @@ TCGI is a Poisson regression of observed genesis on vorticity, a moisture variab
 relative humidity (CRH) or saturation deficit (SD) as the moisture variable. They agree in the
 recent climate and diverge in the future ([Lee et al. 2020](https://doi.org/10.1175/JCLI-D-19-0452.1)).
 We use the ERA5 coefficients of
-[Fosu et al. (2024)](https://journalofcrr.com/wp-content/uploads/2024/09/JCRR-Fosu-et-al-02-01.pdf).
+[Fosu et al. (2024)](https://doi.org/10.63024/dpva-2pa1).
 The ERA5 runs use TCGI-CRH; the climate-model runs are made once with each. `ocr.risks.hurricane.tcgi` computes
 TCGI, and our 2017 TCGI is within about 1% of the tutorial's.
 
@@ -97,7 +97,7 @@ For a CMIP6 model, the four TCGI input fields (vorticity, shear, PI and the mois
 bias-corrected toward ERA5 before computing TCGI: the model's monthly climatology for 1981–2010 is
 replaced by ERA5's. The fields for tracks and intensity, including the PI the intensity model reads,
 are used as the model gives them, with the intensity predictors normalized by the model's own
-environment, sampled at the positions and dates of the observed tracks ([Fosu et al. 2024](https://journalofcrr.com/wp-content/uploads/2024/09/JCRR-Fosu-et-al-02-01.pdf);
+environment, sampled at the positions and dates of the observed tracks ([Fosu et al. 2024](https://doi.org/10.63024/dpva-2pa1);
 [Camargo et al. 2025](https://doi.org/10.1175/JCLI-D-24-0629.1)). `ocr.risks.hurricane.cmip` and
 `ocr.risks.hurricane.meanstd` build the forcing and normalization. So far CHAZ has run on one
 model, UKESM1-0-LL r1i1p1f2, for 1995–2014 (historical) and 2081–2100 (SSP5-8.5), with both TCGI
@@ -150,7 +150,8 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
   tropical cyclones today and near future. _Earth's Future_, 11, e2023EF003539.
   [doi:10.1029/2023EF003539](https://doi.org/10.1029/2023EF003539)
 - John, E. B., et al. (2026). Characterizing uncertainty in synthetic tropical cyclone hazard
-  models for U.S. energy infrastructure resilience.
+  models for U.S. energy infrastructure resilience. _Environmental Research: Climate_, 5, 035015.
+  [doi:10.1088/2752-5295/ae7202](https://doi.org/10.1088/2752-5295/ae7202)
 
 ### Genesis index and climate models
 
@@ -163,7 +164,7 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
   [doi:10.1175/JCLI-D-13-00505.1](https://doi.org/10.1175/JCLI-D-13-00505.1)
 - Fosu, B., et al. (2024). Assessing future tropical cyclone risk using downscaled CMIP6
   projections. _Journal of Catastrophe Risk and Resilience_, 2.
-  [PDF](https://journalofcrr.com/wp-content/uploads/2024/09/JCRR-Fosu-et-al-02-01.pdf)
+  [doi:10.63024/dpva-2pa1](https://doi.org/10.63024/dpva-2pa1)
 - Camargo, S. J., et al. (2025). Tropical cyclones and associated environmental fields in CMIP6
   models. _Journal of Climate_.
   [doi:10.1175/JCLI-D-24-0629.1](https://doi.org/10.1175/JCLI-D-24-0629.1)
