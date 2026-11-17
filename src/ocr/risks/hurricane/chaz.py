@@ -745,8 +745,8 @@ PI_BIN_MIN = 150
 
 def error_pool_pi(f):
     """intensity 'refit-pi': separate error pools for water and land steps (refit's errors.nc
-    'water'). A water step draws from errors of steps that start in its wind bin and the same
-    tercile of ring PI over the step (PIstep); a land step from its wind bin alone. Wind bins:
+    'water'). A step draws from errors of steps of its regime that start in its wind bin and the
+    same tercile of ring PI over the step (PIstep). Wind bins:
     below cat1[1], [cat1[j], cat1[j + 1]), and at or above cat1[-1]; a bin with fewer than
     PI_BIN_MIN errors is not split, repeated terciles merge, and a draw from an empty cell takes
     the whole wind bin. Returns {True: water pool, False: land pool}, each (cat1, per-bin
@@ -756,7 +756,7 @@ def error_pool_pi(f):
     e, v, pi, water = (ma.getdata(f[k][:])[:, NS].ravel() for k in keys)
     ok = np.isfinite(e) & np.isfinite(v) & np.isfinite(pi) & np.isfinite(water)
     out = {}
-    for regime, n_pi in ((True, PI_BINS), (False, 1)):
+    for regime in (True, False):
         sel = ok & ((water == 1) == regime)
         er, vr, pr = e[sel], v[sel], pi[sel]
         cat1 = wind_bins(vr)
@@ -765,7 +765,7 @@ def error_pool_pi(f):
         for j in range(len(cat1)):
             ej, pj = er[k == j], pr[k == j]
             edges = (
-                np.unique(np.quantile(pj, np.arange(1, n_pi) / n_pi))
+                np.unique(np.quantile(pj, np.arange(1, PI_BINS) / PI_BINS))
                 if ej.size >= PI_BIN_MIN
                 else np.array([])
             )

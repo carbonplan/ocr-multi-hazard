@@ -49,7 +49,7 @@ def pool_file(v, pi, errors, water):
     }
 
 
-def test_pi_error_pool_draws_water_steps_by_wind_and_pi_and_land_steps_by_wind(monkeypatch):
+def test_pi_error_pool_draws_by_regime_wind_and_pi(monkeypatch):
     rng = np.random.default_rng(0)
     n = 6000
     v = rng.uniform(20, 140, n)
@@ -67,8 +67,9 @@ def test_pi_error_pool_draws_water_steps_by_wind_and_pi_and_land_steps_by_wind(m
         assert lo < 0 < hi < 500
         k = chaz.wind_bin(np.ravel(v0), cat1)[0]
         assert chaz.wind_bin(np.array([(lo + 100) * 1000]), cat1)[0] == k
-        land = [chaz.find_error_pi(v0, 45.0, False) for _ in range(50)]
-        assert min(land) > 500 and max(land) > 1050  # land draws ignore PI
+        assert (
+            500 < chaz.find_error_pi(v0, 45.0, False) < 1000 < chaz.find_error_pi(v0, 185.0, False)
+        )
     assert chaz.find_error_pi(np.nan, 100.0, True) == 0
 
 
