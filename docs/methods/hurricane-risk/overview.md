@@ -1,12 +1,5 @@
 # Hurricane risk methods overview
 
-:::{admonition} In development
-:class: note
-
-The hurricane risk model is being built. This page lists the approach, the papers and datasets it
-follows, and where each step is checked. Sections marked _not started_ describe the plan.
-:::
-
 ## Summary
 
 The aim is global tropical-cyclone wind hazard maps for the recent climate and for future
