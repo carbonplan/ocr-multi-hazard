@@ -110,7 +110,7 @@ def test_a_seeded_realization_repeats_exactly(monkeypatch, tmp_path):
         out = tmp_path / str(k)
         out.mkdir()
         monkeypatch.setattr(chaz, 'run_dir', lambda name, out=out: out)
-        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI', {}))
+        t = chaz.run_one((2017, 0, 0.15, 2, 'TCGI_CRH_PI', {}, chaz.ERA5))
         assert t['storms_kept'] > 0
         runs.append(xr.open_dataset(out / '2017_r000.nc').load())
     a, b = runs

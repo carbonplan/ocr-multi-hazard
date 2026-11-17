@@ -83,10 +83,19 @@ def ratio_source(source: str) -> str:
     return '/'.join([*source.split('/')[:-1], 'historical'])
 
 
-def meanstd_for(source: str, normalization: str = 'model') -> str | None:
+def meanstd_for(
+    source: str, normalization: str = 'model', intensity: str = 'tutorial'
+) -> str | None:
     """Key of a source's predictor normalization; None means the tutorial's. 'model' is the
     tutorial's for ERA5 and the model's own for a model; for ERA5, 'port' is meanstd's port of
-    getMeanStd and 'env' the tutorial's with the port's environment entries."""
+    getMeanStd and 'env' the tutorial's with the port's environment entries. The refit
+    regressions (intensity 'refit') carry their own normalization."""
+    if intensity == 'refit':
+        if source != ERA5 or normalization != 'model':
+            raise ValueError('intensity=refit is only defined for ERA5 with its own normalization')
+        from ocr.risks.hurricane import refit
+
+        return refit.key(ERA5, 'coefficient_meanstd.nc')
     if source == ERA5:
         return {'port': 'validation/meanstd/era5.nc', 'env': 'validation/meanstd/era5_env.nc'}.get(
             normalization
@@ -119,6 +128,7 @@ OPTIONS = {
     'land': ('shared', 'separate', 'fine'),
     'normalization': ('model', 'tutorial', 'port', 'env'),
     'genesis': ('tcgi', 'calibrated'),
+    'intensity': ('tutorial', 'refit'),
 }
 
 
@@ -179,6 +189,7 @@ class gv:
     normalization = 'model'  # see meanstd_for
     # 'calibrated' multiplies the genesis index by calibrate.py's regional map when seeding
     genesis = 'tcgi'
+    intensity = 'tutorial'  # 'refit': refit.py's regressions, normalization and error pool
     llon = llat = lldmask = ldmask = None
 
 
@@ -234,6 +245,18 @@ def genesis_multiplier(tcgi_name: str) -> np.ndarray | float:
 def apply_options(options: dict[str, str]) -> None:
     for key, choices in OPTIONS.items():
         setattr(gv, key, options.get(key, choices[0]))
+    if gv.intensity == 'refit' and gv.land != 'fine':
+        raise ValueError('intensity=refit was fit on the land values of land=fine')
+
+
+def intensity_file(name: str) -> Path:
+    """result_w.nc, result_l.nc, or the error pool (bt_global_predictors.nc's errors, or the
+    refit's errors.nc), for gv.intensity."""
+    if gv.intensity != 'refit':
+        return static(gv.obpath if name == 'errors.nc' else name)
+    from ocr.risks.hurricane import refit
+
+    return store.path(refit.key(ERA5, name))
 
 
 def getSeeding(iy, ratio):
@@ -892,14 +915,15 @@ def calIntensity(n_members: int):
     global E0, v0E, cat1, intV, iNN
 
     bt2 = nc.Dataset(static(gv.obpath), 'r')
-    with nc.Dataset(static('result_w.nc'), 'r') as f:
+    with nc.Dataset(intensity_file('result_w.nc'), 'r') as f:
         result_w = ma.getdata(f['params'][:])
-    with nc.Dataset(static('result_l.nc'), 'r') as f:
+    with nc.Dataset(intensity_file('result_l.nc'), 'r') as f:
         result_l = ma.getdata(f['params'][:])
     NS = np.argwhere((bt2['StormYear'][:] >= 1981) & (bt2['StormYear'][:] <= 2012))[:, 0]
     intV = bt2['StormMwspd'][:][0, NS]
-    E0, v0E, cat1 = get_E1(bt2)
     bt2.close()
+    with nc.Dataset(intensity_file('errors.nc'), 'r') as f:
+        E0, v0E, cat1 = get_E1(f)
 
     with nc.Dataset(normalization(), 'r') as f:
         meanX_w = ma.getdata(f['meanX_w'][:])
@@ -1021,7 +1045,9 @@ def run_one(task):
     global yearTC
     year, ichaz, ratio, n_members, tcgi_name, options, source = task
     gv.source = source
-    gv.meanstd = meanstd_for(source, options.get('normalization', 'model'))
+    gv.meanstd = meanstd_for(
+        source, options.get('normalization', 'model'), options.get('intensity', 'tutorial')
+    )
     out = run_dir(run_name(tcgi_name, **options)) / f'{year}_r{ichaz:03d}.nc'
     if out.exists():
         return None
@@ -1076,6 +1102,9 @@ def provenance(year, realization, seed, ratio, n_members, tcgi_name) -> dict:
         'steering_noise': gv.steering,
         'land_mean': gv.land,
         'genesis': gv.genesis,
+        'intensity_regressions': gv.intensity,
+        'result_w_sha256': store._hash(intensity_file('result_w.nc')),
+        'result_l_sha256': store._hash(intensity_file('result_l.nc')),
         'survival_rate': gv.survivalrate,
         'forcing': f'{store.S3_ROOT}/forcing/{gv.source}/{year}',
         'predictor_normalization': gv.meanstd or f'{store.TUTORIAL}/coefficient_meanstd.nc',
@@ -1160,6 +1189,8 @@ def prefetch(year: int, tcgi_name: str) -> None:
     """Cache a year's inputs before the worker pool starts, so workers only read them."""
     for name in STATIC:
         static(name)
+    for name in ('result_w.nc', 'result_l.nc', 'errors.nc'):
+        intensity_file(name)
     normalization()
     genesis_multiplier(tcgi_name)
     for name in [
@@ -1254,7 +1285,7 @@ def main():
     add_options(la)
     add_source(la)
     a = p.parse_args()
-    gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization)
+    gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization, a.intensity)
     options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
     apply_options(options)
     if a.cmd == 'run':

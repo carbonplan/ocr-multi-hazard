@@ -93,40 +93,51 @@ def along_tracks(forcing: str, years: tuple[int, int] = YEARS) -> dict[str, np.n
     return out
 
 
+def steps(
+    lm: np.ndarray, water: bool, years: tuple[int, int] = YEARS, bt: xr.Dataset | None = None
+) -> np.ndarray:
+    """(storm, end node) of each 12-hour step of the observed tracks of `years` that falls under
+    the water regression (land value `lm` at most -0.5 at both ends) or the land regression."""
+    bt = observed() if bt is None else bt
+    lon, storm_year = bt['StormLon'].values, bt['StormYear'].values
+    out = []
+    for s in np.flatnonzero((storm_year >= years[0]) & (storm_year <= years[1])):
+        for it in range(LEAD, lon.shape[0]):
+            if not np.isfinite(lon[it, s]):
+                continue
+            if water == bool((lm[it, s] <= -0.5) & (lm[it - LEAD, s] <= -0.5)):
+                out.append((s, it))
+    return np.array(out, dtype=int).reshape(-1, 2)
+
+
 def samples(
     env: dict[str, np.ndarray], predictors: list[str], water: bool, years: tuple[int, int] = YEARS
-) -> tuple[np.ndarray, np.ndarray]:
-    """12-hour regression samples (X, Y) from the observed tracks of `years`, and which of them
-    are complete (every value finite); the rows are the same for any environment."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """12-hour regression samples (X, Y) at `steps`, and which of them are complete (every value
+    finite); the rows are the same for any environment with the same land values."""
     bt = observed()
     v, dvdt, speed = (bt[k].values for k in ('StormMwspd', 'dVdt', 'trSpeed'))
-    lon, storm_year = bt['StormLon'].values, bt['StormYear'].values
     lm = env['landmaskMean']
     X, Y = [], []
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN windows give NaN samples
-        for s in np.flatnonzero((storm_year >= years[0]) & (storm_year <= years[1])):
-            for it in range(LEAD, lon.shape[0]):
-                if not np.isfinite(lon[it, s]):
-                    continue
-                if water != bool((lm[it, s] <= -0.5) & (lm[it - LEAD, s] <= -0.5)):
-                    continue
-                i0, w = it - LEAD, slice(it - LEAD, it + 1)
-                dpi = np.nanmean(env['PIwspdMean'][w, s]) - v[i0, s]
-                row = {
-                    'StormMwspd': v[i0, s],
-                    'dVdt': dvdt[i0, s],
-                    'trSpeed': speed[i0, s],
-                    'dPIwspd': dpi,
-                    'SHRD': np.nanmean(np.hypot(env['UShearMean'][w, s], env['VShearMean'][w, s])),
-                    'rhMean': np.nanmean(env['rhMean'][w, s]),
-                    'dPIwspd2': dpi**2,
-                    'dPIwspd3': dpi**3,
-                    'dVdt2': dvdt[i0, s] ** 2,
-                    'landmaskMean': lm[it, s] - lm[i0, s],
-                }
-                X.append([row[p] for p in predictors])
-                Y.append(v[it, s] - v[i0, s])
+        for s, it in steps(lm, water, years, bt):
+            i0, w = it - LEAD, slice(it - LEAD, it + 1)
+            dpi = np.nanmean(env['PIwspdMean'][w, s]) - v[i0, s]
+            row = {
+                'StormMwspd': v[i0, s],
+                'dVdt': dvdt[i0, s],
+                'trSpeed': speed[i0, s],
+                'dPIwspd': dpi,
+                'SHRD': np.nanmean(np.hypot(env['UShearMean'][w, s], env['VShearMean'][w, s])),
+                'rhMean': np.nanmean(env['rhMean'][w, s]),
+                'dPIwspd2': dpi**2,
+                'dPIwspd3': dpi**3,
+                'dVdt2': dvdt[i0, s] ** 2,
+                'landmaskMean': lm[it, s] - lm[i0, s],
+            }
+            X.append([row[p] for p in predictors])
+            Y.append(v[it, s] - v[i0, s])
     X, Y = np.array(X), np.array(Y)
     return X, Y, np.isfinite(X).all(axis=1) & np.isfinite(Y)
 
