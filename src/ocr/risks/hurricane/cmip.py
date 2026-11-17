@@ -167,7 +167,13 @@ def monthly_means(daily: xr.Dataset) -> xr.Dataset:
     return m.rename(month='time')
 
 
-def raw(year: int, model: str = MODEL, member: str = MEMBER, future: str = 'ssp585') -> list[str]:
+def raw(
+    year: int,
+    model: str = MODEL,
+    member: str = MEMBER,
+    future: str = 'ssp585',
+    kelvin: float = tcgi.KELVIN_CHAZ,
+) -> list[str]:
     exp = experiment(year, future)
     key = f'{root(exp, model, member)}/{year}'
     out = store.CACHE / key
@@ -212,7 +218,10 @@ def raw(year: int, model: str = MODEL, member: str = MEMBER, future: str = 'ssp5
     sst = sst_k - 273.15
     hur = regrid(monthly('hur', [500, 700, 850]).mean('level')).assign_coords(time=months)
 
-    g['CRH'], g['SD'] = tcgi.moisture(t2, prw, psl, sst_k)
+    # W*'s bottom layer reads the SST; where the model's sea does not reach a cell, its surface
+    # temperature, as the model's ts is what the CHAZ team's TCGI code reads there
+    surface_k = sst_k.fillna(regrid(ts).assign_coords(time=months))
+    g['CRH'], g['SD'] = tcgi.moisture(t2, prw, psl, surface_k, kelvin)
     pi, flag = tcgi.potential_intensity(sst, psl, t2 - 273.15, q2 * 1000, flags=True)
     # no PI (cold water, or a cell the model's ocean does not reach) is 0, as in ERA5's PI files
     g['PI'] = pi.where(sst.notnull()).fillna(0.0).where(ocean | sst.notnull())

@@ -278,9 +278,10 @@ def tutorial_grid() -> xr.Dataset:
     return store.tutorial('TCGI_CRH_PI_2017.nc')
 
 
-def era5_inputs(year: int, grid: xr.Dataset) -> xr.Dataset:
+def era5_inputs(year: int, grid: xr.Dataset, kelvin: float = KELVIN_CHAZ) -> xr.Dataset:
     """Our TCGI inputs on the tutorial's grid. Its 2-degree centres (odd latitudes, even
-    longitudes) are nodes of the ERA5 grids, so a bilinear regrid there is a point sample."""
+    longitudes) are nodes of the ERA5 grids, so a bilinear regrid there is a point sample.
+    `kelvin` is W*'s kelvin-to-Celsius offset (KELVIN_CHAZ or KELVIN)."""
     at = {'lat': grid['lat'].astype(float), 'lon': grid['lon'].astype(float)}
     wind_native = store.open_era5(store.path(f'{store.ERA5}/{year}/pl_wind_025.nc'))
     wind = wind_native.sel(at)
@@ -294,7 +295,7 @@ def era5_inputs(year: int, grid: xr.Dataset) -> xr.Dataset:
     out['vws'] = wind_shear(
         *(wind[c].sel(level=lev) for lev in (SHEAR_TOP, 850) for c in ('u', 'v'))
     )
-    out['CRH'], out['SD'] = moisture(tq['t'], sl['tcwv'], sl['msl'] / 100, sl['sst'])
+    out['CRH'], out['SD'] = moisture(tq['t'], sl['tcwv'], sl['msl'] / 100, sl['sst'], kelvin)
     out['PI'] = potential_intensity(
         sl['sst'] - 273.15, sl['msl'] / 100, tq['t'] - 273.15, tq['q'] * 1000
     )

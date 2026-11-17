@@ -28,6 +28,40 @@ def test_saturation_column_uses_the_sst_below_the_last_level_and_needs_150_hpa()
         tcgi.saturation_column(profile([100.0, 200.0, 1000.0]), msl, sst)
 
 
+def temperature_for(qs, p_pa, kelvin=tcgi.KELVIN_CHAZ):
+    """The temperature (K) at which saturation_humidity is `qs` at `p_pa`: Bolton inverted."""
+    es = qs * p_pa / (tcgi.EPS + qs * (1 - tcgi.EPS))
+    a = np.log(es / 611.2)
+    return 243.5 * a / (17.67 - a) + kelvin
+
+
+def arithmetic_case():
+    levels = [100.0, 125.0, 150.0, 500.0, 925.0, 1000.0]
+    qs = {150.0: 0.001, 500.0: 0.004, 925.0: 0.008}
+    t = [temperature_for(qs[p], p * 100) if p in qs else 250.0 for p in levels]
+    t = xr.DataArray(t, dims='level', coords={'level': levels})
+    return t, xr.DataArray(101000.0), xr.DataArray(temperature_for(0.016, 101000.0))
+
+
+def test_saturation_column_layer_arithmetic():
+    # half of 0.001 over 125-150 hPa, log-linear layers 150-500 and 500-925 hPa, and 925 hPa to
+    # sea level at the SST's 0.016; 1000 hPa does not enter
+    t, msl, sst = arithmetic_case()
+    assert float(tcgi.saturation_column(t, msl, sst)) == pytest.approx(43.254916326877336)
+    # an interior missing level drops its two layers; a missing 150 hPa or SST does not
+    gap = t.copy()
+    gap.loc[500.0] = np.nan
+    half = 0.5 * 0.001 * 2500 / tcgi.G_W
+    bottom = 0.016 * (1 - 0.25 - 0.25**2 / 3 - 0.125 / 24) * 8500 / tcgi.G_W
+    assert float(tcgi.saturation_column(gap, msl, sst)) == pytest.approx(half + bottom)
+    top = t.copy()
+    top.loc[150.0] = np.nan
+    assert np.isnan(float(tcgi.saturation_column(top, msl, sst)))
+    # missing sea-level pressure is taken as 1000 hPa
+    at_1000 = float(tcgi.saturation_column(t, xr.DataArray(100000.0), sst))
+    assert float(tcgi.saturation_column(t, xr.DataArray(np.nan), sst)) == pytest.approx(at_1000)
+
+
 def test_saturation_column_with_the_chaz_offset_is_about_one_percent_drier():
     levels = [100.0, 150.0, 200.0, 500.0, 850.0, 925.0, 1000.0]
     msl, sst = xr.DataArray(101000.0), xr.DataArray(301.0)
@@ -39,8 +73,14 @@ def test_saturation_column_with_the_chaz_offset_is_about_one_percent_drier():
 def test_era5_2017_moisture_reproduces_the_tutorial_tcgi():
     from ocr.risks.hurricane import store
 
-    if not (store.CACHE / store.ERA5 / '2017' / 'pl_tq_1deg.nc').exists():
-        pytest.skip('needs the 2017 ERA5 inputs in the local cache')
+    needed = [
+        store.CACHE / store.ERA5 / '2017' / f
+        for f in ('pl_tq_1deg.nc', 'pl_wind_025.nc', 'sl_025.nc')
+    ]
+    needed += [store.CACHE / store.TUTORIAL / f'TCGI_{k}_PI_2017.nc' for k in ('CRH', 'SD')]
+    needed += [store.CACHE / store.TUTORIAL / 'PI_2017.nc']
+    if not all(f.exists() for f in needed):
+        pytest.skip('needs the 2017 ERA5 and tutorial inputs in the local cache')
     grid = tcgi.tutorial_grid()
     ours = tcgi._months(tcgi.era5_inputs(2017, grid), 'time')
     ocean = ours['ocean']

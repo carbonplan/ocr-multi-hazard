@@ -370,7 +370,11 @@ def build(year: int, genesis_only: bool = False) -> list[str]:
 
 def task(year: int, genesis_only: bool = False) -> None:
     fetch(year)
-    build(year, genesis_only)
+    written = build(year, genesis_only)
+    if genesis_only:
+        files = store.push(keys=written, fragment=f'era5-{year}-genesis', replace=True)
+        print(f'{year}: {len(files)} TCGI files on S3', flush=True)
+        return
     raw, forcing = (
         store.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
         store.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing', replace=True),
