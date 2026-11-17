@@ -149,3 +149,18 @@ def test_basin_error_pool_keeps_to_the_basin_and_falls_back_without_one(monkeypa
     assert draws <= {1.0, -1.0, 0.0} and len(draws) > 1
     assert chaz.find_error_pi(80.0, 150.0, False, 0) == 1.0
     assert len({chaz.find_error_pi(80.0, 150.0, False, 4) for _ in range(200)}) > 1
+
+
+def test_basin_pool_without_wind_bins_falls_back_to_the_regime_pool(monkeypatch):
+    rng = np.random.default_rng(2)
+    n_wide = 3000
+    ni = np.r_[15.0, np.full(550, 25.0), 80.0]  # wind_bins gives no edges for these
+    v = np.r_[rng.uniform(20, 140, n_wide), ni]
+    b = np.r_[np.zeros(n_wide, int), np.full(ni.size, 3)]
+    water = np.ones(v.size)
+    water[: n_wide // 4] = 0
+    errors = np.where(b == 3, 7.0, 1.0)
+    f = pool_file(v, rng.uniform(40, 190, v.size), errors, water)
+    monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f, b[None, :]), raising=False)
+    assert (3, True) not in chaz.pool_pi
+    assert chaz.find_error_pi(25.0, 100.0, True, 3) in (1.0, 7.0)

@@ -793,7 +793,8 @@ def error_pool_pi(f, basins=None):
     pool, False: land pool}, each (cat1, per-bin (PI edges, cells, whole bin)).
 
     With `basins` (basin() of each step's first node, on errors.nc's grid), for 'refit-basin',
-    it also holds a pool per (basin, regime) with at least BASIN_MIN errors."""
+    it also holds a pool per (basin, regime) with at least BASIN_MIN errors whose winds give
+    wind_bins at least one bin."""
     NS = np.argwhere((f['StormYear'][:] >= 1981) & (f['StormYear'][:] <= 2012))[:, 0]
     keys = ('errors', 'StormMwspd', 'PIstep', 'water')
     e, v, pi, water = (ma.getdata(f[k][:])[:, NS].ravel() for k in keys)
@@ -810,7 +811,9 @@ def error_pool_pi(f, basins=None):
         for i in range(len(BASINS)):
             here = sel & (b == i)
             if here.sum() >= BASIN_MIN:
-                out[(i, regime)] = _pi_pool(e[here], v[here], pi[here])
+                cat1, pools = _pi_pool(e[here], v[here], pi[here])
+                if pools:
+                    out[(i, regime)] = (cat1, pools)
     return out
 
 
