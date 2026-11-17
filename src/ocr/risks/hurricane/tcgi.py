@@ -50,7 +50,6 @@ PUBLISHED = {
 }
 ETA_CAP = 3.7  # 1e-5 s-1
 SHEAR_TOP = 250  # hPa
-G = 9.80665  # m s-2
 
 # tcpyPI settings of the CHAZ pre-processing tutorial (Tutorial_chaz_pre.ipynb)
 PI_KWARGS = {
@@ -138,48 +137,65 @@ def wind_shear(u200, v200, u850, v850) -> xr.DataArray:
     return np.hypot(u200 - u850, v200 - v850)
 
 
-def saturation_vapour_pressure(t: xr.DataArray) -> xr.DataArray:
-    """Over liquid water, hPa (Bolton 1980, as in tcpyPI)."""
-    tc = t - 273.15
-    return 6.112 * np.exp(17.67 * tc / (tc + 243.5))
+# The code behind the CHAZ team's TCGI converts kelvin to Celsius by subtracting 273.3; 273.15 is
+# correct. With 273.3, saturation_column reproduces the tutorial's 2017 W* to 0.003 kg m-2 and its
+# TCGI to 1.0000, and the TCGI coefficients were presumably fit on that W*, so it is the default.
+# 273.15 makes W* about 1% higher and the global TCGI about 5% lower (genesis-index notebook, §2).
+KELVIN_CHAZ = 273.3
+KELVIN = 273.15
+EPS = 0.62197  # ratio of the gas constants of dry air and water vapour, as in that code
+G_W = 9.81  # m s-2, as in that code
 
 
-def saturation_humidity(t: xr.DataArray, p_hpa: xr.DataArray, dilute: bool = True) -> xr.DataArray:
-    """Saturation specific humidity, kg kg-1. The dilute form 0.622 e_s / p, without the
-    0.378 e_s term, reproduces the tutorial's 2017 W* better than the exact form."""
-    es = saturation_vapour_pressure(t)
-    return 0.622 * es / (p_hpa if dilute else p_hpa - 0.378 * es)
+def saturation_humidity(t_k: xr.DataArray, p_pa, kelvin: float = KELVIN_CHAZ) -> xr.DataArray:
+    """Saturation specific humidity (kg kg-1) over liquid water, Bolton (1980)."""
+    tc = t_k - kelvin
+    es = 611.2 * np.exp(17.67 * tc / (tc + 243.5))
+    return EPS * es / (p_pa - (1 - EPS) * es)
 
 
-def column_to_surface(x: xr.DataArray, ps_hpa: xr.DataArray, top_hpa: float) -> xr.DataArray:
-    """Integral of x dp / g (kg m-2 per unit of x) from `top_hpa` to the surface: x piecewise
-    linear in pressure between levels, cut at the surface pressure, and held at its lowest-level
-    value between the lowest level and a higher surface pressure. `top_hpa` must be a level.
-    Layers wholly below ground are skipped, so they may be NaN; a missing value in any layer
-    that contributes makes the column NaN."""
-    if top_hpa not in x['level'].values:
-        raise ValueError(f'top_hpa={top_hpa} is not one of the levels')
-    x = x.sortby('level').sel(level=slice(top_hpa, None))
-    p = x['level'].values * 100.0
-    ps = ps_hpa * 100.0
-    xl, xh = x.isel(level=slice(None, -1)), x.isel(level=slice(1, None))
-    lo = xr.DataArray(p[:-1], dims='level', coords={'level': xl['level']})
-    hi = xr.DataArray(p[1:], dims='level', coords={'level': xl['level']})
-    xh = xh.assign_coords(level=xl['level'])
-    cut = np.minimum(np.maximum(ps, lo), hi)
-    x_cut = xl + (xh - xl) * (cut - lo) / (hi - lo)
-    width = cut - lo
-    layers = xr.where(width > 0, (xl + x_cut) / 2 * width, 0.0).sum('level', skipna=False)
-    below = xr.where(ps > p[-1], (ps - p[-1]) * x.isel(level=-1, drop=True), 0.0)
-    return (layers + below) / G
+def saturation_column(
+    t_k: xr.DataArray, msl_pa: xr.DataArray, sst_k: xr.DataArray, kelvin: float = KELVIN_CHAZ
+) -> xr.DataArray:
+    """W*, the column water vapour at saturation (kg m-2), as the CHAZ team's TCGI computes it
+    (yixia23/TCGI, calculation_vars/functions.py, saturated_water_vapor): from the levels between
+    100 and 1000 hPa, saturation humidity is 0 above 150 hPa except for half a layer up to the
+    next level at its 150 hPa value; each layer below takes it log-linear in pressure (a Taylor
+    series); the loop stops one level above the lowest, and the last layer runs from there to
+    sea-level pressure (1000 hPa where missing) at the saturation humidity of the SST."""
+    t = t_k.sortby('level').sel(level=slice(100, 1000))
+    p = t['level'].values * 100.0
+    if 15000.0 not in p or p[0] >= 15000.0:
+        raise ValueError('saturation_column needs 150 hPa and a level above it, up to 100 hPa')
+    qs = [saturation_humidity(t.isel(level=i, drop=True), p[i], kelvin) for i in range(len(p))]
+    i150 = int(np.flatnonzero(p == 15000.0)[0])
+
+    def layer(q_old, q_new, dp):
+        x = 1 - q_old / q_new
+        return q_new * (1 - x / 2 - x**2 / 12 - x**3 / 24) * dp / G_W
+
+    w = 0.5 * qs[i150] * (p[i150] - p[i150 - 1]) / G_W
+    last = i150
+    for i in range(i150 + 1, len(p) - 1):
+        w = w + layer(qs[i - 1], qs[i], p[i] - p[i - 1]).fillna(0)
+        last = i
+    msl = msl_pa.fillna(100000.0)
+    q_sea = saturation_humidity(sst_k, msl, kelvin)
+    return (w + layer(qs[last], q_sea, msl - p[last])).rename('W*')
 
 
-def moisture(t: xr.DataArray, w: xr.DataArray, p_bottom_hpa: xr.DataArray, top_hpa: float = 100.0):
+def moisture(
+    t_k: xr.DataArray,
+    w: xr.DataArray,
+    msl_hpa: xr.DataArray,
+    sst_k: xr.DataArray,
+    kelvin: float = KELVIN_CHAZ,
+):
     """Column relative humidity (%) and saturation deficit (kg m-2, negative), Bretherton et al.
     (2004): W is the model's column water vapour (ERA5 tcwv, CMIP6 prw), which the tutorial's
-    W = W* CRH matches to 3e-4 kg m-2; W* integrates the saturation humidity of the monthly-mean
-    temperature profile."""
-    ws = column_to_surface(saturation_humidity(t, t['level']), p_bottom_hpa, top_hpa)
+    W = W* CRH matches to 3e-4 kg m-2; W* is saturation_column of the monthly-mean temperature
+    profile."""
+    ws = saturation_column(t_k, msl_hpa * 100, sst_k, kelvin)
     return (100 * w / ws).rename('CRH'), (w - ws).rename('SD')
 
 
@@ -278,8 +294,7 @@ def era5_inputs(year: int, grid: xr.Dataset) -> xr.Dataset:
     out['vws'] = wind_shear(
         *(wind[c].sel(level=lev) for lev in (SHEAR_TOP, 850) for c in ('u', 'v'))
     )
-    # W* down to mean sea-level pressure, not surface pressure: half the rms against the tutorial's W*
-    out['CRH'], out['SD'] = moisture(tq['t'], sl['tcwv'], sl['msl'] / 100)
+    out['CRH'], out['SD'] = moisture(tq['t'], sl['tcwv'], sl['msl'] / 100, sl['sst'])
     out['PI'] = potential_intensity(
         sl['sst'] - 273.15, sl['msl'] / 100, tq['t'] - 273.15, tq['q'] * 1000
     )

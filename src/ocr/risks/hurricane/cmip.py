@@ -208,10 +208,11 @@ def raw(year: int, model: str = MODEL, member: str = MEMBER, future: str = 'ssp5
     prw = regrid(monthly('prw')).assign_coords(time=months)
     ts = monthly('ts')
     sea = ocean_fraction(model).reindex_like(ts, method='nearest', tolerance=1e-3) < 50
-    sst = regrid(extend_ocean(ts.where(sea))).assign_coords(time=months) - 273.15
+    sst_k = regrid(extend_ocean(ts.where(sea))).assign_coords(time=months)
+    sst = sst_k - 273.15
     hur = regrid(monthly('hur', [500, 700, 850]).mean('level')).assign_coords(time=months)
 
-    g['CRH'], g['SD'] = tcgi.moisture(t2, prw, psl)
+    g['CRH'], g['SD'] = tcgi.moisture(t2, prw, psl, sst_k)
     pi, flag = tcgi.potential_intensity(sst, psl, t2 - 273.15, q2 * 1000, flags=True)
     # no PI (cold water, or a cell the model's ocean does not reach) is 0, as in ERA5's PI files
     g['PI'] = pi.where(sst.notnull()).fillna(0.0).where(ocean | sst.notnull())

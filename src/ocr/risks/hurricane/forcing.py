@@ -20,6 +20,8 @@ Raw ERA5 goes under store.S3_ROOT/inputs/era5/{year}/ with the CDS request besid
     task      fetch, build and push one year (what each Coiled task runs; year from
               $COILED_BATCH_TASK_INPUT)
     launch    one Coiled batch task per year (batch.py; needs a Coiled login and ~/.cdsapirc)
+
+`build`, `task` and `launch` take --genesis-only to write only the two TCGI files.
     manifest  merge the jobs' manifest fragments into manifest.json, on Coiled
     reference / launch-reference
               the tutorial's Zenodo files and a January 2017 wind test the review notebooks
@@ -322,7 +324,7 @@ def predictors(year: int, monthly: xr.Dataset, pi: xr.DataArray) -> xr.Dataset:
     return ds.drop_vars('level', errors='ignore').transpose('time', 'lat', 'lon')
 
 
-def build(year: int) -> list[str]:
+def build(year: int, genesis_only: bool = False) -> list[str]:
     out = store.CACHE / OUT / str(year)
     out.mkdir(parents=True, exist_ok=True)
     x = tcgi.era5_inputs(year, grid())
@@ -340,6 +342,8 @@ def build(year: int) -> list[str]:
             {'avor': x['avor'], 'vws': x['vws'], 'CRH': x['CRH'], 'SD': x['SD'], 'TCGI': g}
         )
         save(ds.drop_vars('ocean', errors='ignore'), f'TCGI_{kind}_PI_{year}.nc')
+    if genesis_only:
+        return written
     # PI is 0 wherever the tutorial's bilinear regrid touches land or missing SST, as TCGI is undefined
     x['PI'] = x['PI'].where(x['ocean'], 0.0)
     save(x[['PI']].rename(PI='vmax'), f'PI_{year}.nc')
@@ -364,9 +368,9 @@ def build(year: int) -> list[str]:
 # --- Coiled ------------------------------------------------------------------------------------
 
 
-def task(year: int) -> None:
+def task(year: int, genesis_only: bool = False) -> None:
     fetch(year)
-    build(year)
+    build(year, genesis_only)
     raw, forcing = (
         store.push(f'{RAW}/{year}', fragment=f'era5-{year}-raw'),
         store.push(f'{OUT}/{year}', fragment=f'era5-{year}-forcing', replace=True),
@@ -390,13 +394,15 @@ def cds_secrets() -> dict[str, str]:
     return {'CDSAPI_URL': cds['url'].strip(), 'CDSAPI_KEY': cds['key'].strip()}
 
 
-def launch(years: list[int], vm_type: str, max_workers: int, spot: bool = True) -> None:
+def launch(
+    years: list[int], vm_type: str, max_workers: int, spot: bool = True, genesis_only: bool = False
+) -> None:
     """One Coiled batch task per year; the CDS key goes as secret env vars."""
     secrets = cds_secrets()
     batch.run(
         'forcing',
-        ['task'],
-        name=f'chaz-forcing-era5-{years[0]}-{years[-1]}',
+        ['task', *(['--genesis-only'] if genesis_only else [])],
+        name=f'chaz-{"genesis" if genesis_only else "forcing"}-era5-{years[0]}-{years[-1]}',
         over=years,
         vm_type=vm_type,
         max_workers=max_workers,
@@ -420,9 +426,12 @@ def main() -> None:
     for name in ('fetch', 'build'):
         s = sub.add_parser(name)
         s.add_argument('--year', type=int, nargs='+', required=True)
+    sub.choices['build'].add_argument('--genesis-only', action='store_true')
     t = sub.add_parser('task')
     t.add_argument('--year', type=int, default=None)
+    t.add_argument('--genesis-only', action='store_true')
     la = sub.add_parser('launch')
+    la.add_argument('--genesis-only', action='store_true')
     la.add_argument('--years', default='1981-2019')
     la.add_argument('--vm-type', default='m8g.xlarge')
     la.add_argument('--max-workers', type=int, default=8)
@@ -436,9 +445,9 @@ def main() -> None:
             fetch(y)
     elif a.cmd == 'build':
         for y in a.year:
-            print('\n'.join(build(y)))
+            print('\n'.join(build(y, a.genesis_only)))
     elif a.cmd == 'task':
-        task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']))
+        task(a.year or int(os.environ['COILED_BATCH_TASK_INPUT']), a.genesis_only)
     elif a.cmd == 'manifest':
         launch_manifest()
     elif a.cmd == 'reference':
@@ -448,7 +457,13 @@ def main() -> None:
             'forcing', ['reference'], name='chaz-reference', spot=False, secret_env=cds_secrets()
         )
     else:
-        launch(batch.parse_years(a.years), a.vm_type, a.max_workers, spot=not a.on_demand)
+        launch(
+            batch.parse_years(a.years),
+            a.vm_type,
+            a.max_workers,
+            spot=not a.on_demand,
+            genesis_only=a.genesis_only,
+        )
 
 
 if __name__ == '__main__':

@@ -9,34 +9,45 @@ import xarray as xr
 from ocr.risks.hurricane import batch, chaz, forcing, tcgi
 
 
-def column(values, levels):
-    return xr.DataArray(np.asarray(values, float), dims='level', coords={'level': levels})
+def profile(levels, t_k=290.0):
+    return xr.DataArray(np.full(len(levels), t_k), dims='level', coords={'level': levels})
 
 
-@pytest.mark.parametrize(
-    ('surface', 'pascals'),
-    [(950.0, 85000.0), (1013.0, 91300.0), (400.0, 30000.0)],
-)
-def test_column_to_surface_integrates_to_the_surface(surface, pascals):
-    x = column([1, 1, 1], [100.0, 500.0, 1000.0])
-    got = tcgi.column_to_surface(x, xr.DataArray(surface), 100) * tcgi.G
-    assert float(got) == pytest.approx(pascals)
-
-
-def test_column_to_surface_skips_missing_levels_below_ground():
-    x = column([1, 1, np.nan], [100.0, 500.0, 1000.0])
-    got = tcgi.column_to_surface(x, xr.DataArray(450.0), 100) * tcgi.G
-    assert float(got) == pytest.approx(35000.0)
-
-
-def test_column_to_surface_propagates_missing_values_that_contribute():
-    x = column([1, np.nan, 1], [100.0, 500.0, 1000.0])
-    assert np.isnan(float(tcgi.column_to_surface(x, xr.DataArray(950.0), 100)))
-
-
-def test_column_to_surface_rejects_a_top_that_is_not_a_level():
+def test_saturation_column_uses_the_sst_below_the_last_level_and_needs_150_hpa():
+    levels = [100.0, 150.0, 500.0, 925.0, 1000.0]
+    msl, sst = xr.DataArray(101000.0), xr.DataArray(300.0)
+    w = tcgi.saturation_column(profile(levels), msl, sst)
+    warmer = tcgi.saturation_column(profile(levels), msl, xr.DataArray(302.0))
+    assert 0 < float(w) < float(warmer)
+    # the 1000 hPa level does not enter: the last layer runs from 925 hPa to sea level
+    t = profile(levels)
+    t[-1] = 200.0
+    assert float(tcgi.saturation_column(t, msl, sst)) == pytest.approx(float(w))
+    assert np.isnan(float(tcgi.saturation_column(profile(levels), msl, xr.DataArray(np.nan))))
     with pytest.raises(ValueError):
-        tcgi.column_to_surface(column([1, 1, 1], [100.0, 500.0, 1000.0]), xr.DataArray(950.0), 150)
+        tcgi.saturation_column(profile([100.0, 200.0, 1000.0]), msl, sst)
+
+
+def test_saturation_column_with_the_chaz_offset_is_about_one_percent_drier():
+    levels = [100.0, 150.0, 200.0, 500.0, 850.0, 925.0, 1000.0]
+    msl, sst = xr.DataArray(101000.0), xr.DataArray(301.0)
+    chaz_w = float(tcgi.saturation_column(profile(levels, 280.0), msl, sst))
+    right = float(tcgi.saturation_column(profile(levels, 280.0), msl, sst, kelvin=tcgi.KELVIN))
+    assert 0.985 < chaz_w / right < 0.995
+
+
+def test_era5_2017_moisture_reproduces_the_tutorial_tcgi():
+    from ocr.risks.hurricane import store
+
+    if not (store.CACHE / store.ERA5 / '2017' / 'pl_tq_1deg.nc').exists():
+        pytest.skip('needs the 2017 ERA5 inputs in the local cache')
+    grid = tcgi.tutorial_grid()
+    ours = tcgi._months(tcgi.era5_inputs(2017, grid), 'time')
+    ocean = ours['ocean']
+    for kind, name in (('CRH', 'TCGI_CRH_PI_2017.nc'), ('SD', 'TCGI_SD_PI_2017.nc')):
+        theirs = tcgi._months(store.tutorial(name), 'time')['TCGI'].where(ocean)
+        got = tcgi.tcgi(ours['avor'], ours[kind], ours['PI'], ours['vws'], kind).where(ocean)
+        assert float(got.sum() / theirs.sum()) == pytest.approx(1.0, abs=2e-4)
 
 
 def field(value, lat=0.0):
