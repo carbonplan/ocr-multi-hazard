@@ -1036,7 +1036,9 @@ def calIntensity(n_members: int):
         result_w = ma.getdata(f['params'][:])
     with nc.Dataset(intensity_file('result_l.nc'), 'r') as f:
         result_l = ma.getdata(f['params'][:])
-    NS = np.argwhere((bt2['StormYear'][:] >= 1981) & (bt2['StormYear'][:] <= 2012))[:, 0]
+    # a refit's seeded storms start from the observed first winds of its own fit years
+    y0, y1 = (1981, 2012) if gv.intensity == 'tutorial' else map(int, gv.fit.split('-'))
+    NS = np.argwhere((bt2['StormYear'][:] >= y0) & (bt2['StormYear'][:] <= y1))[:, 0]
     intV = bt2['StormMwspd'][:][0, NS]
     basins = (
         basin(*(ma.filled(bt2[k][:].astype(float), np.nan) for k in ('StormLat', 'StormLon')))

@@ -181,3 +181,21 @@ def test_refit_years_choose_the_files_and_need_a_refit(monkeypatch):
     assert chaz.run_name('TCGI_CRH_PI', land='fine', intensity='refit-basin', fit='1981-1999') == (
         'TCGI_CRH_PI-land-fine-intensity-refit-basin-fit-1981-1999'
     )
+
+
+def test_a_refit_on_early_years_does_not_see_later_storms(monkeypatch):
+    monkeypatch.setattr(store, 'OFFLINE', True)
+    if not tutorial_cached():
+        pytest.skip('needs the tutorial inputs in the local cache')
+    env = refit.tutorial_env()
+    later = refit.meanstd.observed()['StormYear'].values > 1999
+    changed = {k: v.copy() for k, v in env.items()}
+    for k in ('PIwspdMean', 'UShearMean', 'VShearMean', 'rhMean'):
+        changed[k][:, later] = changed[k][:, later] * 1.5 + 7
+    a, b = refit.fit(env, (1981, 1999)), refit.fit(changed, (1981, 1999))
+    for tag in 'wl':
+        for k in ('params', 'meanX', 'stdX', 'meanY', 'stdY'):
+            np.testing.assert_array_equal(a[tag][k], b[tag][k])
+    for k in ('errors', 'PIstep', 'water'):
+        np.testing.assert_array_equal(a[k], b[k])
+        assert not np.isfinite(a[k][:, later]).any()

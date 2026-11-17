@@ -238,7 +238,8 @@ def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label:
         dy = (c['params'][0] + z @ c['params'][1:]) * c['stdY'] + c['meanY']
         print(
             f'{tag}, {label}, {years[0]}-{years[1]}: n {len(Y)}, '
-            f'R2 {1 - np.var(Y - dy) / np.var(Y):.3f}, rmse {np.sqrt(np.mean((Y - dy) ** 2)):.2f} kt, '
+            f'R2 {1 - np.sum((Y - dy) ** 2) / np.sum((Y - Y.mean()) ** 2):.3f}, '
+            f'rmse {np.sqrt(np.mean((Y - dy) ** 2)):.2f} kt, '
             f'mean residual {np.mean(Y - dy):+.2f} kt'
         )
         s, i0 = rows[:, 0], rows[:, 1] - meanstd.LEAD
