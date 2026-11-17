@@ -84,18 +84,18 @@ def ratio_source(source: str) -> str:
 
 
 def meanstd_for(
-    source: str, normalization: str = 'model', intensity: str = 'tutorial'
+    source: str, normalization: str = 'model', intensity: str = 'tutorial', fit: str = '1981-2012'
 ) -> str | None:
     """Key of a source's predictor normalization; None means the tutorial's. 'model' is the
     tutorial's for ERA5 and the model's own for a model; for ERA5, 'port' is meanstd's port of
     getMeanStd and 'env' the tutorial's with the port's environment entries. The refit
-    regressions (intensity 'refit') carry their own normalization."""
+    regressions (intensity 'refit') carry their own normalization, that of their fit years."""
     if intensity != 'tutorial':
         if source != ERA5 or normalization != 'model':
             raise ValueError(f'intensity={intensity} is only for ERA5 with its own normalization')
         from ocr.risks.hurricane import refit
 
-        return refit.key(ERA5, 'coefficient_meanstd.nc')
+        return refit.key(refit.name(fit), 'coefficient_meanstd.nc')
     if source == ERA5:
         return {'port': 'validation/meanstd/era5.nc', 'env': 'validation/meanstd/era5_env.nc'}.get(
             normalization
@@ -129,6 +129,7 @@ OPTIONS = {
     'normalization': ('model', 'tutorial', 'port', 'env'),
     'genesis': ('tcgi', 'calibrated'),
     'intensity': ('tutorial', 'refit', 'refit-pi', 'refit-basin'),
+    'fit': ('1981-2012', '1981-1999'),
 }
 
 
@@ -192,6 +193,7 @@ class gv:
     # 'refit': refit.py's regressions, normalization and error pool; 'refit-pi' also splits the
     # error pool by ring PI (error_pool_pi); 'refit-basin' splits it by basin as well
     intensity = 'tutorial'
+    fit = '1981-2012'  # years of the observed tracks the refit variants were fit on
     llon = llat = lldmask = ldmask = None
 
 
@@ -249,6 +251,8 @@ def apply_options(options: dict[str, str]) -> None:
         setattr(gv, key, options.get(key, choices[0]))
     if gv.intensity != 'tutorial' and gv.land != 'fine':
         raise ValueError(f'intensity={gv.intensity} was fit on the land values of land=fine')
+    if gv.intensity == 'tutorial' and gv.fit != OPTIONS['fit'][0]:
+        raise ValueError('fit chooses the years of a refit; intensity=tutorial has none')
 
 
 def intensity_file(name: str) -> Path:
@@ -258,7 +262,7 @@ def intensity_file(name: str) -> Path:
         return static(gv.obpath if name == 'errors.nc' else name)
     from ocr.risks.hurricane import refit
 
-    return store.path(refit.key(ERA5, name))
+    return store.path(refit.key(refit.name(gv.fit), name))
 
 
 def getSeeding(iy, ratio):
@@ -1165,7 +1169,10 @@ def run_one(task):
     year, ichaz, ratio, n_members, tcgi_name, options, source = task
     gv.source = source
     gv.meanstd = meanstd_for(
-        source, options.get('normalization', 'model'), options.get('intensity', 'tutorial')
+        source,
+        options.get('normalization', 'model'),
+        options.get('intensity', 'tutorial'),
+        options.get('fit', OPTIONS['fit'][0]),
     )
     out = run_dir(run_name(tcgi_name, **options)) / f'{year}_r{ichaz:03d}.nc'
     if out.exists():
@@ -1412,7 +1419,7 @@ def main():
     add_options(la)
     add_source(la)
     a = p.parse_args()
-    gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization, a.intensity)
+    gv.source, gv.meanstd = a.source, meanstd_for(a.source, a.normalization, a.intensity, a.fit)
     options = {k: getattr(a, k) for k in OPTIONS if getattr(a, k, OPTIONS[k][0]) != OPTIONS[k][0]}
     apply_options(options)
     if a.cmd == 'run':

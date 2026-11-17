@@ -164,3 +164,20 @@ def test_basin_pool_without_wind_bins_falls_back_to_the_regime_pool(monkeypatch)
     monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f, b[None, :]), raising=False)
     assert (3, True) not in chaz.pool_pi
     assert chaz.find_error_pi(25.0, 100.0, True, 3) in (1.0, 7.0)
+
+
+def test_refit_years_choose_the_files_and_need_a_refit(monkeypatch):
+    assert refit.name('1981-2012') == chaz.ERA5
+    assert refit.name('1981-1999') == 'era5-1981-1999'
+    assert chaz.meanstd_for(chaz.ERA5, 'model', 'refit-basin', '1981-1999') == refit.key(
+        'era5-1981-1999', 'coefficient_meanstd.nc'
+    )
+    monkeypatch.setattr(store, 'path', lambda k: k)
+    chaz.apply_options({'intensity': 'refit-basin', 'land': 'fine', 'fit': '1981-1999'})
+    assert str(chaz.intensity_file('errors.nc')).endswith('era5-1981-1999/errors.nc')
+    with pytest.raises(ValueError):
+        chaz.apply_options({'fit': '1981-1999'})
+    chaz.apply_options({})
+    assert chaz.run_name('TCGI_CRH_PI', land='fine', intensity='refit-basin', fit='1981-1999') == (
+        'TCGI_CRH_PI-land-fine-intensity-refit-basin-fit-1981-1999'
+    )

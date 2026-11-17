@@ -24,6 +24,7 @@ also keeps to the basin the step starts in (chaz.basin; errors.nc is on the obse
 grid, so their positions give each step's basin).
 
     python -m ocr.risks.hurricane.refit fit
+    python -m ocr.risks.hurricane.refit fit --years 1981-1999   # scored on 2000-2012 as well
     python -m ocr.risks.hurricane.refit check   # the same fit on the tutorial's own environment
 """
 
@@ -43,6 +44,16 @@ FILES = ('result_w.nc', 'result_l.nc', 'coefficient_meanstd.nc', 'errors.nc')
 
 def key(name: str, file: str) -> str:
     return f'{OUT}/{name}/{file}'
+
+
+def name(fit: str) -> str:
+    """The ERA5 refit of observed-track years `fit` ('1981-1999'): 'era5' for meanstd.YEARS."""
+    return 'era5' if fit == '{}-{}'.format(*meanstd.YEARS) else f'era5-{fit}'
+
+
+def years_of(fit: str) -> tuple[int, int]:
+    y0, y1 = (int(y) for y in fit.split('-'))
+    return y0, y1
 
 
 def fine_land(bt: xr.Dataset) -> np.ndarray:
@@ -210,6 +221,44 @@ def residuals_by_pi(f: dict):
     )
 
 
+def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label: str) -> None:
+    """A fit's 12-hour predictions on the observed steps of `years`: fit statistics, and the
+    mean residual (observed minus predicted) by basin at 64-96 kt."""
+    import pandas as pd
+
+    bt = meanstd.observed()
+    lat, lon = bt['StormLat'].values, bt['StormLon'].values
+    frames = []
+    for tag, preds, water, _ in meanstd.SETS:
+        X, Y, ok = meanstd.samples(env, preds, water, years)
+        rows = meanstd.steps(env['landmaskMean'], water, years, bt)[ok]
+        X, Y = X[ok], Y[ok]
+        c = f[tag]
+        z = (X - c['meanX'][1:]) / c['stdX'][1:]
+        dy = (c['params'][0] + z @ c['params'][1:]) * c['stdY'] + c['meanY']
+        print(
+            f'{tag}, {label}, {years[0]}-{years[1]}: n {len(Y)}, '
+            f'R2 {1 - np.var(Y - dy) / np.var(Y):.3f}, rmse {np.sqrt(np.mean((Y - dy) ** 2)):.2f} kt, '
+            f'mean residual {np.mean(Y - dy):+.2f} kt'
+        )
+        s, i0 = rows[:, 0], rows[:, 1] - meanstd.LEAD
+        frames.append(
+            pd.DataFrame(
+                {
+                    'regression': tag,
+                    'basin': [chaz.BASINS[b] for b in chaz.basin(lat[i0, s], lon[i0, s])],
+                    'v0': X[:, preds.index('StormMwspd')],
+                    'residual': Y - dy,
+                }
+            )
+        )
+    d = pd.concat(frames)
+    d = d[(d['v0'] >= 64) & (d['v0'] < 96)]
+    g = d.groupby(['regression', 'basin'])['residual']
+    print(f'\n{label}: residual at 64-96 kt by basin, {years[0]}-{years[1]} (kt)')
+    print(pd.DataFrame({'n': g.size(), 'mean': g.mean()}).round(2).to_string())
+
+
 def report(f: dict) -> None:
     import pandas as pd
 
@@ -252,24 +301,31 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = p.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('fit', help='refit on ERA5 and push the four files')
+    fp = sub.add_parser('fit', help='refit on ERA5 and push the four files')
+    fp.add_argument('--years', default='{}-{}'.format(*meanstd.YEARS))
     sub.add_parser('check', help='refit on the tutorial file environment and print it')
     a = p.parse_args()
     if a.cmd == 'check':
         report(fit(tutorial_env()))
         return
-    f = fit(era5_env())
+    env, years = era5_env(), years_of(a.years)
+    f = fit(env, years)
     report(f)
+    if years[1] < meanstd.YEARS[1]:
+        rest = (years[1] + 1, meanstd.YEARS[1])
+        print()
+        held_out(f, env, rest, f'fit {a.years}, held out')
+        held_out(fit(env), env, rest, 'fit {}-{}, in sample'.format(*meanstd.YEARS))
     attrs = {
         'forcing': store.FORCING,
         'environment': str(Path(meanstd.ERA5_PORT).with_suffix('.env.npz')),
         'land': 'chaz --land fine',
-        'years': f'{meanstd.YEARS[0]}-{meanstd.YEARS[1]}',
+        'years': a.years,
         'tracks': chaz.gv.obpath,
     }
     keys = []
     for file, ds in datasets(f, attrs).items():
-        k = key('era5', file)
+        k = key(name(a.years), file)
         local = store.CACHE / k
         local.parent.mkdir(parents=True, exist_ok=True)
         ds.to_netcdf(local)
