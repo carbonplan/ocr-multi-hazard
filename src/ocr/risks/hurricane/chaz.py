@@ -128,7 +128,7 @@ OPTIONS = {
     'land': ('shared', 'separate', 'fine'),
     'normalization': ('model', 'tutorial', 'port', 'env'),
     'genesis': ('tcgi', 'calibrated'),
-    'intensity': ('tutorial', 'refit', 'refit-pi'),
+    'intensity': ('tutorial', 'refit', 'refit-pi', 'refit-basin'),
 }
 
 
@@ -190,7 +190,7 @@ class gv:
     # 'calibrated' multiplies the genesis index by calibrate.py's regional map when seeding
     genesis = 'tcgi'
     # 'refit': refit.py's regressions, normalization and error pool; 'refit-pi' also splits the
-    # error pool by ring PI (error_pool_pi)
+    # error pool by ring PI (error_pool_pi); 'refit-basin' splits it by basin as well
     intensity = 'tutorial'
     llon = llat = lldmask = ldmask = None
 
@@ -743,14 +743,57 @@ PI_BINS = 3
 PI_BIN_MIN = 150
 
 
-def error_pool_pi(f):
+BASINS = ('NA', 'EP', 'WP', 'NI', 'SH')
+BASIN_MIN = 500
+
+
+def basin(lat, lon) -> np.ndarray:
+    """Index into BASINS of each position, -1 where it is missing. The North Atlantic is the
+    Atlantic side of the Central American divide, 100W to 30E; the North Indian Ocean 30-100E,
+    the western Pacific 100-180E, the eastern Pacific the rest of the Northern Hemisphere."""
+    lat = np.asarray(lat, dtype=float)
+    lon = np.asarray(lon, dtype=float) % 360
+    w = (lon + 180) % 360 - 180
+    pacific = ((w < -84) & (lat < 9)) | ((w < -90) & (lat < 15)) | ((w < -98) & (lat < 18))
+    out = np.full(lat.shape, -1)
+    north = np.isfinite(lat) & np.isfinite(lon) & (lat >= 0)
+    out[north] = 1
+    out[north & (w >= -100) & (w < 30) & ~pacific] = 0
+    out[north & (lon >= 30) & (lon < 100)] = 3
+    out[north & (lon >= 100) & (lon < 180)] = 2
+    out[np.isfinite(lat) & np.isfinite(lon) & (lat < 0)] = 4
+    return out
+
+
+def _pi_pool(er, vr, pr):
+    """(cat1, per wind bin (PI edges, cells, whole bin)) for one pool of errors."""
+    cat1 = wind_bins(vr)
+    k = wind_bin(vr, cat1)
+    pools = []
+    for j in range(len(cat1)):
+        ej, pj = er[k == j], pr[k == j]
+        edges = (
+            np.unique(np.quantile(pj, np.arange(1, PI_BINS) / PI_BINS))
+            if ej.size >= PI_BIN_MIN
+            else np.array([])
+        )
+        cell = np.searchsorted(edges, pj, side='right')
+        pools.append((edges, [ej[cell == i] for i in range(len(edges) + 1)], ej))
+    filled = [j for j, pool in enumerate(pools) if pool[2].size]
+    return cat1, [pools[min(filled, key=lambda i: abs(i - j))] for j in range(len(pools))]
+
+
+def error_pool_pi(f, basins=None):
     """intensity 'refit-pi': separate error pools for water and land steps (refit's errors.nc
     'water'). A step draws from errors of steps of its regime that start in its wind bin and the
-    same tercile of ring PI over the step (PIstep). Wind bins:
-    below cat1[1], [cat1[j], cat1[j + 1]), and at or above cat1[-1]; a bin with fewer than
-    PI_BIN_MIN errors is not split, repeated terciles merge, a draw from an empty cell takes the
-    whole wind bin, and an empty wind bin takes the nearest populated one (the lower on a tie). Returns {True: water pool, False: land pool}, each (cat1, per-bin
-    (PI edges, cells, whole bin))."""
+    same tercile of ring PI over the step (PIstep). Wind bins: below cat1[1],
+    [cat1[j], cat1[j + 1]), and at or above cat1[-1]; a bin with fewer than PI_BIN_MIN errors is
+    not split, repeated terciles merge, a draw from an empty cell takes the whole wind bin, and an
+    empty wind bin takes the nearest populated one (the lower on a tie). Returns {True: water
+    pool, False: land pool}, each (cat1, per-bin (PI edges, cells, whole bin)).
+
+    With `basins` (basin() of each step's first node, on errors.nc's grid), for 'refit-basin',
+    it also holds a pool per (basin, regime) with at least BASIN_MIN errors."""
     NS = np.argwhere((f['StormYear'][:] >= 1981) & (f['StormYear'][:] <= 2012))[:, 0]
     keys = ('errors', 'StormMwspd', 'PIstep', 'water')
     e, v, pi, water = (ma.getdata(f[k][:])[:, NS].ravel() for k in keys)
@@ -758,24 +801,16 @@ def error_pool_pi(f):
     out = {}
     for regime in (True, False):
         sel = ok & ((water == 1) == regime)
-        er, vr, pr = e[sel], v[sel], pi[sel]
-        if er.size == 0:
+        if not sel.any():
             raise ValueError(f'no {"water" if regime else "land"} errors in the error pool')
-        cat1 = wind_bins(vr)
-        k = wind_bin(vr, cat1)
-        pools = []
-        for j in range(len(cat1)):
-            ej, pj = er[k == j], pr[k == j]
-            edges = (
-                np.unique(np.quantile(pj, np.arange(1, PI_BINS) / PI_BINS))
-                if ej.size >= PI_BIN_MIN
-                else np.array([])
-            )
-            cell = np.searchsorted(edges, pj, side='right')
-            pools.append((edges, [ej[cell == i] for i in range(len(edges) + 1)], ej))
-        filled = [j for j, pool in enumerate(pools) if pool[2].size]
-        pools = [pools[min(filled, key=lambda i: abs(i - j))] for j in range(len(pools))]
-        out[regime] = (cat1, pools)
+        out[regime] = _pi_pool(e[sel], v[sel], pi[sel])
+        if basins is None:
+            continue
+        b = np.asarray(basins)[:, NS].ravel()
+        for i in range(len(BASINS)):
+            here = sel & (b == i)
+            if here.sum() >= BASIN_MIN:
+                out[(i, regime)] = _pi_pool(e[here], v[here], pi[here])
     return out
 
 
@@ -783,12 +818,15 @@ def wind_bin(v, cat1):
     return np.clip(np.searchsorted(cat1, v, side='right') - 1, 0, len(cat1) - 1)
 
 
-def find_error_pi(v0, pi, water: bool):
-    """findError for 'refit-pi'; v0 and pi may be one-element arrays, as get_stochastic has them."""
+def find_error_pi(v0, pi, water: bool, basin_index=None):
+    """findError for 'refit-pi', and for 'refit-basin' with the step's basin (the regime's
+    pool where its basin has none); v0 and pi may be one-element arrays, as get_stochastic has
+    them."""
     v0, pi = np.asarray(v0, dtype=float).item(), np.asarray(pi, dtype=float).item()
     if v0 != v0:
         return 0
-    cat1, pools = pool_pi[water]
+    key = water if basin_index is None else (int(basin_index), water)
+    cat1, pools = pool_pi.get(key, pool_pi[water])
     edges, cells, everything = pools[int(wind_bin(v0, cat1))]
     pool = everything if pi != pi else cells[int(np.searchsorted(edges, pi, side='right'))]
     return random.choice(pool if len(pool) else everything)
@@ -945,11 +983,14 @@ def get_stochastic(iiS):
                     v0,
                     dvdt,
                 )
-                if gv.intensity == 'refit-pi':
+                if gv.intensity in ('refit-pi', 'refit-basin'):
                     error = find_error_pi(
                         v0,
                         nanmean(bt.PIwspdMean[it : it + lT + 1, iS]),
                         predictors is PREDICTORS_W,
+                        basin(bt.StormLat[it, iS], bt.StormLon[it, iS]).item()
+                        if gv.intensity == 'refit-basin'
+                        else None,
                     )
                 else:
                     error = findError(E0, v0E, v0, cat1)
@@ -990,10 +1031,15 @@ def calIntensity(n_members: int):
         result_l = ma.getdata(f['params'][:])
     NS = np.argwhere((bt2['StormYear'][:] >= 1981) & (bt2['StormYear'][:] <= 2012))[:, 0]
     intV = bt2['StormMwspd'][:][0, NS]
+    basins = (
+        basin(*(ma.filled(bt2[k][:].astype(float), np.nan) for k in ('StormLat', 'StormLon')))
+        if gv.intensity == 'refit-basin'
+        else None
+    )
     bt2.close()
     with nc.Dataset(intensity_file('errors.nc'), 'r') as f:
         E0, v0E, cat1 = get_E1(f)
-        pool_pi = error_pool_pi(f) if gv.intensity == 'refit-pi' else None
+        pool_pi = error_pool_pi(f, basins) if gv.intensity in ('refit-pi', 'refit-basin') else None
 
     with nc.Dataset(normalization(), 'r') as f:
         meanX_w = ma.getdata(f['meanX_w'][:])

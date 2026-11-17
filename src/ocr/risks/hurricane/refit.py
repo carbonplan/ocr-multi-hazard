@@ -19,7 +19,9 @@ prediction minus the observed wind 12 hours on, kept at the step's first node, a
 tutorial's bt_global_predictors.nc. chaz --intensity refit reads all four files. errors.nc also
 keeps each step's ring PI (PIstep) and regression (water), for chaz --intensity refit-pi, which
 draws a step's error from steps under the same regression that start in v0's wind bin and the
-same tercile of ring PI (chaz.error_pool_pi).
+same tercile of ring PI (chaz.error_pool_pi), and for chaz --intensity refit-basin, which
+also keeps to the basin the step starts in (chaz.basin; errors.nc is on the observed tracks'
+grid, so their positions give each step's basin).
 
     python -m ocr.risks.hurricane.refit fit
     python -m ocr.risks.hurricane.refit check   # the same fit on the tutorial's own environment

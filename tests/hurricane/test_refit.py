@@ -119,3 +119,33 @@ def test_pi_error_pool_empty_wind_bins_take_the_nearest_populated_bin(monkeypatc
         assert chaz.find_error_pi(65.0, 100.0, regime) == 1.0
     with pytest.raises(ValueError):
         chaz.error_pool_pi(pool_file(v, v, errors, np.ones(v.size)))
+
+
+def test_basin_of_positions():
+    lat = np.array([25.0, 15.0, 15.0, 10.0, 15.0, 15.0, 15.0, -15.0, 40.0, np.nan])
+    lon = np.array([-90.0, -40.0, 340.0, -95.0, 260.0, 135.0, 88.0, 150.0, 10.0, 0.0])
+    want = ['NA', 'NA', 'NA', 'EP', 'EP', 'WP', 'NI', 'SH', 'NA']
+    got = chaz.basin(lat, lon)
+    assert [chaz.BASINS[i] for i in got[:-1]] == want
+    assert got[-1] == -1
+
+
+def test_basin_error_pool_keeps_to_the_basin_and_falls_back_without_one(monkeypatch):
+    rng = np.random.default_rng(1)
+    n = 4000
+    v = rng.uniform(20, 140, n)
+    pi = rng.uniform(40, 190, n)
+    water = (np.arange(n) % 4 != 0).astype(float)
+    b = np.where(np.arange(n) < 3000, 0, 4)
+    b[-200:] = 3  # too few NI steps for a pool of its own
+    errors = np.where(b == 0, 1.0, np.where(b == 4, -1.0, 0.0))
+    f = pool_file(v, pi, errors, water)
+    monkeypatch.setattr(chaz, 'pool_pi', chaz.error_pool_pi(f, b[None, :]), raising=False)
+    assert (3, True) not in chaz.pool_pi and (4, False) not in chaz.pool_pi
+    for _ in range(20):
+        assert chaz.find_error_pi(80.0, 150.0, True, 0) == 1.0
+        assert chaz.find_error_pi(80.0, 150.0, True, 4) == -1.0
+    draws = {chaz.find_error_pi(80.0, 150.0, True, 3) for _ in range(200)}
+    assert draws <= {1.0, -1.0, 0.0} and len(draws) > 1
+    assert chaz.find_error_pi(80.0, 150.0, False, 0) == 1.0
+    assert len({chaz.find_error_pi(80.0, 150.0, False, 4) for _ in range(200)}) > 1
