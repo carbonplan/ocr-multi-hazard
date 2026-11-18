@@ -16,8 +16,11 @@ ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```toml
 risk = "flood"
 version = "v2.0.0"
-stages = ["pyramid", "buildings", "regions"]
+stages = ["score", "pyramid", "buildings", "regions"]
 coiled = true
+
+[kwargs.score]
+run = "noaa-200612-202512"
 
 [kwargs.buildings]          # keyword args of the stage's utils, checked before any job starts
 point_strategy = "ST_Centroid"
