@@ -19,7 +19,8 @@ days), then regridded, interpolated to each real calendar day and factored, as C
 
     python -m ocr.risks.hurricane.cmip <command>
 
-    raw       one year's model fields: genesis inputs before correction, I_MLR, PI, Cov, A
+    raw       one year's model fields: genesis inputs before correction, I_MLR, PI, Cov, A;
+              with --genesis-only, CRH and SD recomputed in that year's genesis_raw file
     correct   the bias correction from the 1981-2010 climatologies, then TCGI for every year
     launch    one Coiled task per year for `raw`, then `correct`
 """
@@ -167,6 +168,69 @@ def monthly_means(daily: xr.Dataset) -> xr.Dataset:
     return m.rename(month='time')
 
 
+def monthly_fields(year: int, exp: str, model: str, member: str) -> dict:
+    """One year's monthly model fields on the 2-degree grid: temperature and specific humidity on
+    pressure levels, sea-level pressure (hPa), column water vapour, SST (K, the model's surface
+    temperature where its land fraction is under 50%, extended over its coasts), the surface
+    temperature W*'s bottom layer reads, mean 500-850 hPa relative humidity, and how many
+    below-ground temperatures were filled."""
+    months = pd.date_range(f'{year}-01-01', periods=12, freq='MS')
+
+    def monthly(var: str, levels=None) -> xr.DataArray:
+        da = _open(var, 'Amon', exp, model, member)
+        if levels is not None:
+            da = da.sel(level=levels)
+        da = _year(da, year)
+        if da.sizes['time'] != 12:
+            raise ValueError(f'{year}: {var} has {da.sizes["time"]} months')
+        return da
+
+    def grid(da: xr.DataArray) -> xr.DataArray:
+        return regrid(da).assign_coords(time=months)
+
+    ta = monthly('ta')
+    hus = monthly('hus')
+    filled = int(ta.isnull().sum())
+    ts = monthly('ts')
+    sea = ocean_fraction(model).reindex_like(ts, method='nearest', tolerance=1e-3) < 50
+    sst_k = grid(extend_ocean(ts.where(sea)))
+    return {
+        'ta': grid(hold_lowest(ta)),
+        'hus': grid(hold_lowest(hus)),
+        'psl': grid(monthly('psl')) / 100,
+        'prw': grid(monthly('prw')),
+        'sst_k': sst_k,
+        # where the model's sea does not reach a cell, W*'s bottom layer reads the model's
+        # surface temperature, as the CHAZ team's TCGI code does
+        'surface_k': sst_k.fillna(grid(ts)),
+        'hur': grid(monthly('hur', [500, 700, 850]).mean('level')),
+        'filled': filled,
+    }
+
+
+def raw_moisture(
+    year: int,
+    model: str = MODEL,
+    member: str = MEMBER,
+    future: str = 'ssp585',
+    kelvin: float = tcgi.KELVIN_CHAZ,
+) -> str:
+    """CRH and SD recomputed in the year's genesis_raw file; its other fields are kept."""
+    exp = experiment(year, future)
+    key = f'{root(exp, model, member)}/{year}/genesis_raw_{year}.nc'
+    with xr.open_dataset(store.path(key)) as ds:
+        g = ds.load()
+    f = monthly_fields(year, exp, model, member)
+    crh, sd = tcgi.moisture(f['ta'], f['prw'], f['psl'], f['surface_k'], kelvin)
+    g['CRH'] = crh.drop_vars('level', errors='ignore').transpose('time', 'lat', 'lon')
+    g['SD'] = sd.drop_vars('level', errors='ignore').transpose('time', 'lat', 'lon')
+    local = store.CACHE / key
+    part = local.with_suffix('.part')
+    g.to_netcdf(part)
+    part.rename(local)
+    return key
+
+
 def raw(
     year: int,
     model: str = MODEL,
@@ -196,33 +260,11 @@ def raw(
     g['avor'] = vorticity(native).assign_coords(time=months)
     g['vws'] = tcgi.wind_shear(winds['u250'], winds['v250'], winds['u850'], winds['v850'])
 
-    def monthly(var: str, levels=None) -> xr.DataArray:
-        da = _open(var, 'Amon', exp, model, member)
-        if levels is not None:
-            da = da.sel(level=levels)
-        da = _year(da, year)
-        if da.sizes['time'] != 12:
-            raise ValueError(f'{year}: {var} has {da.sizes["time"]} months')
-        return da
-
-    ta = monthly('ta')
-    hus = monthly('hus')
-    filled = int(ta.isnull().sum())
-    ta, hus = hold_lowest(ta), hold_lowest(hus)
-    t2, q2 = regrid(ta).assign_coords(time=months), regrid(hus).assign_coords(time=months)
-    psl = regrid(monthly('psl')).assign_coords(time=months) / 100
-    prw = regrid(monthly('prw')).assign_coords(time=months)
-    ts = monthly('ts')
-    sea = ocean_fraction(model).reindex_like(ts, method='nearest', tolerance=1e-3) < 50
-    sst_k = regrid(extend_ocean(ts.where(sea))).assign_coords(time=months)
+    f = monthly_fields(year, exp, model, member)
+    t2, psl, sst_k = f['ta'], f['psl'], f['sst_k']
     sst = sst_k - 273.15
-    hur = regrid(monthly('hur', [500, 700, 850]).mean('level')).assign_coords(time=months)
-
-    # W*'s bottom layer reads the SST; where the model's sea does not reach a cell, its surface
-    # temperature, as the model's ts is what the CHAZ team's TCGI code reads there
-    surface_k = sst_k.fillna(regrid(ts).assign_coords(time=months))
-    g['CRH'], g['SD'] = tcgi.moisture(t2, prw, psl, surface_k, kelvin)
-    pi, flag = tcgi.potential_intensity(sst, psl, t2 - 273.15, q2 * 1000, flags=True)
+    g['CRH'], g['SD'] = tcgi.moisture(t2, f['prw'], psl, f['surface_k'], kelvin)
+    pi, flag = tcgi.potential_intensity(sst, psl, t2 - 273.15, f['hus'] * 1000, flags=True)
     # no PI (cold water, or a cell the model's ocean does not reach) is 0, as in ERA5's PI files
     g['PI'] = pi.where(sst.notnull()).fillna(0.0).where(ocean | sst.notnull())
     g['pi_flag'] = flag.where(sst.notnull())
@@ -232,7 +274,7 @@ def raw(
             'model': model,
             'member': member,
             'experiment': exp,
-            'below_ground_ta_filled': filled,
+            'below_ground_ta_filled': f['filled'],
             'below_ground_850_wind_filled': daily.attrs['below_ground_850_filled'],
             'calendar': str(daily['time'].dt.calendar),
         }
@@ -243,7 +285,7 @@ def raw(
     pi0 = g['PI'].where(ocean, 0.0)
     save(pi0.to_dataset(name='vmax'), f'PI_{year}.nc')
     mlr = winds.copy()
-    mlr['hur'] = hur
+    mlr['hur'] = f['hur']
     mlr['PI'] = pi0
     save(
         mlr.drop_vars('level', errors='ignore').transpose('time', 'lat', 'lon'), f'I_MLR_{year}.nc'
@@ -265,7 +307,14 @@ def raw(
     return written
 
 
-def raw_task(year: int, model: str = MODEL, member: str = MEMBER) -> None:
+def raw_task(
+    year: int, model: str = MODEL, member: str = MEMBER, genesis_only: bool = False
+) -> None:
+    if genesis_only:
+        key = raw_moisture(year, model, member)
+        store.push(keys=[key], fragment=f'cmip6-{model}-{member}-{year}-moisture', replace=True)
+        print(f'{year}: {key} on S3', flush=True)
+        return
     raw(year, model, member)
     exp = experiment(year)
     files = store.push(
@@ -384,11 +433,13 @@ def years(future: str = 'ssp585') -> list[int]:
     ]
 
 
-def launch_raw(vm_type: str, max_workers: int, spot: bool = True) -> None:
+def launch_raw(
+    vm_type: str, max_workers: int, spot: bool = True, genesis_only: bool = False
+) -> None:
     batch.run(
         'cmip',
-        ['raw-task'],
-        name=f'chaz-cmip6-{MODEL}-{MEMBER}-raw',
+        ['raw-task', *(['--genesis-only'] if genesis_only else [])],
+        name=f'chaz-cmip6-{MODEL}-{MEMBER}-{"moisture" if genesis_only else "raw"}',
         over=years(),
         vm_type=vm_type,
         max_workers=max_workers,
@@ -403,23 +454,25 @@ def main() -> None:
     sub = p.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('raw')
     r.add_argument('--year', type=int, required=True)
-    sub.add_parser('raw-task')
+    rt = sub.add_parser('raw-task')
     sub.add_parser('correct')
     la = sub.add_parser('launch-raw')
     la.add_argument('--vm-type', default='m8g.xlarge')
     la.add_argument('--max-workers', type=int, default=20)
     la.add_argument('--on-demand', action='store_true')
+    for q in (r, rt, la):
+        q.add_argument('--genesis-only', action='store_true')
     lc = sub.add_parser('launch-correct')
     lc.add_argument('--vm-type', default='m8g.xlarge')
     a = p.parse_args()
     if a.cmd == 'raw':
-        print(raw(a.year))
+        print(raw_moisture(a.year) if a.genesis_only else raw(a.year))
     elif a.cmd == 'raw-task':
-        raw_task(int(os.environ['COILED_BATCH_TASK_INPUT']))
+        raw_task(int(os.environ['COILED_BATCH_TASK_INPUT']), genesis_only=a.genesis_only)
     elif a.cmd == 'correct':
         correct()
     elif a.cmd == 'launch-raw':
-        launch_raw(a.vm_type, a.max_workers, not a.on_demand)
+        launch_raw(a.vm_type, a.max_workers, not a.on_demand, a.genesis_only)
     else:
         batch.run(
             'cmip',
