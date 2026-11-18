@@ -333,7 +333,7 @@ def released(kind: str) -> pd.DataFrame:
 
 def cmd_build(args) -> None:
     if args.coiled:
-        argv = ['fdp_points.py', 'build', '--runs', *args.runs, '--seeds', *map(str, args.seeds)]
+        argv = ['fdp_points', 'build', '--runs', *args.runs, '--seeds', *map(str, args.seeds)]
         argv += ['--noaa-from', args.noaa_from] if args.noaa_from else []
         argv += ['--overwrite'] if args.overwrite else []
         launch('fdp-points', argv, vm_type=args.vm_type)

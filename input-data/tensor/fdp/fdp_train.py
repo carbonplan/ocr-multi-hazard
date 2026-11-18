@@ -64,6 +64,7 @@ from fdp_points import RUNS, SEED, run_key
 from rasterio.windows import Window
 
 HERE = Path(__file__).resolve().parent
+R_DIR = Path(sys.prefix) / 'share' / 'fdp-refit'  # where the fdp-refit package installs them
 R_SCRIPT = 'train_fdp.R'
 CONTRIB_SCRIPT = 'contrib_fdp.R'
 SE_SCRIPT = 'se_fdp.R'
@@ -77,10 +78,10 @@ def model_prefix(run: str, distance: str, quick: bool, huc: str) -> str:
 
 
 def r_script(name: str = R_SCRIPT) -> Path:
-    for path in (HERE / name, Path.cwd() / name):
+    for path in (HERE / name, R_DIR / name):
         if path.exists():
             return path
-    sys.exit(f'{name} not found next to {__file__} or in {Path.cwd()}')
+    sys.exit(f'{name} not found next to {__file__} or in {R_DIR}')
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +449,7 @@ def cmd_se(args) -> None:
 
 
 def cmd_launch(args) -> None:
-    task = ['fdp_train.py', 'task', '--run', args.run, '--distance', args.distance]
+    task = ['fdp_train', 'task', '--run', args.run, '--distance', args.distance]
     task += [f'--{flag}' for flag in ('quick', 'contributions', 'se') if getattr(args, flag)]
     launch(
         f'fdp-{args.run}-{args.distance}{"-quick" if args.quick else ""}',

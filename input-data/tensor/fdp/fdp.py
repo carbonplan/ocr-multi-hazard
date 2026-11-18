@@ -7,7 +7,6 @@ conterminous United States", USGS ScienceBase doi:10.5066/P954TTQN.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import subprocess
@@ -17,7 +16,6 @@ import zipfile
 from pathlib import Path
 
 import requests
-import s3fs
 
 BUCKET = 'carbonplan-ocr'
 REFIT = 'input/flood/fdp-refit'  # training inputs and model runs, read by ocr.risks.flood.refit
@@ -30,18 +28,6 @@ PROJ4 = (
 )
 SB_ITEM = '6170694ed34ea36449a67ef7'
 CACHE = Path(os.environ.get('FDP_CACHE', Path.home() / '.cache/ocr/fdp'))
-HERE = Path(__file__).resolve().parent
-# What a Coiled VM fetches to run any of the scripts (`launch`).
-CODE = (
-    'fdp.py',
-    'fdp_inputs.py',
-    'fdp_points.py',
-    'fdp_train.py',
-    'train_fdp.R',
-    'contrib_fdp.R',
-    'fdp_contrib.cpp',
-    'se_fdp.R',
-)
 
 
 def sciencebase_url(name: str) -> str:
@@ -90,16 +76,6 @@ def extract_tif(zip_path: Path, dest: Path) -> None:
             shutil.copyfileobj(src, out, length=32 * 1024 * 1024)
 
 
-def stage_code() -> str:
-    """Copy the scripts to S3 under a hash of their contents; returns the prefix."""
-    digest = hashlib.sha256(b''.join((HERE / name).read_bytes() for name in CODE)).hexdigest()
-    prefix = f'{BUCKET}/{REFIT}/code/{digest[:12]}'
-    s3 = s3fs.S3FileSystem()
-    for name in CODE:
-        s3.put_file(str(HERE / name), f'{prefix}/{name}')
-    return prefix
-
-
 def launch(
     name: str,
     script: list[str],
@@ -110,9 +86,10 @@ def launch(
     map_over: list[str] | None = None,
     conda_extras: list[str] | tuple[str, ...] = (),
 ) -> None:
-    """Run `python <script...>` on a Coiled VM (x86, us-west-2, next to the bucket), from the
-    scripts as they are now (`stage_code`); with `map_over`, one VM per value, which the script
-    reads from $COILED_BATCH_TASK_INPUT. The VM uses the Coiled workspace's AWS access."""
+    """Run `python -m <module> <args...>` (`script`) on a Coiled VM (x86, us-west-2, next to the
+    bucket); with `map_over`, one VM per value, which the module reads from
+    $COILED_BATCH_TASK_INPUT. Package sync ships these scripts as they are now, installed in the
+    `fdp` environment as the fdp-refit package. The VM uses the Coiled workspace's AWS access."""
     cmd = [
         'coiled',
         'batch',
@@ -134,7 +111,7 @@ def launch(
         cmd += ['--map-over-values', ','.join(map_over)]
     for pkg in conda_extras:
         cmd += ['--package-sync-conda-extras', pkg]
-    cmd += ['--', 'bash', str(HERE / 'fdp_task.sh'), stage_code(), *script]
+    cmd += ['--', 'python', '-m', *script]
     print(' '.join(cmd))
     subprocess.run(cmd, check=True)
 

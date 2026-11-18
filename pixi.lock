@@ -3884,6 +3884,8 @@ environments:
   fdp:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
+    indexes:
+    - https://pypi.org/simple
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -4234,6 +4236,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zarr-3.4.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zict-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.2-pyh5ded981_0.conda
+      - pypi: ./input-data/tensor/fdp
       osx-arm64-15:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_r-mutex-1.0.1-anacondar_1.tar.bz2
@@ -4594,6 +4597,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-1.3.2-h8088a28_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-h31dac16_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hf451053_7.conda
+      - pypi: ./input-data/tensor/fdp
   flood:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -16156,6 +16160,9 @@ packages:
   - matplotlib>=3.11.0,<4 ; extra == 'data-mgmt'
   - netcdf4>=1.7.5,<2 ; extra == 'data-mgmt'
   - patool>=4.1.0,<5 ; extra == 'data-mgmt'
+  requires_python: '>=3.13'
+- pypi: ./input-data/tensor/fdp
+  name: fdp-refit
   requires_python: '>=3.13'
 - pypi: git+https://github.com/Shane98c/geoparquet-lod.git?rev=5f4556a6d581ad850f247893652484fb713f7dfe#5f4556a6d581ad850f247893652484fb713f7dfe
   name: geoparquet-lod

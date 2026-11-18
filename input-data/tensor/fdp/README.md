@@ -37,11 +37,11 @@ pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-2006
 ocr run runs/flood/v2.0.0.toml
 ```
 
-Without `--coiled`, steps 1 and 2 run locally; `fdp_train.py task --run <run> --huc 03`
-trains one watershed locally. Coiled jobs copy these scripts to
-`input/flood/fdp-refit/code/<hash>/` and run them from there (`fdp.launch`), with the
-Coiled workspace's AWS access; launching needs local AWS credentials to copy the scripts
-there.
+Without `--coiled`, steps 1 and 2 run locally; `fdp_train.py task --run <run> --huc 03` trains
+one watershed locally. The `fdp` environment installs these scripts as the `fdp-refit` package
+(`pyproject.toml` here), so Coiled package sync ships the local copies, uncommitted edits
+included; the jobs (`fdp.launch`) use the Coiled workspace's AWS access, and launching needs no
+local AWS credentials.
 
 Runs:
 

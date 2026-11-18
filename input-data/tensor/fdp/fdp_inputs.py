@@ -310,7 +310,7 @@ def stage_published(work: Path) -> None:
 
 def cmd_stage(args) -> None:
     if args.coiled:
-        launch('fdp-inputs', ['fdp_inputs.py', 'stage'], vm_type=args.vm_type)
+        launch('fdp-inputs', ['fdp_inputs', 'stage'], vm_type=args.vm_type)
         return
     manifest = read_manifest()
     s3 = s3fs.S3FileSystem()
