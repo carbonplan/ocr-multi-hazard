@@ -81,8 +81,11 @@ and runs it as batch jobs on [Coiled](https://www.coiled.io/) cloud machines. It
 public code and the tutorial's files. Departures from them are command-line options of `chaz`; the
 main ones:
 
-- `--steering diagonal` keeps only the diagonal of the steering noise's covariance factor, as the
-  tutorial's notebook code does. The default uses the full factor in the tutorial's files.
+- `--steering diagonal` zeroes the off-diagonal entries of the steering noise's covariance factor,
+  so the noise in each wind component is drawn independently of the others. The default
+  (`lower`) uses the full lower Cholesky factor, which is what the tutorial's forcing files hold.
+  The tutorial's notebook code, as written, transposes that factor, which leaves CHAZ reading
+  only its diagonal. The CHAZ team's ERA5 tracks are consistent with the diagonal version.
 - `--land fine` reads the land term at the storm's position on the tutorial's 1/12° land mask, and
   `--land separate` reads the 300 km land mean the regression was fit on. The default (`shared`)
   reads the 2° mask cell the storm is in, as the public code does.
