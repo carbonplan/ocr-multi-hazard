@@ -22,6 +22,9 @@ X0, Y0, RES = -2_000_000.0, 2_000_000.0, 100.0
 SHEDS = {'03': (0, 0, 40, 50), '05': (20, 40, 44, 56)}
 BASELINES = {'03': 0.4, '05': 0.6}
 OUT = OutputPaths(Risk.FLOOD, 'v0.0.1')
+R_VERSION = 'R version 4.5.3 (2026-03-11)'
+PACKAGES = ('raster', 'terra', 'sp', 'dismo', 'ranger', 'tuneRanger', 'mlr')
+VERSIONS = ('3.6.32', '1.9.50', '2.2.3', '1.3.16', '0.18.0', '0.8.1', '2.19.4')
 
 
 def _write_tif(path: Path, data: np.ndarray, row: int, col: int, nodata) -> None:
@@ -67,6 +70,9 @@ def _write_run(root: Path, sheds=SHEDS, baselines=BASELINES, disjoint: bool = Tr
             'method': 'saabas',
         }
         (out / 'contributions.json').write_text(json.dumps(meta))
+        packages = list(VERSIONS) if huc == '03' else dict(zip(PACKAGES, VERSIONS))
+        summary = {'r': R_VERSION, 'packages': packages}
+        (out / 'summary.json').write_text(json.dumps(summary))
 
 
 @pytest.fixture
@@ -106,6 +112,9 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     assert ds.odc.crs == 'EPSG:5070'
     assert ds.attrs['drivers'] == DRIVERS and ds.attrs['baselines'] == BASELINES
     assert ds.attrs['run'] == 'test-run' and ds.attrs['hucs'] == ['03', '05']
+    # 03's summary.json lists the versions unnamed
+    software = {'r': R_VERSION, 'packages': dict(zip(PACKAGES, VERSIONS))}
+    assert ds.attrs['software'] == {'03': software, '05': software}
     np.testing.assert_allclose(ds.x[:2], [X0 + 50, X0 + 150])
     np.testing.assert_allclose(ds.y[:2], [Y0 - 50, Y0 - 150])
 

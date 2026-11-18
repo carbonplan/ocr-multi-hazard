@@ -186,6 +186,7 @@ The `driver` coordinate indexes the model's predictors; its `flag_meanings` attr
 | `hucs`        | Watersheds in the store                                          |
 | `run`         | Model run, e.g. `noaa-200612-202512` (NOAA reports, Dec 2006–Dec 2025) |
 | `attribution` | Attribution method                                               |
+| `software`    | Each watershed's R and R package versions, keyed by HUC-2 code   |
 
 ### Fire data processing flow
 

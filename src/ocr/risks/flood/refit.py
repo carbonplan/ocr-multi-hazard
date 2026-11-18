@@ -1,8 +1,9 @@
 """Flood `score` stage: CarbonPlan's refit of the USGS Flood Damage Probability model.
 
 `input-data/tensor/fdp/fdp_train.py` fits one random forest per HUC-2 watershed (in R) and uploads
-each watershed's probability (`fdp.tif`), standard error (`se.tif`) and per-driver attributions
-(`contributions.tif`, `contributions.json`) under `RUNS/<run>/<distance>/huc<NN>/`. `score` mosaics
+each watershed's probability (`fdp.tif`), standard error (`se.tif`), per-driver attributions
+(`contributions.tif`, `contributions.json`) and fit summary (`summary.json`) under
+`RUNS/<run>/<distance>/huc<NN>/`. `score` mosaics
 RUN's watersheds into group "0" of the flood store, on their shared EPSG:5070 100 m grid cropped
 to their union:
 
@@ -16,7 +17,8 @@ The first three are packed in steps of STEP (scale_factor), with fill NODATA. Th
 coordinate is the driver's index; its flag_meanings name them in order. These layers are chunked
 for map tiles, and the pyramid stage adds coarser levels of them.
 
-Group "0" attributes carry the driver order, each watershed's baseline and the run. Score fills
+Group "0" attributes carry the driver order, the run, and each watershed's baseline and the R and
+R package versions that fit it. Score fills
 one row of shards of one layer at a time from every watershed it crosses, so each shard is written
 once and CONUS fits a small VM.
 """
@@ -61,6 +63,8 @@ PACKED = {
     'fill_value': NODATA,  # zarr's, for chunks never written
 }
 CHECK_CELLS = 1000  # per watershed, read back from the store for the sum identity
+# order of summary.json's `packages` where it is a list rather than named
+SUMMARY_PACKAGES = ('raster', 'terra', 'sp', 'dismo', 'ranger', 'tuneRanger', 'mlr')
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,7 @@ class Watershed:
     transform: rasterio.Affine
     shape: tuple[int, int]
     meta: dict  # contributions.json: drivers, baseline, scale, nodata, method
+    software: dict  # R and R package versions, from summary.json
 
     def uri(self, cfg: StorageConfig, name: str) -> str:
         return cfg.uri(f'{self.prefix}/{name}')
@@ -79,13 +84,17 @@ def read_watershed(
     cfg: StorageConfig, huc: str, run: str = RUN, distance: str = DISTANCE
 ) -> Watershed:
     prefix = f'{RUNS}/{run}/{distance}/huc{huc}'
-    meta = json.loads(
-        bytes(obstore.get(cfg.object_store(), f'{prefix}/contributions.json').bytes())
-    )
+    store = cfg.object_store()
+    meta = json.loads(bytes(obstore.get(store, f'{prefix}/contributions.json').bytes()))
+    summary = json.loads(bytes(obstore.get(store, f'{prefix}/summary.json').bytes()))
+    packages = summary['packages']
+    if isinstance(packages, list):
+        packages = dict(zip(SUMMARY_PACKAGES, packages, strict=True))
+    software = {'r': summary['r'], 'packages': packages}
     with rasterio.open(cfg.uri(f'{prefix}/fdp.tif')) as src:
         if src.crs != CRS:
             raise ValueError(f'HUC {huc}: fdp.tif is in {src.crs}, not {CRS}')
-        shed = Watershed(huc, prefix, src.transform, src.shape, meta)
+        shed = Watershed(huc, prefix, src.transform, src.shape, meta, software)
     for file in ('se.tif', 'contributions.tif'):
         with rasterio.open(shed.uri(cfg, file)) as src:
             if (src.crs, src.transform, src.shape) != (CRS, shed.transform, shed.shape):
@@ -158,6 +167,7 @@ def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.
             'hucs': [s.huc for s in sheds],
             'drivers': drivers,
             'baselines': {s.huc: s.meta['baseline'] for s in sheds},
+            'software': {s.huc: s.software for s in sheds},
             'attribution': sheds[0].meta['method'],
         },
     )
