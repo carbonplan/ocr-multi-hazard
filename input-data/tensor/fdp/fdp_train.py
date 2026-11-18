@@ -2,10 +2,14 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "boto3",
+#   "coiled",
+#   "duckdb",
 #   "numpy",
 #   "obstore>=0.12",
 #   "pandas",
+#   "pyproj",
 #   "rasterio",
+#   "requests",
 #   "universal-pathlib>=0.3.10",
 # ]
 # ///

@@ -2,7 +2,8 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "boto3",
-#   "duckdb>=1.1",
+#   "coiled",
+#   "duckdb",
 #   "numpy",
 #   "obstore>=0.12",
 #   "pyproj",

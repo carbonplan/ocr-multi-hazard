@@ -127,8 +127,9 @@ identity and dominant driver at sampled cells of each watershed before committin
 ocr run runs/flood/v2.0.0.toml
 ```
 
-obstore reads AWS credentials from the environment only, so locally export them first with
-`eval "$(aws configure export-credentials --format env)"`.
+To run `score` locally against S3: obstore uses boto3's credential chain, which covers SSO
+profiles, but rasterio reads the watershed rasters through GDAL, which does not, so export
+credentials first with `eval "$(aws configure export-credentials --format env)"`.
 
 ## Outputs
 

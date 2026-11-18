@@ -57,8 +57,7 @@ def download(url: str, dest: Path) -> None:
     part = dest.with_suffix(dest.suffix + '.part')
     print(f'  downloading {dest.name}')
     t0 = time.time()
-    # A captured log has no carriage return, so tick every ~320 MB there instead
-    # of redrawing one line every chunk.
+    # A captured log has no carriage return: there, report progress every ~320 MB.
     tty = sys.stdout.isatty()
     with requests.get(url, stream=True, timeout=(30, 300)) as r:
         r.raise_for_status()
