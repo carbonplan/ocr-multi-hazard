@@ -1,8 +1,8 @@
 """Flood `score` stage: CarbonPlan's refit of the USGS Flood Damage Probability model.
 
 `input-data/tensor/fdp/fdp_train.py` fits one random forest per HUC-2 watershed (in R) and uploads
-each watershed's probability (`fdp.tif`), standard error (`se.tif`), per-driver attributions
-(`contributions.tif`, `contributions.json`) and fit summary (`summary.json`) under
+each watershed's forest (`rf.rds`), probability (`fdp.tif`), standard error (`se.tif`), per-driver
+attributions (`contributions.tif`, `contributions.json`) and fit summary (`summary.json`) under
 `RUNS/<run>/<distance>/huc<NN>/`. `score` mosaics
 RUN's watersheds into group "0" of the flood store, on their shared EPSG:5070 100 m grid cropped
 to their union:
@@ -17,8 +17,8 @@ The first three are packed in steps of STEP (scale_factor), with fill NODATA. Th
 coordinate is the driver's index; its flag_meanings name them in order. These layers are chunked
 for map tiles, and the pyramid stage adds coarser levels of them.
 
-Group "0" attributes carry the driver order, the run, and each watershed's baseline and the R and
-R package versions that fit it. Score fills
+Group "0" attributes carry the driver order, the run, and each watershed's baseline, forest (the
+ETag of its rf.rds) and the R and R package versions that fit it. Score fills
 one row of shards of one layer at a time from every watershed it crosses, so each shard is written
 once and CONUS fits a small VM.
 """
@@ -75,6 +75,7 @@ class Watershed:
     shape: tuple[int, int]
     meta: dict  # contributions.json: drivers, baseline, scale, nodata, method
     software: dict  # R and R package versions, from summary.json
+    model: str  # ETag of rf.rds
 
     def uri(self, cfg: StorageConfig, name: str) -> str:
         return cfg.uri(f'{self.prefix}/{name}')
@@ -91,14 +92,17 @@ def read_watershed(
     if isinstance(packages, list):
         packages = dict(zip(SUMMARY_PACKAGES, packages, strict=True))
     software = {'r': summary['r'], 'packages': packages}
+    model = obstore.head(store, f'{prefix}/rf.rds')['e_tag'].strip('"')
     with rasterio.open(cfg.uri(f'{prefix}/fdp.tif')) as src:
         if src.crs != CRS:
             raise ValueError(f'HUC {huc}: fdp.tif is in {src.crs}, not {CRS}')
-        shed = Watershed(huc, prefix, src.transform, src.shape, meta, software)
-    for file in ('se.tif', 'contributions.tif'):
+        shed = Watershed(huc, prefix, src.transform, src.shape, meta, software, model)
+    for file, bands in (('se.tif', 1), ('contributions.tif', len(meta['drivers']))):
         with rasterio.open(shed.uri(cfg, file)) as src:
             if (src.crs, src.transform, src.shape) != (CRS, shed.transform, shed.shape):
                 raise ValueError(f'HUC {huc}: {file} is not on the grid of its fdp.tif')
+            if src.count != bands:
+                raise ValueError(f'HUC {huc}: {file} has {src.count} bands, not {bands}')
     return shed
 
 
@@ -168,6 +172,7 @@ def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.
             'drivers': drivers,
             'baselines': {s.huc: s.meta['baseline'] for s in sheds},
             'software': {s.huc: s.software for s in sheds},
+            'models': {s.huc: s.model for s in sheds},
             'attribution': sheds[0].meta['method'],
         },
     )
@@ -239,7 +244,8 @@ def _write_layer(
 ) -> None:
     """Fill one layer of `group` a row of shards at a time, each row from the watersheds it
     crosses; a cell two watersheds set keeps the first one's value. Problems go to `fails`. With
-    `sample`, adds up to CHECK_CELLS set cells per watershed and row to it."""
+    `sample`, adds to it, per watershed and row, the count of cells set and up to CHECK_CELLS of
+    them in random order."""
     name, key, file, band = layer
     arr = group[name]
     step = (arr.shards or arr.chunks)[-2]
@@ -269,38 +275,52 @@ def _write_layer(
                 if sample is not None:
                     rows, cols = np.nonzero(valid)
                     pick = rng.choice(rows.size, size=min(CHECK_CELLS, rows.size), replace=False)
-                    sample[s.huc].append((rows[pick] + lo, cols[pick] + col))
+                    sample[s.huc].append((rows.size, rows[pick] + lo, cols[pick] + col))
             arr[(*key, slice(r0, r1), slice(None))] = strip
 
 
 def _sample_cells(
     sample: dict[str, list], rng: np.random.Generator
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Up to CHECK_CELLS of each watershed's sampled cells, sorted."""
+    """Up to CHECK_CELLS of each watershed's set cells, drawn uniformly from all of them: each
+    row's share is drawn in proportion to its count, from its cells in random order."""
     cells = {}
     for huc, parts in sample.items():
-        rows = np.concatenate([r for r, _ in parts]) if parts else np.array([], int)
-        cols = np.concatenate([c for _, c in parts]) if parts else np.array([], int)
-        pick = np.sort(rng.choice(rows.size, size=min(CHECK_CELLS, rows.size), replace=False))
-        cells[huc] = (rows[pick], cols[pick])
+        if not parts:
+            cells[huc] = (np.array([], 'int64'), np.array([], 'int64'))
+            continue
+        counts = np.array([n for n, _, _ in parts], dtype='int64')
+        quota = rng.multivariate_hypergeometric(counts, min(CHECK_CELLS, int(counts.sum())))
+        rows = np.concatenate([r[:q] for (_, r, _), q in zip(parts, quota)])
+        cols = np.concatenate([c[:q] for (_, _, c), q in zip(parts, quota)])
+        cells[huc] = (rows.astype('int64'), cols.astype('int64'))
     return cells
 
 
 def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray]) -> list[str]:
-    """Per watershed, at `cells` (rows, cols): every layer is set, baseline + contributions = fdp
-    and dominant_driver is the largest contribution."""
+    """Per watershed, at `cells` (rows, cols), where fdp is set: fdp_se and every contribution are
+    set, and where the contributions are, baseline + contributions = fdp and dominant_driver is
+    the largest contribution."""
     contrib = group[CONTRIBUTION]
     n = contrib.shape[0]
     fails = []
     for s in sheds:
         rows, cols = cells[s.huc]
+        if not rows.size:
+            fails.append(f'HUC {s.huc}: no fdp cells of its own to check')
+            continue
         p = group[FDP].vindex[rows, cols]
         se = group[SE].vindex[rows, cols]
         raw = contrib.vindex[np.arange(n)[:, None], rows[None], cols[None]]
         dominant = group[DOMINANT].vindex[rows, cols]
-        if (se == NODATA).any() or (raw == NODATA).any():
-            fails.append(f'HUC {s.huc}: fdp_se or a contribution missing where fdp is set')
+        if missing := int((se == NODATA).sum()):
+            fails.append(f'HUC {s.huc}: fdp_se missing at {missing} of {rows.size} cells checked')
+        full = (raw != NODATA).all(axis=0)
+        if missing := int((~full).sum()):
+            fails.append(f'HUC {s.huc}: a contribution missing at {missing} of {rows.size} cells')
+        if not full.any():
             continue
+        p, raw, dominant = p[full], raw[:, full], dominant[full]
         residual = np.abs(
             p * STEP - s.meta['baseline'] - raw.sum(axis=0, dtype='float64') * STEP
         ).max()
@@ -330,6 +350,9 @@ def score(
     repo = icechunk.Repository.create(cfg.icechunk_storage(out.store))
     session = repo.writable_session('main')
     encoding = {k: v | ds[k].encoding for k, v in recommend_encoding(ds).items()}
+    # one driver per shard, so each contribution shard is written once
+    for k in ('chunks', 'shards'):
+        encoding[CONTRIBUTION][k] = (1, *encoding[CONTRIBUTION][k][1:])
     for k, enc in encoding.items():  # xarray requires dask chunks aligned to the shards
         ds[k] = ds[k].chunk(dict(zip(ds[k].dims, enc['shards'])))
     ds.to_zarr(

@@ -73,6 +73,7 @@ def _write_run(root: Path, sheds=SHEDS, baselines=BASELINES, disjoint: bool = Tr
         packages = list(VERSIONS) if huc == '03' else dict(zip(PACKAGES, VERSIONS))
         summary = {'r': R_VERSION, 'packages': packages}
         (out / 'summary.json').write_text(json.dumps(summary))
+        (out / 'rf.rds').write_bytes(huc.encode())
 
 
 @pytest.fixture
@@ -115,6 +116,7 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     # 03's summary.json lists the versions unnamed
     software = {'r': R_VERSION, 'packages': dict(zip(PACKAGES, VERSIONS))}
     assert ds.attrs['software'] == {'03': software, '05': software}
+    assert set(ds.attrs['models']) == {'03', '05'} and all(ds.attrs['models'].values())
     np.testing.assert_allclose(ds.x[:2], [X0 + 50, X0 + 150])
     np.testing.assert_allclose(ds.y[:2], [Y0 - 50, Y0 - 150])
 
@@ -146,8 +148,35 @@ def test_score_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) ->
     ds = _open()
     assert ds[CONTRIBUTION].encoding['shards'] == (1, 12, 20)
     assert ds[DOMINANT].encoding['shards'] == (12, 20)
+    raw = _open_raw()
+    np.testing.assert_array_equal(raw[FDP][:], _mosaic(root, 'fdp.tif', packed=True)[0])
+    np.testing.assert_array_equal(raw[SE][:], _mosaic(root, 'se.tif', packed=True)[0])
+    np.testing.assert_array_equal(raw[CONTRIBUTION][:], _mosaic(root, 'contributions.tif'))
     dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(ds[FDP].notnull())
     np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
+
+
+def _open_raw() -> zarr.Group:
+    repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
+    return zarr.open_group(repo.readonly_session('main').store, path='0', mode='r')
+
+
+def _mosaic(root: Path, name: str, packed: bool = False) -> np.ndarray:
+    """The watersheds' `name` bands on the 64 x 96 union grid, as stored: packed int16 steps,
+    NODATA where no watershed has a value, the first watershed's value where two do."""
+    out = None
+    for huc, (row, col, h, w) in SHEDS.items():
+        with rasterio.open(root / RUNS / 'test-run/planar' / f'huc{huc}' / name) as src:
+            bands = src.read(masked=True)
+        if packed:
+            bands = np.ma.masked_invalid(bands)
+            bands = np.ma.round(bands.astype('float64') / SCALE).astype('int16')
+        if out is None:
+            out = np.full((bands.shape[0], 64, 96), NODATA, 'int16')
+        target = out[:, row : row + h, col : col + w]
+        fill = ~np.ma.getmaskarray(bands) & (target == NODATA)
+        target[fill] = bands.data[fill]
+    return out
 
 
 def test_score_refuses_existing_store(root: Path) -> None:
@@ -168,12 +197,31 @@ def test_score_reports_every_problem_before_committing(root: Path) -> None:
     path = root / RUNS / 'test-run/planar/huc03/se.tif'
     with rasterio.open(path, 'r+') as dst:
         dst.write(np.full((1, dst.height, dst.width), 5.0, 'float32'))
+    meta = root / RUNS / 'test-run/planar/huc03/contributions.json'
+    meta.write_text(json.dumps(json.loads(meta.read_text()) | {'baseline': 0.5}))
     with pytest.raises(ValueError) as err:
         _score()
     assert 'HUC 03: fdp_se outside' in str(err.value)
     assert 'HUC 05: fdp overlaps' in str(err.value)
+    assert 'HUC 03: baseline + contributions off fdp' in str(err.value)
     repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
     assert len(list(repo.ancestry(branch='main'))) == 1
+
+
+def test_score_reports_a_watershed_wholly_overlapped(root: Path) -> None:
+    _write_run(root, sheds={'03': (0, 0, 40, 50), '05': (0, 0, 40, 50)}, disjoint=False)
+    with pytest.raises(ValueError) as err:
+        _score()
+    assert 'HUC 05: fdp overlaps' in str(err.value)
+    assert 'HUC 05: no fdp cells of its own to check' in str(err.value)
+
+
+def test_score_checks_contribution_band_count(root: Path) -> None:
+    _write_run(root)
+    meta = root / RUNS / 'test-run/planar/huc05/contributions.json'
+    meta.write_text(json.dumps(json.loads(meta.read_text()) | {'drivers': [*DRIVERS, 'extra']}))
+    with pytest.raises(ValueError, match='HUC 05: contributions.tif has 3 bands, not 4'):
+        _score()
 
 
 def test_score_checks_the_sum_identity(root: Path) -> None:
@@ -240,3 +288,13 @@ def test_pyramid_levels_stay_packed(root: Path) -> None:
             assert group[v].dtype == 'int16' and group[v].fill_value == NODATA
             assert group[v].attrs['scale_factor'] == SCALE
             assert group[v].attrs['_FillValue'] == NODATA
+
+
+def test_sample_draws_rows_in_proportion_to_their_cells() -> None:
+    rng = np.random.default_rng(0)
+    sparse = (1_000, np.zeros(1_000, 'int64'), np.arange(1_000))
+    dense = (1_000_000, np.ones(1_000, 'int64'), np.arange(1_000))
+    rows, cols = refit._sample_cells({'03': [sparse, dense]}, rng)['03']
+    assert rows.size == refit.CHECK_CELLS
+    assert (rows == 0).sum() < 10  # ~1 expected; equal shares per row would give ~500
+    assert len(set(zip(rows, cols))) == rows.size
