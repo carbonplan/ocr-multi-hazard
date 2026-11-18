@@ -100,7 +100,9 @@ main ones:
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
-and `--land separate`. A notebook on `--land fine` and the intensity options is in progress.
+and `--land separate`. [intensity.ipynb](intensity.ipynb) compares the land and intensity options
+with IBTrACS around the globe, scores them, and tests the refit on years it was not fit on. It
+proposes `--land fine --intensity refit-basin`.
 
 ### 4. Climate models
 
@@ -112,8 +114,8 @@ environment, sampled at the positions and dates of the observed tracks ([Fosu et
 [Camargo et al. 2025](https://doi.org/10.1175/JCLI-D-24-0629.1)). `ocr.risks.hurricane.cmip` and
 `ocr.risks.hurricane.meanstd` build the forcing and normalization. So far CHAZ has run on one
 model, UKESM1-0-LL r1i1p1f2, for 1995–2014 (historical) and 2081–2100 (SSP5-8.5), with both TCGI
-versions. [cmip.ipynb](cmip.ipynb) reviews that run; its TCGI fields are to be rebuilt with the
-W\* of section 2.
+versions. [cmip.ipynb](cmip.ipynb) reviews that run. The refit intensity options run on ERA5
+only so far.
 
 ### 5. Wind fields and hazard maps (not started)
 
@@ -237,6 +239,7 @@ credentials for the bucket. `manifest.json` there lists each file's source and c
 | `refit` | intensity regressions refit on the environment of a forcing data set (ERA5 so far) |
 | `cmip`, `meanstd` | CMIP6 forcing, bias correction, intensity normalization |
 | `landfall`, `intensity`, `tracks` | checks against IBTrACS in tracks.ipynb: landfall, intensity changes over water, steering noise |
+| `validate` | each run against IBTrACS around the globe, year by year, and its score (intensity.ipynb) |
 | `runaways` | intensity members whose wind grows without bound |
 | `store`, `batch` | S3 cache with its manifest, Coiled jobs |
 
@@ -245,4 +248,5 @@ credentials for the bucket. `manifest.json` there lists each file's source and c
 | [forcing.ipynb](forcing.ipynb) | our ERA5 forcing against the tutorial's |
 | [genesis-index.ipynb](genesis-index.ipynb) | our TCGI against the tutorial's, and the seeding ratio |
 | [tracks.ipynb](tracks.ipynb) | our ERA5 CHAZ run against IBTrACS and the CHAZ team's tracks |
+| [intensity.ipynb](intensity.ipynb) | the land and intensity options against IBTrACS around the globe |
 | [cmip.ipynb](cmip.ipynb) | CHAZ on one CMIP6 model, UKESM1-0-LL |
