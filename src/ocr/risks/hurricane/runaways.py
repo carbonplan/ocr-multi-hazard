@@ -34,7 +34,6 @@ NORMS = {
     f'{U}/ssp585': {'mapped': UK_MAPPED, 'tutorial': None},
 }
 LABEL = {'era5': 'ERA5', f'{U}/historical': 'UKESM 1995–2014', f'{U}/ssp585': 'UKESM 2081–2100'}
-RATIO = {'era5': 1.183, f'{U}/historical': 1.1885, f'{U}/ssp585': 1.1885}  # the runs' ratios
 YEARS = {'era5': [2005, 2010], f'{U}/historical': [2005, 2010], f'{U}/ssp585': [2090, 2095]}
 TCGI = 'TCGI_CRH_PI'
 MEMBERS = 40
@@ -168,7 +167,7 @@ def environment(bt, source, year, r):
 
 
 def work(task):
-    source, year, r = task
+    source, year, r, ratio = task
     chaz.gv.source, chaz.gv.meanstd = source, None
     chaz.yearTC = year
     chaz.gv.TCGIinput = TCGI
@@ -178,7 +177,7 @@ def work(task):
     random.seed(seed)
     np.random.seed(seed)
     chaz._load_landmask()
-    fst = chaz.getBam(*chaz.getSeeding(year, RATIO[source]))
+    fst = chaz.getBam(*chaz.getSeeding(year, ratio))
     chaz.calPredictors(fst)
     env = environment(chaz.bt, source, year, r)
     counts, rows = [], []
@@ -218,7 +217,11 @@ def run(realizations: int) -> None:
     from concurrent.futures import ProcessPoolExecutor
 
     prefetch()
-    tasks = [(s, y, r) for s, ys in YEARS.items() for y in ys for r in range(realizations)]
+    ratio = {s: chaz.seeding_ratio(TCGI, s) for s in YEARS}  # each run's own, as chaz sets it
+    print('seeding ratios', ratio, flush=True)
+    tasks = [
+        (s, y, r, ratio[s]) for s, ys in YEARS.items() for y in ys for r in range(realizations)
+    ]
     counts, rows, envs = [], [], []
     with ProcessPoolExecutor(
         os.cpu_count(), mp_context=mp.get_context('spawn'), max_tasks_per_child=1
