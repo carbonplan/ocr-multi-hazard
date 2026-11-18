@@ -40,7 +40,8 @@ dismo has no linux-aarch64 build, so the VMs are x86.
 R and its packages come pinned with the `fdp` pixi environment, except dismo
 and tuneRanger, which have no osx-arm64 build: locally they come from CRAN (see
 the README), and on Coiled `launch` adds them to the synced environment as
-conda extras.
+conda extras. `task` and `se` check all seven model packages against
+R_PACKAGES before running R.
 
 Usage:
   python fdp_train.py task --run original --huc 03 [--rscript PATH] [--quick] [--contributions] [--se]
@@ -90,6 +91,17 @@ CONTRIB_SCRIPT = 'contrib_fdp.R'
 SE_SCRIPT = 'se_fdp.R'
 SE_FILES = ('se.tif', 'se.json', 'se-log.txt')
 CONDA_EXTRAS = ['r-dismo', 'r-tuneranger']
+# The model's R packages at the versions the served run recorded; `task` and `se` stop on others.
+# Package sync cannot pin CONDA_EXTRAS, so this check is the only pin on dismo and tuneRanger.
+R_PACKAGES = {
+    'raster': '3.6.32',
+    'terra': '1.9.50',
+    'sp': '2.2.3',
+    'dismo': '1.3.16',
+    'ranger': '0.18.0',
+    'tuneRanger': '0.8.1',
+    'mlr': '2.19.4',
+}
 QUICK = {'iters': 3, 'trees': 300}
 
 
@@ -311,6 +323,20 @@ def upload(local: Path, prefix: UPath) -> None:
     print(f'uploaded {len(files)} files -> {prefix}')
 
 
+def check_r_packages(rscript: str) -> None:
+    """Exit unless `rscript` has R_PACKAGES at their versions."""
+    expr = (
+        'for (p in commandArgs(TRUE)) cat(p, tryCatch(as.character(packageVersion(p)), '
+        'error = function(e) "missing"), "\\n")'
+    )
+    out = subprocess.run(
+        [rscript, '-e', expr, '--args', *R_PACKAGES], capture_output=True, text=True, check=True
+    ).stdout
+    got = dict(line.split() for line in out.splitlines() if line.strip())
+    if wrong := {p: got.get(p) for p, v in R_PACKAGES.items() if got.get(p) != v}:
+        sys.exit(f'{rscript}: R packages differ from the served run: {wrong}; want {R_PACKAGES}')
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -362,6 +388,7 @@ def cmd_task(args) -> None:
     if not args.overwrite and existing_fit(args, prefix, sha256(points)):
         print(f'HUC {huc}: {prefix} already has this fit; skipped')
         return
+    check_r_packages(args.rscript)
     threads = args.threads or os.cpu_count()
     settings = QUICK if args.quick else {'iters': 70, 'trees': 1000}
     print(f'HUC {huc} -> {prefix} ({threads} threads, {settings})', flush=True)
@@ -468,6 +495,7 @@ def cmd_se(args) -> None:
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
     if not exists(prefix / 'run.json'):
         sys.exit(f'{prefix} has no complete fit; run `task` first')
+    check_r_packages(args.rscript)
     threads = args.threads or os.cpu_count()
     print(f'HUC {huc} standard errors -> {prefix} ({threads} threads)', flush=True)
 

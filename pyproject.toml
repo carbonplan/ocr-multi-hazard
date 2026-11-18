@@ -180,10 +180,11 @@
     jupyter = { cmd = "jupyter lab" }
 
 # What the FDP training scripts (input-data/tensor/fdp) import, so Coiled package
-# sync has a small environment to replicate. R and the model's packages are pinned to the
-# versions the served run recorded; dismo and tuneRanger have no osx-arm64 build, so
-# Coiled adds them as conda extras (fdp_train.CONDA_EXTRAS). dismo has no ARM build either,
-# so training VMs are x86 and the feature has no linux-aarch64.
+# sync has a small environment to replicate. R, raster, terra, sp, ranger and mlr are pinned
+# to the versions the served run recorded; the other R packages to versions that solve with
+# them. dismo and tuneRanger have no osx-arm64 build, so Coiled adds them unpinned as conda
+# extras (fdp_train.CONDA_EXTRAS) and fdp_train.check_r_packages checks their versions.
+# dismo has no ARM build at all, so training VMs are x86 and the feature has no linux-aarch64.
 [tool.pixi.feature.fdp]
     platforms = ["linux-64", "osx-arm64-15"]
 

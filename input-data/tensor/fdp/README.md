@@ -74,16 +74,20 @@ Mac) on Coiled moves 51 of its 103,331 presences by up to 0.25 m, each within it
 
 ### Environment and resources
 
-The `fdp` pixi environment pins R and the model's packages to the versions the served run
-recorded in each watershed's `summary.json` (R 4.5.3; HUC 03, trained locally, ran 4.4.3), and
-the other R packages to versions that solve with them. conda-forge has no osx-arm64 builds of
-dismo and tuneRanger (nor of tuneRanger's smoof and mlrMBO), so locally install those from CRAN
-into the environment's R; `--rscript` points training at another R. On Coiled, `launch` syncs
-the environment and adds dismo and tuneRanger as conda extras, one x86 VM per watershed (dismo
-has no ARM build). The paper reports an average of 5.55 h per watershed on 8 cores with ~23 GB
-RAM; each task's `run.json` records its actual time, peak memory, disk and VM type. Peak memory
-sums the forked R workers, so it overstates what the VM needs; HUC 06 reported 74 GB and ran on
-`r7i.4xlarge` (128 GB).
+The `fdp` pixi environment pins R and the model's packages (raster, terra, sp, ranger, mlr) to
+the versions the served run recorded in each watershed's `summary.json` (R 4.5.3, which 17 of
+the 18 watersheds ran; HUC 03 was trained locally on R 4.4.3), and the other R packages to
+versions that solve with them. dismo and tuneRanger have no osx-arm64 builds on conda-forge
+(nor do tuneRanger's smoof and mlrMBO), so the environment cannot pin them: locally install
+dismo 1.3-16 and tuneRanger 0.8.1 from CRAN (`remotes::install_version`) into the environment's
+R, and on Coiled `launch` adds them as conda extras at whatever version conda-forge has, which
+is the served run's today. `task` and `se` check those two and the five above against
+`fdp_train.R_PACKAGES` before fitting and stop on any other version, so a newer conda-forge
+build stops training until the pins are updated. `--rscript` points training at another R.
+Coiled runs one x86 VM per watershed, because dismo has no Linux ARM build either. The paper
+reports an average of 5.55 h per watershed on 8 cores with ~23 GB RAM; each task's `run.json`
+records its actual time, peak memory, disk and VM type. Peak memory sums the forked R workers,
+so it overstates what the VM needs; HUC 06 reported 74 GB and ran on `r7i.4xlarge` (128 GB).
 
 A task's cut of the predictors is cached per watershed under `~/.cache/ocr/fdp/predictors/`
 (1.6 GB for HUC 03) and reused while the staged inputs are unchanged, so repeat runs of a
