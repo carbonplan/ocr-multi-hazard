@@ -16,11 +16,13 @@ The first three are packed in steps of STEP (scale_factor), with fill NODATA. Th
 coordinate is the driver's index; its flag_meanings name them in order. These layers are chunked
 for map tiles, and the pyramid stage adds coarser levels of them.
 
-Group "0" attributes carry the driver order, each watershed's baseline and the run. At most one
-band of one watershed, or a few-shard block, is in memory at a time, so CONUS fits a small VM.
+Group "0" attributes carry the driver order, each watershed's baseline and the run. Score fills
+one row of shards of one layer at a time from every watershed it crosses, so each shard is written
+once and CONUS fits a small VM.
 """
 
 import json
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -33,6 +35,7 @@ import xarray as xr
 import xproj  # noqa: F401 - registers the .proj accessor
 import zarr
 from annotated_types import MinLen
+from rasterio.windows import Window
 from topozarr import attach_geozarr_metadata, recommend_encoding
 
 from ocr.config import OutputPaths, StorageConfig
@@ -192,12 +195,12 @@ def write_dominant(group: zarr.Group) -> None:
                 out[r : r + bh, c : c + bw] = np.where(valid, block.argmax(axis=0), NO_DRIVER)
 
 
-def _read_band(cfg: StorageConfig, s: Watershed, file: str, band: int) -> np.ma.MaskedArray:
-    """One band of a watershed's raster, masked at nodata. Errors unless it is on fdp.tif's grid."""
-    with rasterio.open(s.uri(cfg, file)) as src:
-        if (src.crs, src.transform, src.shape) != (CRS, s.transform, s.shape):
-            raise ValueError(f'HUC {s.huc}: {file} is not on the grid of its fdp.tif')
-        return src.read(band, masked=True)
+def _open(cfg: StorageConfig, s: Watershed, file: str, stack: ExitStack):
+    """A watershed's raster, open until `stack` closes. Errors unless it is on fdp.tif's grid."""
+    src = stack.enter_context(rasterio.open(s.uri(cfg, file)))
+    if (src.crs, src.transform, src.shape) != (CRS, s.transform, s.shape):
+        raise ValueError(f'HUC {s.huc}: {file} is not on the grid of its fdp.tif')
+    return src
 
 
 def _pack(values: np.ma.MaskedArray, name: str, huc: str) -> np.ma.MaskedArray:
@@ -211,29 +214,59 @@ def _pack(values: np.ma.MaskedArray, name: str, huc: str) -> np.ma.MaskedArray:
     return np.ma.array(steps.filled(NODATA).astype('int16'), mask=np.ma.getmaskarray(steps))
 
 
-def _is_set(values: np.ndarray, fill) -> np.ndarray:
-    return np.isfinite(values) if np.isnan(fill) else values != fill
-
-
-def _sample_cells(valid: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    cells = np.flatnonzero(valid)
-    pick = rng.choice(cells, size=min(CHECK_CELLS, cells.size), replace=False)
-    return np.unravel_index(np.sort(pick), valid.shape)
-
-
-def _merge(
-    arr: zarr.Array, key: tuple, offset: tuple[int, int], band: np.ma.MaskedArray, huc: str
+def _write_layer(
+    cfg: StorageConfig,
+    group: zarr.Group,
+    grid: Grid,
+    sheds: list[Watershed],
+    layer: tuple[str, tuple, str, int],
+    sample: dict[str, list] | None = None,
+    rng: np.random.Generator | None = None,
 ) -> None:
-    """Write the unmasked cells of `band` into `arr[*key, window]`, keeping what other watersheds
-    wrote."""
-    (r, c), (h, w) = offset, band.shape
-    win = (*key, slice(r, r + h), slice(c, c + w))
-    valid = ~np.ma.getmaskarray(band)
-    current = arr[win]
-    if _is_set(current[valid], arr.fill_value).any():
-        raise ValueError(f'HUC {huc}: {arr.basename} overlaps a watershed already written')
-    current[valid] = band.data[valid]
-    arr[win] = current
+    """Fill one layer of `group` a row of shards at a time, each row from the watersheds it
+    crosses. With `sample`, adds up to CHECK_CELLS set cells per watershed and row to it."""
+    name, key, file, band = layer
+    arr = group[name]
+    step = (arr.shards or arr.chunks)[-2]
+    ny, nx = grid.shape
+    with ExitStack() as stack:
+        sources = {s.huc: _open(cfg, s, file, stack) for s in sheds}
+        for r0 in range(0, ny, step):
+            r1 = min(r0 + step, ny)
+            strip = np.full((r1 - r0, nx), arr.fill_value, arr.dtype)
+            for s in sheds:
+                (row, col), (h, w) = grid.offsets[s.huc], s.shape
+                lo, hi = max(r0, row), min(r1, row + h)
+                if lo >= hi:
+                    continue
+                values = sources[s.huc].read(
+                    band, window=Window(0, lo - row, w, hi - lo), masked=True
+                )
+                if name in (FDP, SE):
+                    values = _pack(values, name, s.huc)
+                valid = ~np.ma.getmaskarray(values)
+                target = strip[lo - r0 : hi - r0, col : col + w]
+                if (target[valid] != arr.fill_value).any():
+                    raise ValueError(f'HUC {s.huc}: {name} overlaps a watershed already written')
+                target[valid] = values.data[valid]
+                if sample is not None:
+                    rows, cols = np.nonzero(valid)
+                    pick = rng.choice(rows.size, size=min(CHECK_CELLS, rows.size), replace=False)
+                    sample[s.huc].append((rows[pick] + lo, cols[pick] + col))
+            arr[(*key, slice(r0, r1), slice(None))] = strip
+
+
+def _sample_cells(
+    sample: dict[str, list], rng: np.random.Generator
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Up to CHECK_CELLS of each watershed's sampled cells, sorted."""
+    cells = {}
+    for huc, parts in sample.items():
+        rows = np.concatenate([r for r, _ in parts]) if parts else np.array([], int)
+        cols = np.concatenate([c for _, c in parts]) if parts else np.array([], int)
+        pick = np.sort(rng.choice(rows.size, size=min(CHECK_CELLS, rows.size), replace=False))
+        cells[huc] = (rows[pick], cols[pick])
+    return cells
 
 
 def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray]) -> list[str]:
@@ -287,20 +320,14 @@ def score(
     group = zarr.open_group(session.store, path='0', mode='r+')
 
     rng = np.random.default_rng(0)
-    cells = {}
+    sample = {s.huc: [] for s in sheds}
     layers = [(FDP, (), 'fdp.tif', 1), (SE, (), 'se.tif', 1)]
     layers += [(CONTRIBUTION, (i,), 'contributions.tif', i + 1) for i in range(ds.sizes['driver'])]
-    for name, key, file, band in layers:
+    for layer in layers:
+        name, key = layer[:2]
         print(f'{name}{list(key)}: {len(sheds)} watersheds')
-        for s in sheds:
-            values = _read_band(cfg, s, file, band)
-            if name in (FDP, SE):
-                values = _pack(values, name, s.huc)
-            if name == FDP:
-                r, c = _sample_cells(~np.ma.getmaskarray(values), rng)
-                cells[s.huc] = (r + grid.offsets[s.huc][0], c + grid.offsets[s.huc][1])
-            _merge(group[name], key, grid.offsets[s.huc], values, s.huc)
-            del values
+        _write_layer(cfg, group, grid, sheds, layer, sample if name == FDP else None, rng)
+    cells = _sample_cells(sample, rng)
     print(DOMINANT)
     write_dominant(group)
 

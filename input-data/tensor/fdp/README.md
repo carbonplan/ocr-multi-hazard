@@ -103,7 +103,7 @@ HUC 03 (67.6M cells) took 68 min locally on 18 workers for its standard errors, 
 The flood pipeline's `score` stage (`ocr.risks.flood.refit`) mosaics the watersheds of the
 run given in `runs/flood/v2.0.0.toml` into `output/flood/<version>/store.icechunk`, in the
 layout documented in [the data schema](../../../docs/reference/data-schema.md#flood-risk-variables).
-It reads one band of one watershed at a time, so it needs no large VM, and checks the sum
+It fills one row of shards of one layer at a time, so it needs no large VM, and checks the sum
 identity and dominant driver at sampled cells of each watershed before committing.
 `pyramid`, `buildings` and `regions` then run as for any risk:
 
