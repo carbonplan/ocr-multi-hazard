@@ -29,9 +29,10 @@ its saved forest and prediction, without retraining.
 `launch` submits one `task` per watershed as a Coiled batch job (`fdp.launch`).
 dismo has no linux-aarch64 build, so the VMs are x86.
 
-The R packages are not in any pixi environment: locally, point `--rscript` at
-an R with them installed (see the README); on Coiled they are added to the
-synced environment as conda extras.
+R and its packages come pinned with the `fdp` pixi environment, except dismo
+and tuneRanger, which have no osx-arm64 build: locally they come from CRAN (see
+the README), and on Coiled `launch` adds them to the synced environment as
+conda extras.
 
 Usage:
   python fdp_train.py task --run original --huc 03 [--rscript PATH] [--quick] [--contributions] [--se]
@@ -67,21 +68,7 @@ R_SCRIPT = 'train_fdp.R'
 CONTRIB_SCRIPT = 'contrib_fdp.R'
 SE_SCRIPT = 'se_fdp.R'
 SE_FILES = ('se.tif', 'se.json', 'se-log.txt')
-R_PACKAGES = [
-    'compilers',
-    'r-rcpp',
-    'r-base',
-    'r-raster',
-    'r-terra',
-    'r-sp',
-    'r-dismo',
-    'r-ranger',
-    'r-tuneranger',
-    'r-mlr',
-    'r-data.table',
-    'r-jsonlite',
-    'r-snow',
-]
+CONDA_EXTRAS = ['r-dismo', 'r-tuneranger']
 QUICK = {'iters': 3, 'trees': 300}
 
 
@@ -470,7 +457,7 @@ def cmd_launch(args) -> None:
         disk_size=args.disk_size,
         spot=args.spot,
         map_over=args.hucs or HUCS,
-        conda_extras=R_PACKAGES,
+        conda_extras=CONDA_EXTRAS,
     )
 
 

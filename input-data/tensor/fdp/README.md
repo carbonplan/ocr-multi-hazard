@@ -65,13 +65,16 @@ Mac) on Coiled moves 51 of its 103,331 presences by up to 0.25 m, each within it
 
 ### Environment and resources
 
-Locally, training runs the `Rscript` on your PATH, or the one given with `--rscript`. That R
-needs the packages in `fdp_train.R_PACKAGES`; on macOS, conda-forge has no builds of dismo,
-smoof, mlrMBO and tuneRanger, so install those four from CRAN. On Coiled, `launch` adds the R packages to the synced `fdp` environment as conda extras,
-one x86 VM per watershed (dismo has no ARM build). The paper reports an average of 5.55 h
-per watershed on 8 cores with ~23 GB RAM; each task's `run.json` records its actual time,
-peak memory, disk and VM type. Peak memory sums the forked R workers, so it overstates what
-the VM needs; HUC 06 reported 74 GB and ran on `r7i.4xlarge` (128 GB).
+The `fdp` pixi environment pins R and the model's packages to the versions the served run
+recorded in each watershed's `summary.json` (R 4.5.3; HUC 03, trained locally, ran 4.4.3), and
+the other R packages to versions that solve with them. conda-forge has no osx-arm64 builds of
+dismo and tuneRanger (nor of tuneRanger's smoof and mlrMBO), so locally install those from CRAN
+into the environment's R; `--rscript` points training at another R. On Coiled, `launch` syncs
+the environment and adds dismo and tuneRanger as conda extras, one x86 VM per watershed (dismo
+has no ARM build). The paper reports an average of 5.55 h per watershed on 8 cores with ~23 GB
+RAM; each task's `run.json` records its actual time, peak memory, disk and VM type. Peak memory
+sums the forked R workers, so it overstates what the VM needs; HUC 06 reported 74 GB and ran on
+`r7i.4xlarge` (128 GB).
 
 A task's cut of the predictors is cached per watershed under `~/.cache/ocr/fdp/predictors/`
 (1.6 GB for HUC 03) and reused while the staged inputs are unchanged, so repeat runs of a
@@ -92,7 +95,7 @@ standard errors to a watershed that is already trained and uploaded, from its sa
 and prediction:
 
 ```bash
-pixi run -e fdp python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --huc 03 --rscript <path>
+pixi run -e fdp python input-data/tensor/fdp/fdp_train.py se --run noaa-200612-202512 --huc 03
 ```
 
 HUC 03 (67.6M cells) took 68 min locally on 18 workers for its standard errors, including a

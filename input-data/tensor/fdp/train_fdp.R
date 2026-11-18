@@ -271,7 +271,7 @@ summary <- list(
   settings = list(threads = threads, iters = iters, trees = trees, seed = seed, distance = distance),
   seconds = seconds,
   r = R.version.string,
-  packages = sapply(c("raster", "terra", "sp", "dismo", "ranger", "tuneRanger", "mlr"), function(p) as.character(packageVersion(p)))
+  packages = lapply(setNames(nm = c("raster", "terra", "sp", "dismo", "ranger", "tuneRanger", "mlr", "data.table", "jsonlite")), function(p) as.character(packageVersion(p)))
 )
 write_json(summary, file.path(out, "summary.json"), auto_unbox = TRUE, pretty = TRUE, digits = NA)
 cat("done\n")

@@ -180,19 +180,36 @@
     jupyter = { cmd = "jupyter lab" }
 
 # What the FDP training scripts (input-data/tensor/fdp) import, so Coiled package
-# sync has a small environment to replicate.
+# sync has a small environment to replicate. R and the model's packages are pinned to the
+# versions the served run recorded; dismo and tuneRanger have no osx-arm64 build, so
+# Coiled adds them as conda extras (fdp_train.CONDA_EXTRAS). dismo has no ARM build either,
+# so training VMs are x86 and the feature has no linux-aarch64.
+[tool.pixi.feature.fdp]
+    platforms = ["linux-64", "osx-arm64-15"]
+
 [tool.pixi.feature.fdp.dependencies]
-    coiled   = ">=1.120.0,<2"
-    duckdb   = ">=1.3.2,<2"
-    numpy    = ">=2,<3"
-    pandas   = ">=2,<3"
-    pyarrow  = ">=21.0.0,<22"
-    pyproj   = ">=3.7.2,<4"
-    python   = "3.13.*"
-    rasterio = ">=1.4,<2"
-    requests = ">=2,<3"
-    s3fs     = ">=2025.9.0,<2026"
-    zarr     = ">=3.2.1,<4"
+    coiled       = ">=1.120.0,<2"
+    compilers    = "==2.0.0"
+    duckdb       = ">=1.3.2,<2"
+    numpy        = ">=2,<3"
+    pandas       = ">=2,<3"
+    pyarrow      = ">=21.0.0,<22"
+    pyproj       = ">=3.7.2,<4"
+    python       = "3.13.*"
+    r-base       = "==4.5.3"
+    "r-data.table" = "==1.18.6.1"
+    r-jsonlite   = "==2.0.0"
+    r-mlr        = "==2.19.4"
+    r-ranger     = "==0.18.0"
+    r-raster     = "==3.6_32"
+    r-rcpp       = "==1.1.2"
+    r-snow       = "==0.4_4"
+    r-sp         = "==2.2_3"
+    r-terra      = "==1.9_50"
+    rasterio     = ">=1.4,<2"
+    requests     = ">=2,<3"
+    s3fs         = ">=2025.9.0,<2026"
+    zarr         = ">=3.2.1,<4"
 
 # Only python (and fire's PROJ stack, above) comes from conda-forge; all other deps live in the standard [project] / [dependency-groups] tables.
 [tool.pixi.dependencies]
