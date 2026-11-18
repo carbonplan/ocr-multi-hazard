@@ -46,12 +46,12 @@ recent climate and diverge in the future ([Lee et al. 2020](https://doi.org/10.1
 We use the ERA5 coefficients of
 [Fosu et al. (2024)](https://doi.org/10.63024/dpva-2pa1).
 The ERA5 runs use TCGI-CRH; the climate-model runs are made once with each. `ocr.risks.hurricane.tcgi` computes
-TCGI. It computes the saturation column water vapour, which both moisture variables depend on, as
-Yi Xia's TCGI code does ([yixia23/TCGI](https://github.com/yixia23/TCGI);
-[Xia et al. 2026](https://doi.org/10.1175/JCLI-D-25-0317.1)). Like that code, it converts kelvin
-to Celsius by subtracting 273.3, where 273.15 is correct, because the TCGI coefficients were
-presumably fit with that offset. With this W\*, our 2017 TCGI matches the tutorial's to within
-0.01% in every basin.
+TCGI. It computes the saturation column water vapour, which both moisture variables depend on,
+with the algorithm of Yi Xia's TCGI code ([yixia23/TCGI](https://github.com/yixia23/TCGI);
+[Xia et al. 2026](https://doi.org/10.1175/JCLI-D-25-0317.1)), but converts kelvin to Celsius by
+subtracting 273.3 rather than the correct 273.15. Only with 273.3 does it reproduce the tutorial's
+values, so the TCGI coefficients were presumably fit with that offset. With it, our 2017 TCGI
+matches the tutorial's in every basin to the three decimals of the notebook's table.
 
 CHAZ seeds storm precursors each month in proportion to TCGI. One ratio per run scales TCGI to
 seeds. As in the public code, it is set so that the seeds over 1981–2005, times a survival rate of
@@ -91,8 +91,8 @@ main ones:
   coefficients.
 - `--intensity refit-pi` also draws the random error from observed steps with similar PI, and
   `--intensity refit-basin` from steps with similar PI in the same basin.
-- With a refit intensity option, `--fit 1981-1999` fits the regressions on those years only, so
-  that the storms of 2000–2019 can test them.
+- With a refit intensity option, `--fit 1981-1999` uses regressions fit on those years only
+  (`refit fit --years 1981-1999`), so that the storms of 2000–2019 can test them.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`

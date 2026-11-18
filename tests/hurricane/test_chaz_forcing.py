@@ -70,7 +70,7 @@ def test_saturation_column_with_the_chaz_offset_is_about_one_percent_drier():
     assert 0.985 < chaz_w / right < 0.995
 
 
-def test_era5_2017_moisture_reproduces_the_tutorial_tcgi():
+def test_era5_2017_moisture_reproduces_the_tutorial_tcgi(monkeypatch):
     from ocr.risks.hurricane import store
 
     needed = [
@@ -81,6 +81,7 @@ def test_era5_2017_moisture_reproduces_the_tutorial_tcgi():
     needed += [store.CACHE / store.TUTORIAL / 'PI_2017.nc']
     if not all(f.exists() for f in needed):
         pytest.skip('needs the 2017 ERA5 and tutorial inputs in the local cache')
+    monkeypatch.setattr(store, 'OFFLINE', True)
     grid = tcgi.tutorial_grid()
     ours = tcgi._months(tcgi.era5_inputs(2017, grid), 'time')
     ocean = ours['ocean']

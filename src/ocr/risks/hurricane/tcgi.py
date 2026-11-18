@@ -137,9 +137,9 @@ def wind_shear(u200, v200, u850, v850) -> xr.DataArray:
     return np.hypot(u200 - u850, v200 - v850)
 
 
-# The code behind the CHAZ team's TCGI converts kelvin to Celsius by subtracting 273.3; 273.15 is
-# correct. With 273.3, saturation_column reproduces the tutorial's 2017 W* to 0.003 kg m-2 and its
-# TCGI to 1.0000, and the TCGI coefficients were presumably fit on that W*, so it is the default.
+# saturation_column reproduces the tutorial's 2017 W* (to 0.003 kg m-2) and TCGI (to 1.0000) only
+# when kelvin is converted to Celsius by subtracting 273.3, not the correct 273.15 of the public
+# yixia23/TCGI code. The TCGI coefficients were presumably fit on that W*, so 273.3 is the default.
 # 273.15 makes W* about 1% higher and the global TCGI about 5% lower (genesis-index notebook, §2).
 KELVIN_CHAZ = 273.3
 KELVIN = 273.15
@@ -157,8 +157,8 @@ def saturation_humidity(t_k: xr.DataArray, p_pa, kelvin: float = KELVIN_CHAZ) ->
 def saturation_column(
     t_k: xr.DataArray, msl_pa: xr.DataArray, sst_k: xr.DataArray, kelvin: float = KELVIN_CHAZ
 ) -> xr.DataArray:
-    """W*, the column water vapour at saturation (kg m-2), as the CHAZ team's TCGI computes it
-    (yixia23/TCGI, calculation_vars/functions.py, saturated_water_vapor): from the levels between
+    """W*, the column water vapour at saturation (kg m-2), by the algorithm of yixia23/TCGI
+    (calculation_vars/functions.py, saturated_water_vapor) with a configurable kelvin offset: from the levels between
     100 and 1000 hPa, saturation humidity is 0 above 150 hPa except for half a layer up to the
     next level at its 150 hPa value; each layer below takes it log-linear in pressure (a Taylor
     series); the loop stops one level above the lowest, and the last layer runs from there to
