@@ -221,9 +221,9 @@ def residuals_by_pi(f: dict):
     )
 
 
-def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label: str) -> None:
-    """A fit's 12-hour predictions on the observed steps of `years`: fit statistics, and the
-    mean residual (observed minus predicted) by basin at 64-96 kt."""
+def predictions(f: dict, env: dict[str, np.ndarray], years: tuple[int, int]):
+    """A fit's 12-hour predictions on the observed steps of `years`: one row per step with its
+    regression, the basin it starts in, its starting wind, and observed minus predicted change."""
     import pandas as pd
 
     bt = meanstd.observed()
@@ -236,12 +236,6 @@ def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label:
         c = f[tag]
         z = (X - c['meanX'][1:]) / c['stdX'][1:]
         dy = (c['params'][0] + z @ c['params'][1:]) * c['stdY'] + c['meanY']
-        print(
-            f'{tag}, {label}, {years[0]}-{years[1]}: n {len(Y)}, '
-            f'R2 {1 - np.sum((Y - dy) ** 2) / np.sum((Y - Y.mean()) ** 2):.3f}, '
-            f'rmse {np.sqrt(np.mean((Y - dy) ** 2)):.2f} kt, '
-            f'mean residual {np.mean(Y - dy):+.2f} kt'
-        )
         s, i0 = rows[:, 0], rows[:, 1] - meanstd.LEAD
         frames.append(
             pd.DataFrame(
@@ -249,11 +243,27 @@ def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label:
                     'regression': tag,
                     'basin': [chaz.BASINS[b] for b in chaz.basin(lat[i0, s], lon[i0, s])],
                     'v0': X[:, preds.index('StormMwspd')],
+                    'observed': Y,
                     'residual': Y - dy,
                 }
             )
         )
-    d = pd.concat(frames)
+    return pd.concat(frames, ignore_index=True)
+
+
+def held_out(f: dict, env: dict[str, np.ndarray], years: tuple[int, int], label: str) -> None:
+    """Print a fit's statistics on the observed steps of `years`, and the mean residual
+    (observed minus predicted) by basin at 64-96 kt."""
+    import pandas as pd
+
+    d = predictions(f, env, years)
+    for tag, g in d.groupby('regression', sort=False):
+        y, r = g['observed'], g['residual']
+        print(
+            f'{tag}, {label}, {years[0]}-{years[1]}: n {len(g)}, '
+            f'R2 {1 - np.sum(r**2) / np.sum((y - y.mean()) ** 2):.3f}, '
+            f'rmse {np.sqrt(np.mean(r**2)):.2f} kt, mean residual {r.mean():+.2f} kt'
+        )
     d = d[(d['v0'] >= 64) & (d['v0'] < 96)]
     g = d.groupby(['regression', 'basin'])['residual']
     print(f'\n{label}: residual at 64-96 kt by basin, {years[0]}-{years[1]} (kt)')
