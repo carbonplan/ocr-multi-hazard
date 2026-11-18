@@ -29,6 +29,19 @@ def test_unwrap_crosses_the_date_line():
     assert np.isnan(got[3, 0])
 
 
+def test_unwrap_keeps_positions_after_a_missing_node():
+    lon = np.array([[-70.0, 178.0], [np.nan, np.nan], [-80.0, -179.0], [-81.0, -178.0]])
+    got = landfall.unwrap(lon)
+    assert got[[0, 2, 3], 0] == pytest.approx([-70.0, -80.0, -81.0])
+    assert got[[0, 2, 3], 1] == pytest.approx([178.0, 181.0, 182.0])
+    assert np.isnan(got[1]).all()
+
+
+def test_region_puts_southern_california_on_the_pacific_coast():
+    got = landfall.region(np.array([32.7, 29.0]), np.array([-117.2, -95.0]))
+    assert got.tolist() == ['Pacific', 'TX-AL']
+
+
 def test_hourly_is_linear_between_nodes_and_missing_next_to_a_gap():
     x = np.array([0.0, 6.0, np.nan])
     got = landfall.hourly(x)

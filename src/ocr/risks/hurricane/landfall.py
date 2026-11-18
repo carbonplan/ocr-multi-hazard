@@ -115,19 +115,21 @@ def region(lat, lon) -> np.ndarray:
     """Coastal regions of the landfall point."""
     lon = wrap(lon)
     out = np.full(np.shape(lat), 'other', dtype=object)
-    out[lon < -105] = 'Pacific'
     out[(lon >= -82) & (lat >= 36.6)] = 'VA-ME'
     out[(lon >= -87.6) & (lat >= 31) & (lat < 36.6)] = 'GA-Car'
     out[(lon >= -87.6) & (lat < 31)] = 'FL'
     out[(lon < -87.6) & (lat < 33)] = 'TX-AL'
+    out[lon < -105] = 'Pacific'
     return out
 
 
 def unwrap(lon: np.ndarray) -> np.ndarray:
-    """Longitudes along axis 0 made continuous across the date line and 0/360."""
-    step = (np.diff(lon, axis=0) + 180) % 360 - 180
-    out = lon.copy()
-    out[1:] = lon[:1] + np.cumsum(np.nan_to_num(step), axis=0)
+    """Longitudes along axis 0 (node, storm) made continuous across the date line and 0/360;
+    each node follows the last finite one before it, across missing nodes."""
+    filled = pd.DataFrame(lon).ffill().bfill().to_numpy()
+    step = (np.diff(filled, axis=0) + 180) % 360 - 180
+    out = filled.copy()
+    out[1:] = filled[:1] + np.cumsum(np.nan_to_num(step), axis=0)
     return np.where(np.isfinite(lon), out, np.nan)
 
 
@@ -288,7 +290,7 @@ def chaz_rows(
     return storm_rows(*chaz_arrays(ds, years), land, source, unit)
 
 
-def observed_arrays(csv: bytes):
+def observed_arrays(csv: bytes, seasons: tuple[int, int] = YEARS):
     """chaz_arrays for the IBTrACS since-1980 CSV: every track, synoptic records only, by
     season, with one 'member' of USA_WIND. Each track is laid on a regular 6-hourly grid from its
     first record to its last, so a missing record is a NaN node, not a shorter step."""
@@ -299,7 +301,7 @@ def observed_arrays(csv: bytes):
         usecols=['SID', 'SEASON', 'ISO_TIME', 'LAT', 'LON', 'USA_WIND'],
     )
     t = pd.to_datetime(bt['ISO_TIME'])
-    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*YEARS)]
+    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*seasons)]
     bt = bt.assign(USA_WIND=pd.to_numeric(bt['USA_WIND'], errors='coerce'), time=t[bt.index])
     groups = []
     for _, g in bt.groupby('SID', sort=True):

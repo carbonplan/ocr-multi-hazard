@@ -86,3 +86,34 @@ def test_bootstrap_resamples_the_same_years_for_every_source(monkeypatch):
     b = validate.bootstrap({'IBTrACS': obs, 'run': run, 'same': run}, [2000, 2001, 2002], n=5)
     assert b.shape == (5, 2)
     assert (b['run'] == b['same']).all()
+
+
+def test_a_run_file_counts_only_its_own_year(monkeypatch):
+    monkeypatch.setattr(validate, '_grid', grid())
+    monkeypatch.setattr(validate, '_land', Land())
+    lon = np.linspace(-70.0, -90.0, 6)[:, None]
+    lat = np.full_like(lon, 30.0)
+    wind = np.full((40, 6, 1), 70.0)
+    rows = validate._by_year(lat, lon, wind, np.array([2000]), [2000])
+    assert [r['year'] for r in rows] == [2000] and rows[0]['members'] == 40
+    empty = validate._by_year(lat[:, :0], lon[:, :0], wind[..., :0], np.array([], int), [2001])
+    assert empty == [{'year': 2001, 'members': 40}]
+
+
+def test_score_leaves_out_what_was_not_observed(monkeypatch):
+    monkeypatch.setattr(validate, 'SCORED', ['a', 'b'])
+    t = pd.DataFrame({'IBTrACS': [1.0, 0.0], 'run': [np.e, 5.0]}, index=['a', 'b'])
+    assert validate.score(t)['run'] == pytest.approx(1.0)
+
+
+def test_bootstrap_survives_resamples_without_a_rare_event(monkeypatch):
+    monkeypatch.setattr(validate, 'SCORED', ['Atl+Gulf landfalls >= 64 kt', 'landfall PHL >= 64'])
+    obs = table(10, 2, 1, years=(2000, 2001))
+    obs.loc[2001, ['Atl+Gulf landfalls >= 64 kt', 'landfall PHL >= 64']] = [0, 1]
+    obs.loc[2000, 'landfall PHL >= 64'] = 1
+    run = table(400, 40, 40, years=(2000, 2001))
+    b = validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=50)
+    assert b['run'].notna().all()
+    obs.loc[2000, 'Atl+Gulf landfalls >= 64 kt'] = 0
+    with pytest.raises(ValueError, match='no observed events'):
+        validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=5)

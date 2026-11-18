@@ -59,6 +59,8 @@ REGIONS = {  # (lat0, lat1, lon0, lon1), longitude 0-360
     'AU': (-30, -5, 90, 160),
     'SP': (-30, -5, 160, 240),
     'SH south of 30S': (-60, -30, 0, 360),
+    'NA tropics': (5, 25, 260, 345),
+    'NA north of 35N': (35, 60, 260, 360),
 }
 NA_REGIONS = ('Gulf', 'Caribbean', 'W Atlantic', 'MDR', 'Subtropical', 'north of 45N')
 SCORED = (
@@ -201,9 +203,11 @@ def _init() -> None:
     _grid, _land = country_raster(), landfall.USLand()
 
 
-def _by_year(lat, lon, wind, year) -> list[dict]:
+def _by_year(lat, lon, wind, year, years) -> list[dict]:
+    """counts for each of `years`, the years the set covers: a year with no storms counts its
+    members and nothing else."""
     rows = []
-    for y in range(YEARS[0], YEARS[1] + 1):
+    for y in years:
         s = year == y
         if not s.any():
             rows.append({'year': y, 'members': wind.shape[0]})
@@ -212,16 +216,17 @@ def _by_year(lat, lon, wind, year) -> list[dict]:
     return rows
 
 
-def _run_file(key: str) -> list[dict]:
+def _run_file(job: tuple[str, int]) -> list[dict]:
+    key, file_year = job
     with xr.open_dataset(store.path(key), decode_times=False) as ds:
         lat, lon, wind, year = landfall.chaz_arrays(ds.load())
-    return _by_year(lat, lon, wind, year)
+    return _by_year(lat, lon, wind, year, [file_year])
 
 
 def _team_file(i: int) -> list[dict]:
     with store.s3().open(f'{landfall.PUBLISHED}/global_2019_2ens{i:03d}_pre.nc', 'rb') as f:
         ds = xr.open_dataset(f, engine='scipy', decode_times=False).load()
-    return _by_year(*landfall.chaz_arrays(ds))
+    return _by_year(*landfall.chaz_arrays(ds), range(YEARS[0], YEARS[1] + 1))
 
 
 def _natural_earth() -> None:
@@ -232,13 +237,14 @@ def _natural_earth() -> None:
     shpreader.natural_earth('10m', 'physical', 'land')
 
 
-def first_record_year(csv: bytes) -> np.ndarray:
-    """Calendar year of each track's first synoptic record, in landfall.observed_arrays' order."""
+def first_record_year(csv: bytes, seasons: tuple[int, int]) -> np.ndarray:
+    """Calendar year of each track's first synoptic record, in the order of
+    landfall.observed_arrays(csv, seasons)."""
     bt = pd.read_csv(
         io.BytesIO(csv), skiprows=[1], low_memory=False, usecols=['SID', 'SEASON', 'ISO_TIME']
     )
     t = pd.to_datetime(bt['ISO_TIME'])
-    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*YEARS)]
+    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*seasons)]
     return pd.to_datetime(bt.groupby('SID', sort=True)['ISO_TIME'].min()).dt.year.values
 
 
@@ -247,11 +253,14 @@ def annual(source: str, workers: int | None = None) -> pd.DataFrame:
     if source == 'ibtracs':
         _init()
         csv = landfall.ibtracs_csv(store.s3())
-        lat, lon, wind, _ = landfall.observed_arrays(csv)
-        year = first_record_year(csv)
+        # a Southern Hemisphere season starts the July before its year: one more season, so
+        # storms that start late in the last year are in
+        seasons = (YEARS[0], YEARS[1] + 1)
+        lat, lon, wind, _ = landfall.observed_arrays(csv, seasons)
+        year = first_record_year(csv, seasons)
         if year.size != lat.shape[1]:
             raise ValueError(f'{year.size} first-record years for {lat.shape[1]} tracks')
-        parts = [_by_year(lat, lon, wind, year)]
+        parts = [_by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1))]
     else:
         _natural_earth()
         if source == 'chaz-team':
@@ -260,11 +269,11 @@ def annual(source: str, workers: int | None = None) -> pd.DataFrame:
         else:
             fn = _run_file
             jobs = [
-                f'{store.RUNS}/{source}/{y}_r{r:03d}.nc'
+                (f'{store.RUNS}/{source}/{y}_r{r:03d}.nc', y)
                 for r in range(10)
                 for y in range(YEARS[0], YEARS[1] + 1)
             ]
-            for key in jobs:
+            for key, _ in jobs:
                 store.path(key)
         with ProcessPoolExecutor(workers or os.cpu_count(), initializer=_init) as pool:
             parts = list(pool.map(fn, jobs))
@@ -328,17 +337,20 @@ def metrics(tables: dict[str, pd.DataFrame], years) -> pd.DataFrame:
 
 
 def score(table: pd.DataFrame) -> pd.Series:
-    """Mean |ln(source / IBTrACS)| over SCORED; a source's zero counts as FLOOR."""
+    """Mean |ln(source / IBTrACS)| over the SCORED metrics IBTrACS has; a source's zero counts
+    as FLOOR."""
     obs = table.loc[SCORED, 'IBTrACS']
-    if (obs <= 0).any():
-        raise ValueError(f'no observed events for {list(obs[obs <= 0].index)}')
-    ratio = table.loc[SCORED].drop(columns='IBTrACS').div(obs, axis=0).clip(lower=FLOOR)
-    return np.abs(np.log(ratio)).mean()
+    ratio = table.loc[SCORED].drop(columns='IBTrACS').div(obs.where(obs > 0), axis=0)
+    return np.abs(np.log(ratio.clip(lower=FLOOR))).mean()
 
 
 def bootstrap(tables: dict[str, pd.DataFrame], years, n: int = 2000, seed: int = 0) -> pd.DataFrame:
-    """Scores of `n` resamples of whole years, the same years for every source."""
+    """Scores of `n` resamples of whole years, the same years for every source. Every SCORED
+    metric must be observed over `years`; a resample without it leaves it out."""
     years = list(years)
+    obs = metrics(tables, years).loc[SCORED, 'IBTrACS']
+    if (obs <= 0).any():
+        raise ValueError(f'no observed events for {list(obs[obs <= 0].index)}')
     rng = np.random.default_rng(seed)
     return pd.DataFrame([score(metrics(tables, rng.choice(years, len(years)))) for _ in range(n)])
 
