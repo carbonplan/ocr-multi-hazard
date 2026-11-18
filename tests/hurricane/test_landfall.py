@@ -5,15 +5,15 @@ from ocr.risks.hurricane import landfall
 
 
 class Land:
-    """US land west of 80W between 25N and 45N; other land west of 80W from 22N to 25N."""
+    """US land from 115W to 80W between 25N and 45N; other land there from 22N to 25N."""
 
     def __call__(self, lat, lon):
         lon = landfall.wrap(lon)
-        return np.isfinite(lat) & (lon < -80) & (lat >= 25) & (lat < 45)
+        return np.isfinite(lat) & (lon < -80) & (lon > -115) & (lat >= 25) & (lat < 45)
 
     def water(self, lat, lon):
         lon = landfall.wrap(lon)
-        return np.isfinite(lat) & ~((lon < -80) & (lat >= 22) & (lat < 45))
+        return np.isfinite(lat) & ~((lon < -80) & (lon > -115) & (lat >= 22) & (lat < 45))
 
     def anywhere(self, lat, lon):
         return ~self.water(lat, lon) & np.isfinite(lat)
@@ -75,6 +75,21 @@ def test_landfall_share_splits_into_crossing_and_wind_at_crossing():
         s['NA TS storms crossing the US coast, share'] * s['crossings at >= 34 kt, share']
     )
     assert s['tracks from NA genesis crossing the US coast, share'] == pytest.approx(0.5)
+
+
+def test_pacific_landfalls_are_counted_apart_from_us_landfalls():
+    lat, lon, wind = storm([[70] * 6])
+    pacific_lon = np.linspace(-130.0, -110.0, 6)[:, None]
+    lat2 = np.concatenate([lat, np.full_like(lat, 35.0)], axis=1)
+    lon2 = np.concatenate([lon, pacific_lon], axis=1)
+    wind2 = np.concatenate([wind, wind], axis=2)
+    rows = landfall.storm_rows(lat2, lon2, wind2, np.array([2000, 2000]), Land(), 'test', 'u0')
+    assert rows['lf_region'].tolist() == ['FL', 'Pacific']
+    s = landfall.summarize(rows, member_years=1, scale=1.0)
+    assert s['US landfalls/yr (>= 34 kt)'] == pytest.approx(1)
+    assert s['US landfalls/yr >= 64 kt at the strongest crossing'] == pytest.approx(1)
+    assert s['US Pacific landfalls/yr (>= 34 kt)'] == pytest.approx(1)
+    assert s['US Pacific landfalls/yr >= 64 kt'] == pytest.approx(1)
 
 
 def chaz_member(evens, n):

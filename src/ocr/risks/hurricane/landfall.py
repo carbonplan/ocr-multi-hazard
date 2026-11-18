@@ -7,7 +7,9 @@ reproduced and our runs compared on the same footing:
     interpolated to hourly, longitudes unwrapped across the date line
   - one US land mask: Natural Earth 1:10m, rasterized at 1/24 degree
   - US landfall: the first hour on US land right after an hour over water; each storm counts
-    once, at its wind in that hour (and, in one row, at its strongest crossing)
+    once, at its wind in that hour (and, in one row, at its strongest crossing). The US rows
+    count the Atlantic and Gulf coasts; landfalls on the Pacific coast, which IBTrACS has none
+    of over these years, have rows of their own
   - a (storm, member) counts only where it carries wind, a landfall only at 34 kt or more
   - CHAZ rates are also given scaled so its North Atlantic tropical-storm count matches the
     observed one, which leaves where storms go and how strong they are
@@ -35,7 +37,8 @@ YEARS = (1981, 2019)
 TS, HU, MH = 34.0, 64.0, 96.0  # kt
 BOX = (-130.0, 15.0, -60.0, 52.0)  # lon0, lat0, lon1, lat1 of the land raster
 RES = 1 / 24
-REGIONS = ('TX-AL', 'FL', 'GA-Car', 'VA-ME', 'other')
+ATLANTIC = ('TX-AL', 'FL', 'GA-Car', 'VA-ME')
+REGIONS = (*ATLANTIC, 'Pacific', 'other')
 TIME_FILL = -54786.0  # 1800-01-01 in days since 1950: CHAZ's marker for no data
 PUBLISHED = store.PUBLISHED_TRACKS
 OUT = 'validation/chaz/landfall'
@@ -112,6 +115,7 @@ def region(lat, lon) -> np.ndarray:
     """Coastal regions of the landfall point."""
     lon = wrap(lon)
     out = np.full(np.shape(lat), 'other', dtype=object)
+    out[lon < -105] = 'Pacific'
     out[(lon >= -82) & (lat >= 36.6)] = 'VA-ME'
     out[(lon >= -87.6) & (lat >= 31) & (lat < 36.6)] = 'GA-Car'
     out[(lon >= -87.6) & (lat < 31)] = 'FL'
@@ -330,6 +334,11 @@ def ibtracs_csv(fs) -> bytes:
 
 
 def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
+    pacific = df['crosses'] & (region(df['lf_lat'].values, df['lf_lon'].values) == 'Pacific')
+    df = df.assign(crosses=df['crosses'] & ~pacific)
+    pac = df[pacific & (df['lf_wind'] >= TS)]
+    df = df.assign(lf_max_wind=df['lf_max_wind'].where(~pacific))
+    df.loc[pacific, 'lf_region'] = None
     na = df[df['na_ts']]
     lf = df[df['lf_region'].notna()]
     big = lf[lf['lf_wind'] >= HU]
@@ -359,9 +368,11 @@ def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
         'landfall / 24 h approach peak, median': (lf['lf_wind'] / lf['lf_pre24']).median(),
         '12 h after / at landfall (>= 64 kt), median': (big['lf_post12'] / big['lf_wind']).median(),
     }
-    for r in REGIONS[:-1]:
+    for r in ATLANTIC:
         sub = lf[lf['lf_region'] == r]
         out[f'{r} landfalls/yr >= 64 kt'] = (sub['lf_wind'] >= HU).sum() / member_years * scale
+    out['US Pacific landfalls/yr (>= 34 kt)'] = len(pac) / member_years * scale
+    out['US Pacific landfalls/yr >= 64 kt'] = (pac['lf_wind'] >= HU).sum() / member_years * scale
     return out
 
 
