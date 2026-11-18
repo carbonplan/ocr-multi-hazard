@@ -9,7 +9,7 @@ import rasterio
 import xarray as xr
 import zarr
 
-from ocr import multiscales, stages
+from ocr import stages
 from ocr.config import OutputPaths, Risk, StorageConfig
 from ocr.risks.flood import refit
 from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, POINT, RUNS, SE, VALUES, score
@@ -220,17 +220,15 @@ def test_pyramid_stage_on_refit_store(root: Path) -> None:
     np.testing.assert_array_equal(level1[DOMINANT].values, dominant.values)
 
 
-def test_pyramid_reads_packed_layers_packed(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # topozarr re-packs decoded floats in memory, the whole array at once
-    seen = {}
-    create = multiscales.create_pyramid
-
-    def spy(ds: xr.Dataset, **kw):
-        seen.update({name: da.dtype for name, da in ds.data_vars.items()})
-        return create(ds, **kw)
-
-    monkeypatch.setattr(multiscales, 'create_pyramid', spy)
+def test_pyramid_levels_stay_packed(root: Path) -> None:
     _write_run(root)
     _score()
-    stages.pyramid(stages.RISKS[Risk.FLOOD], OUT, overwrite=True, levels=2)
-    assert {seen[v] for v in (FDP, SE, CONTRIBUTION)} == {np.dtype('int16')}
+    stages.pyramid(stages.RISKS[Risk.FLOOD], OUT, overwrite=True, levels=3)
+    repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
+    session = repo.readonly_session('main')
+    for level in ('1', '2'):
+        group = zarr.open_group(session.store, path=level, mode='r')
+        for v in (FDP, SE, CONTRIBUTION):
+            assert group[v].dtype == 'int16' and group[v].fill_value == NODATA
+            assert group[v].attrs['scale_factor'] == SCALE
+            assert group[v].attrs['_FillValue'] == NODATA

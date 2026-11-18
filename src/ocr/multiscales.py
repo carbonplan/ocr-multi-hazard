@@ -43,12 +43,6 @@ def write_multiscales(
     if overwrite:
         drop_levels(session)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
-    # Packed ints stay packed: topozarr re-packs decoded ones with eager, whole-array math.
-    raw = xr.open_zarr(
-        session.store, group='0', consolidated=False, chunks=None, mask_and_scale=False
-    )
-    packed = [name for name, da in ds.data_vars.items() if 'scale_factor' in da.encoding]
-    ds = ds.assign({name: raw[name].variable for name in packed})
     ds = ds.proj.assign_crs(spatial_ref=crs)
     derived = {name: write for name, write in (derived or {}).items() if name in ds}
     names = [n for n in (variables if variables is not None else ds.data_vars) if n not in derived]
