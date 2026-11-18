@@ -221,7 +221,6 @@
     r-terra      = "==1.9_50"
     rasterio     = ">=1.4,<2"
     requests     = ">=2,<3"
-    s3fs         = ">=2025.9.0,<2026"
     universal-pathlib = ">=0.3.10,<0.4"
     zarr         = ">=3.2.1,<4"
 

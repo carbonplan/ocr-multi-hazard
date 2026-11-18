@@ -8,7 +8,6 @@
 #   "pyproj",
 #   "rasterio",
 #   "requests",
-#   "s3fs>=2024.0.0",
 #   "universal-pathlib>=0.3.10",
 # ]
 # ///
@@ -65,6 +64,8 @@ from fdp import (
     exists,
     extract_tif,
     launch,
+    put_bytes,
+    put_file,
     read_bytes,
     sciencebase_url,
 )
@@ -112,10 +113,6 @@ HUC_RASTER = INPUTS / 'huc2_100m.tif'
 HUC_GEOJSON = INPUTS / 'huc2.geojson'
 
 
-def put_file(local: Path, path: UPath) -> None:
-    path.fs.put_file(str(local), path.path)
-
-
 def read_manifest() -> dict:
     if not exists(MANIFEST):
         return {'predictors': {}, 'response': {}}
@@ -123,7 +120,7 @@ def read_manifest() -> dict:
 
 
 def write_manifest(manifest: dict) -> None:
-    MANIFEST.write_text(json.dumps(manifest, indent=2))
+    put_bytes(MANIFEST, json.dumps(manifest, indent=2).encode())
 
 
 def sha256(path: Path) -> str:

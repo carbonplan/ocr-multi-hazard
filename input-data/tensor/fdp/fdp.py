@@ -98,6 +98,20 @@ def get_file(path: UPath, dest: Path) -> None:
             fh.write(chunk)
 
 
+def put_file(local: Path, path: UPath) -> None:
+    obstore.put(store(), key(path), local)
+
+
+def put_bytes(path: UPath, data: bytes) -> None:
+    obstore.put(store(), key(path), data)
+
+
+def delete_prefix(path: UPath) -> None:
+    """Delete every object under `path`/."""
+    for batch in obstore.list(store(), prefix=f'{key(path)}/'):
+        obstore.delete(store(), [obj['path'] for obj in batch])
+
+
 def extract_tif(zip_path: Path, dest: Path) -> None:
     """Extract the one GeoTIFF in `zip_path` to `dest`."""
     with zipfile.ZipFile(zip_path) as zf:

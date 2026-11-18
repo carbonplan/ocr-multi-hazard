@@ -4117,9 +4117,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_r-mutex-1.0.1-anacondar_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/affine-3.0.1-pyhecae5ae_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/aiobotocore-2.25.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/aiohappyeyeballs-2.7.1-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/aioitertools-0.13.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/aiosignal-1.4.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/anyio-4.16.0-pyh5ded981_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.2-pyhd8ed1ab_0.conda
@@ -4215,7 +4213,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/r-withr-3.0.3-r45hc72bb7e_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/requests-2.34.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/s3fs-2025.12.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/s3transfer-0.14.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/setuptools-84.2.1-pyhe730653_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
@@ -4245,9 +4242,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_r-mutex-1.0.1-anacondar_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/affine-3.0.1-pyhecae5ae_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/aiobotocore-2.25.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/aiohappyeyeballs-2.7.1-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/aioitertools-0.13.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/aiosignal-1.4.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/anyio-4.16.0-pyh5ded981_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.2-pyhd8ed1ab_0.conda
@@ -4345,7 +4340,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/r-withr-3.0.3-r45hc72bb7e_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/requests-2.34.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/s3fs-2025.12.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/s3transfer-0.14.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/sdkroot_env_osx-arm64-26.0-ha3f98da_7.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/setuptools-84.2.1-pyhe730653_0.conda
@@ -10932,26 +10926,6 @@ packages:
   run_exports: {}
   size: 22619
   timestamp: 1788134268940
-- conda: https://conda.anaconda.org/conda-forge/noarch/aiobotocore-2.25.2-pyhcf101f3_0.conda
-  sha256: 922fb146148449c6bc374a37fa9edb89b3af1c385392391339206d3ab3d571a3
-  md5: 6e90a60dbb939d24a6295e19377cf0e6
-  depends:
-  - python >=3.10
-  - aiohttp >=3.9.2,<4.0.0
-  - aioitertools >=0.5.1,<1.0.0
-  - botocore >=1.40.46,<1.40.71
-  - python-dateutil >=2.1,<3.0.0
-  - jmespath >=0.7.1,<2.0.0
-  - multidict >=6.0.0,<7.0.0
-  - wrapt >=1.10.10,<2.0.0
-  - python
-  license: Apache-2.0
-  license_family: APACHE
-  purls:
-  - pkg:pypi/aiobotocore?source=hash-mapping
-  run_exports: {}
-  size: 80900
-  timestamp: 1762893423043
 - conda: https://conda.anaconda.org/conda-forge/noarch/aiohappyeyeballs-2.7.1-pyhd8ed1ab_0.conda
   sha256: 5ef589e5fd3736439781a9d48e68ce1e723b7081a471c02169908198eba4f448
   md5: e51e09bf3b91c62b7461a9f94e92c2c9
@@ -10964,19 +10938,6 @@ packages:
   run_exports: {}
   size: 24690
   timestamp: 1782986823268
-- conda: https://conda.anaconda.org/conda-forge/noarch/aioitertools-0.13.0-pyhd8ed1ab_0.conda
-  sha256: 41bc8d85274c5badabe6c333cdd2e77e9c6bc0fb64251211988a71e1fd83486b
-  md5: 65d5134ff98cb3727022a4f23993a2e6
-  depends:
-  - python >=3.10
-  - typing_extensions >=4.0
-  license: MIT
-  license_family: MIT
-  purls:
-  - pkg:pypi/aioitertools?source=hash-mapping
-  run_exports: {}
-  size: 25450
-  timestamp: 1768757675539
 - conda: https://conda.anaconda.org/conda-forge/noarch/aiosignal-1.4.0-pyhd8ed1ab_0.conda
   sha256: 8dc149a6828d19bf104ea96382a9d04dae185d4a03cc6beb1bc7b84c428e3ca2
   md5: 421a865222cd0c9d83ff08bc78bf3a61
@@ -12371,21 +12332,6 @@ packages:
   run_exports: {}
   size: 208577
   timestamp: 1775991661559
-- conda: https://conda.anaconda.org/conda-forge/noarch/s3fs-2025.12.0-pyhd8ed1ab_0.conda
-  sha256: e060f0566161064453cf353c3a7618a22fa47959b3c7f7224528ca7ebeb2a4b0
-  md5: 35a41338454bdba184c3136fbdc7186a
-  depends:
-  - aiobotocore >=2.5.4,<3.0.0
-  - aiohttp
-  - fsspec 2025.12.0
-  - python >=3.10
-  license: BSD-3-Clause
-  license_family: BSD
-  purls:
-  - pkg:pypi/s3fs?source=hash-mapping
-  run_exports: {}
-  size: 33928
-  timestamp: 1764796365839
 - conda: https://conda.anaconda.org/conda-forge/noarch/s3transfer-0.14.0-pyhd8ed1ab_0.conda
   sha256: e401e1d3effaaaaefb388df7488b309f737bc3a6fe69be0ff8b826093b5ecb2f
   md5: 4e3089ce93822a25408c480dd53561b6

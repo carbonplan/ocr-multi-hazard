@@ -8,7 +8,6 @@
 #   "pyproj",
 #   "rasterio",
 #   "requests",
-#   "s3fs>=2024.0.0",
 #   "universal-pathlib>=0.3.10",
 # ]
 # ///
@@ -63,8 +62,8 @@ import numpy as np
 import pandas as pd
 import rasterio
 import requests
-from fdp import REFIT, ROOT, exists, get_file, launch, read_bytes
-from fdp_inputs import HUC_RASTER, HUCS, predictor_path, put_file, read_manifest, response_path
+from fdp import REFIT, ROOT, exists, get_file, launch, put_bytes, put_file, read_bytes
+from fdp_inputs import HUC_RASTER, HUCS, predictor_path, read_manifest, response_path
 from pyproj import Transformer
 from rasterio.windows import Window
 from upath import UPath
@@ -312,8 +311,8 @@ def write_run(run: str, presence: pd.DataFrame, absence: pd.DataFrame, summary: 
             for h in range(1, 19)
         },
     }
-    run_path(run, 'points.csv').write_text(buf.getvalue())
-    run_path(run, 'points.json').write_text(json.dumps(summary, indent=2))
+    put_bytes(run_path(run, 'points.csv'), buf.getvalue().encode())
+    put_bytes(run_path(run, 'points.json'), json.dumps(summary, indent=2).encode())
     print(
         f'  {summary["points"]["presence"]} presence, {summary["points"]["absence"]} absence'
         f' -> {run_path(run, "points.csv")}'

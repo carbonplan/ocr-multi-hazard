@@ -6,7 +6,6 @@
 #   "obstore>=0.12",
 #   "pandas",
 #   "rasterio",
-#   "s3fs>=2024.0.0",
 #   "universal-pathlib>=0.3.10",
 # ]
 # ///
@@ -63,8 +62,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
-from fdp import CACHE, PUBLISHED, VM_TYPE, exists, get_file, launch, read_bytes
-from fdp_inputs import HUC_RASTER, HUCS, PREDICTORS, predictor_path, put_file, read_manifest
+from fdp import (
+    CACHE,
+    PUBLISHED,
+    VM_TYPE,
+    delete_prefix,
+    exists,
+    get_file,
+    launch,
+    put_file,
+    read_bytes,
+)
+from fdp_inputs import HUC_RASTER, HUCS, PREDICTORS, predictor_path, read_manifest
 from fdp_points import RUNS, SEED, run_path
 from rasterio.windows import Window
 from upath import UPath
@@ -289,8 +298,7 @@ def published_tif() -> Path:
 def upload(local: Path, prefix: UPath) -> None:
     if RUNS not in prefix.parents or not prefix.name.startswith('huc'):
         raise ValueError(f'refusing to write to {prefix}')
-    if prefix.exists():
-        prefix.fs.rm(prefix.path, recursive=True)
+    delete_prefix(prefix)
     for f in sorted(local.iterdir()):
         put_file(f, prefix / f.name)
     print(f'uploaded {len(list(local.iterdir()))} files -> {prefix}')
