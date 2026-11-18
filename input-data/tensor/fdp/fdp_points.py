@@ -31,7 +31,8 @@ nlcd` (EPSG:5070 metres) and a `points.json` summary:
 SEED + k; seed 0 is the unsuffixed run. `--noaa-from <run>` reuses the NOAA
 files that run recorded, kept under `input/flood/raw/noaa-storm-events/`, so runs
 built later share its presences even after NOAA reissues a year's file. Runs
-already built are skipped unless `--overwrite` is given.
+already built (both files present; points.json is written last) are skipped
+unless `--overwrite` is given.
 
 Absences for the NOAA runs are resampled with the paper's rules (Collins et al.
 2022, section 2): within each HUC-2, as many
@@ -53,16 +54,25 @@ import argparse
 import hashlib
 import io
 import json
-import os
 import re
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import rasterio
 import requests
-from fdp import REFIT, ROOT, exists, get_file, launch, put_bytes, put_file, read_bytes
+from fdp import (
+    CACHE,
+    REFIT,
+    ROOT,
+    delete,
+    exists,
+    get_file,
+    launch,
+    put_bytes,
+    put_file,
+    read_bytes,
+)
 from fdp_inputs import HUC_RASTER, HUCS, predictor_path, read_manifest, response_path
 from pyproj import Transformer
 from rasterio.windows import Window
@@ -80,8 +90,6 @@ FLOOD_TYPES = ['Flood', 'Flash Flood']
 NOAA_RUNS = {'noaa-200612-202512': NOAA_END, 'noaa-200612-202005': ORIGINAL_END}
 SEED = 20261022
 NODATA = 255
-
-CACHE = Path(os.environ.get('FDP_CACHE', Path.home() / '.cache/ocr/fdp'))
 
 
 def run_path(run: str, name: str) -> UPath:
@@ -171,7 +179,9 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
         elif not path.exists():
             r = requests.get(NOAA + name, timeout=300)
             r.raise_for_status()
-            path.write_bytes(r.content)
+            path.with_suffix('.part').write_bytes(r.content)
+            path.with_suffix('.part').rename(path)
+        if not exists(archived):
             put_file(path, archived)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if name in hashes and digest != hashes[name]:
@@ -311,6 +321,7 @@ def write_run(run: str, presence: pd.DataFrame, absence: pd.DataFrame, summary: 
             for h in range(1, 19)
         },
     }
+    delete(run_path(run, 'points.json'))
     put_bytes(run_path(run, 'points.csv'), buf.getvalue().encode())
     put_bytes(run_path(run, 'points.json'), json.dumps(summary, indent=2).encode())
     print(
@@ -336,10 +347,15 @@ def cmd_build(args) -> None:
         return
     targets = [('original', 0)] if 'original' in args.runs else []
     targets += [(run, seed) for run in NOAA_RUNS if run in args.runs for seed in args.seeds]
-    existing = [seeded(r, k) for r, k in targets if exists(run_path(seeded(r, k), 'points.csv'))]
-    if existing and not args.overwrite:
-        print(f'already built, skipped: {", ".join(existing)} (--overwrite replaces them)')
-        targets = [(r, k) for r, k in targets if seeded(r, k) not in existing]
+    built = [
+        (r, k)
+        for r, k in targets
+        if all(exists(run_path(seeded(r, k), name)) for name in ('points.csv', 'points.json'))
+    ]
+    if built and not args.overwrite:
+        names = ', '.join(seeded(r, k) for r, k in built)
+        print(f'already built, skipped: {names} (--overwrite replaces them)')
+        targets = [t for t in targets if t not in built]
         if not targets:
             return
     pinned = read_summary(args.noaa_from)['noaa_files'] if args.noaa_from else None
