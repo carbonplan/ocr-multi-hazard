@@ -47,11 +47,12 @@ We use the ERA5 coefficients of
 [Fosu et al. (2024)](https://doi.org/10.63024/dpva-2pa1).
 The ERA5 runs use TCGI-CRH; the climate-model runs are made once with each. `ocr.risks.hurricane.tcgi` computes
 TCGI. It computes the saturation column water vapour, which both moisture variables depend on,
-with the algorithm of Yi Xia's TCGI code ([yixia23/TCGI](https://github.com/yixia23/TCGI);
-[Xia et al. 2026](https://doi.org/10.1175/JCLI-D-25-0317.1)), but converts kelvin to Celsius by
-subtracting 273.3 rather than the correct 273.15. Only with 273.3 does it reproduce the tutorial's
-values, so the TCGI coefficients were presumably fit with that offset. With it, our 2017 TCGI
-matches the tutorial's in every basin to the three decimals of the notebook's table.
+as Yi Xia's TCGI code ([yixia23/TCGI](https://github.com/yixia23/TCGI);
+[Xia et al. 2026](https://doi.org/10.1175/JCLI-D-25-0317.1)) did from 2024 to March 2026. That
+version converted kelvin to Celsius by subtracting 273.3 rather than 273.15. We keep the 273.3,
+because only with it do we reproduce the tutorial's values, and the TCGI coefficients were
+presumably fit with it. Our 2017 TCGI then matches the tutorial's in every basin to the three
+decimals of the notebook's table.
 
 CHAZ seeds storm precursors each month in proportion to TCGI. One ratio per run scales TCGI to
 seeds. As in the public code, it is set so that the seeds over 1981–2005, times a survival rate of

@@ -137,9 +137,10 @@ def wind_shear(u200, v200, u850, v850) -> xr.DataArray:
     return np.hypot(u200 - u850, v200 - v850)
 
 
-# saturation_column reproduces the tutorial's 2017 W* (to 0.003 kg m-2) and TCGI (to 1.0000) only
-# when kelvin is converted to Celsius by subtracting 273.3, not the correct 273.15 of the public
-# yixia23/TCGI code. The TCGI coefficients were presumably fit on that W*, so 273.3 is the default.
+# yixia23/TCGI converted kelvin to Celsius by subtracting 273.3 until March 2026 (last at 893aa58);
+# 273.15 is correct. With 273.3, saturation_column reproduces the tutorial's 2017 W* to 0.003 kg m-2
+# and its TCGI to 1.0000, and the TCGI coefficients were presumably fit on that W*, so it is the
+# default.
 # 273.15 makes W* about 1% higher and the global TCGI about 5% lower (genesis-index notebook, §2).
 KELVIN_CHAZ = 273.3
 KELVIN = 273.15
