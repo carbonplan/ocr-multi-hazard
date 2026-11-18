@@ -7,6 +7,7 @@
 #   "rasterio",
 #   "requests",
 #   "s3fs>=2024.0.0",
+#   "universal-pathlib>=0.3.10",
 # ]
 # ///
 """Build the presence/absence training points for each FDP model run.
@@ -60,17 +61,17 @@ import numpy as np
 import pandas as pd
 import rasterio
 import requests
-import s3fs
-from fdp import BUCKET, REFIT, launch
-from fdp_inputs import HUC_KEY, HUCS, predictor_key, read_manifest, response_key
+from fdp import REFIT, ROOT, launch
+from fdp_inputs import HUC_RASTER, HUCS, predictor_path, put_file, read_manifest, response_path
 from pyproj import Transformer
 from rasterio.windows import Window
+from upath import UPath
 
-RUNS = f'{BUCKET}/{REFIT}/runs'
+RUNS = REFIT / 'runs'
 NOAA = 'https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/'
 # Every NOAA file a run used: NCEI drops a year's file when it reissues it, so `--noaa-from`
 # reads them here.
-NOAA_ARCHIVE = f'{BUCKET}/input/flood/raw/noaa-storm-events'
+NOAA_ARCHIVE = ROOT / 'input/flood/raw/noaa-storm-events'
 NOAA_START, NOAA_END = pd.Timestamp('2006-12-01'), pd.Timestamp('2026-01-01')
 ORIGINAL_END = pd.Timestamp('2020-06-01')
 FLOOD_TYPES = ['Flood', 'Flash Flood']
@@ -82,8 +83,8 @@ NODATA = 255
 CACHE = Path(os.environ.get('FDP_CACHE', Path.home() / '.cache/ocr/fdp'))
 
 
-def run_key(run: str, name: str) -> str:
-    return f'{RUNS}/{run}/{name}'
+def run_path(run: str, name: str) -> UPath:
+    return RUNS / run / name
 
 
 def seeded(run: str, seed: int) -> str:
@@ -109,18 +110,18 @@ class Grid:
         )
 
 
-def read_uint8(key: str, grid: Grid, offset=(0, 0), strip: int = 4096) -> np.ndarray:
+def read_uint8(path: UPath, grid: Grid, offset=(0, 0), strip: int = 4096) -> np.ndarray:
     """Read a categorical raster on `grid` from S3 as uint8, nodata as NODATA."""
-    print(f'  reading s3://{key}')
+    print(f'  reading {path}')
     (height, width), (dr, dc) = grid.shape, offset
-    with rasterio.open(f's3://{key}') as src:
+    with rasterio.open(str(path)) as src:
         out = np.empty((height, width), dtype='uint8')
         for r0 in range(0, height, strip):
             h = min(strip, height - r0)
             block = src.read(1, window=Window(dc, dr + r0, width, h), masked=True)
             valid = block.compressed()
             if valid.size and (valid.min() < 0 or valid.max() >= NODATA):
-                sys.exit(f'{key}: values outside 0..{NODATA - 1}')
+                sys.exit(f'{path}: values outside 0..{NODATA - 1}')
             out[r0 : r0 + h] = block.filled(NODATA).astype('uint8')
     return out
 
@@ -162,16 +163,15 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
         sys.exit(f'NOAA index is missing years: {sorted(latest)}')
 
     frames, provenance = [], []
-    s3 = s3fs.S3FileSystem()
     for year, name in sorted(latest.items()):
-        path, archived = raw / name, f'{NOAA_ARCHIVE}/{name}'
-        if not path.exists() and s3.exists(archived):
-            s3.get_file(archived, str(path))
+        path, archived = raw / name, NOAA_ARCHIVE / name
+        if not path.exists() and archived.exists():
+            archived.fs.get_file(archived.path, str(path))
         elif not path.exists():
             r = requests.get(NOAA + name, timeout=300)
             r.raise_for_status()
             path.write_bytes(r.content)
-            s3.put_file(str(path), archived)
+            put_file(path, archived)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if name in hashes and digest != hashes[name]:
             sys.exit(f'{path}: sha256 differs from the pinned run')
@@ -310,24 +310,20 @@ def write_run(run: str, presence: pd.DataFrame, absence: pd.DataFrame, summary: 
             for h in range(1, 19)
         },
     }
-    s3 = s3fs.S3FileSystem()
-    with s3.open(run_key(run, 'points.csv'), 'w') as fh:
-        fh.write(buf.getvalue())
-    with s3.open(run_key(run, 'points.json'), 'w') as fh:
-        json.dump(summary, fh, indent=2)
+    run_path(run, 'points.csv').write_text(buf.getvalue())
+    run_path(run, 'points.json').write_text(json.dumps(summary, indent=2))
     print(
         f'  {summary["points"]["presence"]} presence, {summary["points"]["absence"]} absence'
-        f' -> s3://{run_key(run, "points.csv")}'
+        f' -> {run_path(run, "points.csv")}'
     )
 
 
 def read_summary(run: str) -> dict:
-    with s3fs.S3FileSystem().open(run_key(run, 'points.json')) as fh:
-        return json.load(fh)
+    return json.loads(run_path(run, 'points.json').read_text())
 
 
 def released(kind: str) -> pd.DataFrame:
-    with s3fs.S3FileSystem().open(response_key(kind)) as fh:
+    with response_path(kind).open('rb') as fh:
         return pd.read_csv(fh)
 
 
@@ -338,10 +334,9 @@ def cmd_build(args) -> None:
         argv += ['--overwrite'] if args.overwrite else []
         launch('fdp-points', argv, vm_type=args.vm_type)
         return
-    s3 = s3fs.S3FileSystem()
     targets = [('original', 0)] if 'original' in args.runs else []
     targets += [(run, seed) for run in NOAA_RUNS if run in args.runs for seed in args.seeds]
-    existing = [seeded(r, k) for r, k in targets if s3.exists(run_key(seeded(r, k), 'points.csv'))]
+    existing = [seeded(r, k) for r, k in targets if run_path(seeded(r, k), 'points.csv').exists()]
     if existing and not args.overwrite:
         print(f'already built, skipped: {", ".join(existing)} (--overwrite replaces them)')
         targets = [(r, k) for r, k in targets if seeded(r, k) not in existing]
@@ -351,10 +346,10 @@ def cmd_build(args) -> None:
 
     manifest = read_manifest()
     grid = Grid(manifest)
-    hucs = read_uint8(HUC_KEY, grid)
-    nlcd = read_uint8(predictor_key('nlcd'), grid, manifest['predictors']['nlcd']['offset'])
+    hucs = read_uint8(HUC_RASTER, grid)
+    nlcd = read_uint8(predictor_path('nlcd'), grid, manifest['predictors']['nlcd']['offset'])
     floodplain = read_uint8(
-        predictor_key('floodplain'), grid, manifest['predictors']['floodplain']['offset']
+        predictor_path('floodplain'), grid, manifest['predictors']['floodplain']['offset']
     )
 
     pres = tag(released('presence'), grid, hucs, nlcd)

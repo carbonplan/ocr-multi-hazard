@@ -7,6 +7,7 @@
 #   "rasterio",
 #   "requests",
 #   "s3fs>=2024.0.0",
+#   "universal-pathlib>=0.3.10",
 # ]
 # ///
 """Stage the Collins et al. (2022) model inputs in S3 for retraining.
@@ -53,11 +54,9 @@ import rasterio
 import rasterio.features
 import rasterio.shutil
 import requests
-import s3fs
 from fdp import (
-    BUCKET,
     PROJ4,
-    PUBLISHED_KEY,
+    PUBLISHED,
     PUBLISHED_ZIP,
     REFIT,
     download,
@@ -66,9 +65,10 @@ from fdp import (
     sciencebase_url,
 )
 from pyproj import CRS
+from upath import UPath
 
-INPUTS = f'{BUCKET}/{REFIT}/inputs'
-MANIFEST = f'{INPUTS}/manifest.json'
+INPUTS = REFIT / 'inputs'
+MANIFEST = INPUTS / 'manifest.json'
 
 # Stack order of the released R script; ranger draws mtry candidates by column
 # position, so this order is part of the model specification.
@@ -96,33 +96,30 @@ REFERENCE = 'floodplain'
 WBD = 'https://hydro.nationalmap.gov/arcgis/rest/services/wbd/MapServer/1/query'
 
 
-def predictor_key(name: str) -> str:
-    return f'{INPUTS}/predictors/{name}.tif'
+def predictor_path(name: str) -> UPath:
+    return INPUTS / 'predictors' / f'{name}.tif'
 
 
-def response_key(kind: str) -> str:
-    return f'{INPUTS}/response/{kind}.csv'
+def response_path(kind: str) -> UPath:
+    return INPUTS / 'response' / f'{kind}.csv'
 
 
-HUC_KEY = f'{INPUTS}/huc2_100m.tif'
-HUC_GEOJSON_KEY = f'{INPUTS}/huc2.geojson'
+HUC_RASTER = INPUTS / 'huc2_100m.tif'
+HUC_GEOJSON = INPUTS / 'huc2.geojson'
 
 
-def s3_path(key: str) -> str:
-    return f's3://{key}'
+def put_file(local: Path, path: UPath) -> None:
+    path.fs.put_file(str(local), path.path)
 
 
 def read_manifest() -> dict:
-    s3 = s3fs.S3FileSystem()
-    if not s3.exists(MANIFEST):
+    if not MANIFEST.exists():
         return {'predictors': {}, 'response': {}}
-    with s3.open(MANIFEST, 'rb') as fh:
-        return json.load(fh)
+    return json.loads(MANIFEST.read_text())
 
 
 def write_manifest(manifest: dict) -> None:
-    with s3fs.S3FileSystem().open(MANIFEST, 'w') as fh:
-        json.dump(manifest, fh, indent=2)
+    MANIFEST.write_text(json.dumps(manifest, indent=2))
 
 
 def sha256(path: Path) -> str:
@@ -192,8 +189,8 @@ def stage_predictor(name: str, work: Path) -> dict:
         }
     src.unlink()
 
-    print(f'  uploading -> {s3_path(predictor_key(name))}')
-    s3fs.S3FileSystem().put_file(str(cog), predictor_key(name))
+    print(f'  uploading -> {predictor_path(name)}')
+    put_file(cog, predictor_path(name))
     cog.unlink()
     return record
 
@@ -220,8 +217,8 @@ def stage_response(kind: str, work: Path) -> dict:
         comments='',
         fmt='%.4f',
     )
-    s3fs.S3FileSystem().put_file(str(local), response_key(kind))
-    print(f'  {len(xy["x"])} points -> {s3_path(response_key(kind))}')
+    put_file(local, response_path(kind))
+    print(f'  {len(xy["x"])} points -> {response_path(kind)}')
     return record | {'points': int(len(xy['x']))}
 
 
@@ -291,20 +288,19 @@ def stage_hucs(grid: dict, work: Path) -> dict:
                 NUM_THREADS='ALL_CPUS',
             )
 
-    s3 = s3fs.S3FileSystem()
-    s3.put_file(str(geojson), HUC_GEOJSON_KEY)
-    s3.put_file(str(tif), HUC_KEY)
-    print(f'  -> {s3_path(HUC_KEY)}')
+    put_file(geojson, HUC_GEOJSON)
+    put_file(tif, HUC_RASTER)
+    print(f'  -> {HUC_RASTER}')
     return {'source': r.url, 'windows': windows, 'cells': cells}
 
 
 def stage_published(work: Path) -> None:
     zip_path = work / PUBLISHED_ZIP
     download(sciencebase_url(PUBLISHED_ZIP), zip_path)
-    tif = work / Path(PUBLISHED_KEY).name
+    tif = work / PUBLISHED.name
     extract_tif(zip_path, tif)
     zip_path.unlink()
-    s3fs.S3FileSystem().put_file(str(tif), PUBLISHED_KEY)
+    put_file(tif, PUBLISHED)
     tif.unlink()
 
 
@@ -313,11 +309,10 @@ def cmd_stage(args) -> None:
         launch('fdp-inputs', ['fdp_inputs', 'stage'], vm_type=args.vm_type)
         return
     manifest = read_manifest()
-    s3 = s3fs.S3FileSystem()
     with tempfile.TemporaryDirectory(prefix='fdp-inputs-') as tmp:
         work = Path(tmp)
         for name in PREDICTORS:
-            if name in manifest['predictors'] and s3.exists(predictor_key(name)):
+            if name in manifest['predictors'] and predictor_path(name).exists():
                 print(f'{name}: staged')
                 continue
             print(f'{name}:')
@@ -325,7 +320,7 @@ def cmd_stage(args) -> None:
             write_manifest(manifest)
 
         for kind in RESPONSE:
-            if kind in manifest['response'] and s3.exists(response_key(kind)):
+            if kind in manifest['response'] and response_path(kind).exists():
                 print(f'{kind} points: staged')
                 continue
             print(f'{kind} points:')
@@ -339,14 +334,14 @@ def cmd_stage(args) -> None:
             if rec['offset'] != [0, 0]:
                 print(f'{name}: offset {rec["offset"]} cells into the {REFERENCE} grid')
 
-        if 'huc2' not in manifest or not s3.exists(HUC_KEY):
+        if 'huc2' not in manifest or not HUC_RASTER.exists():
             print('huc2:')
             manifest['huc2'] = stage_hucs(manifest['grid'], work)
             write_manifest(manifest)
         else:
             print('huc2: staged')
 
-        if s3.exists(PUBLISHED_KEY):
+        if PUBLISHED.exists():
             print('published surface: staged')
         else:
             print('published surface:')
@@ -388,8 +383,7 @@ def offset(record: dict, grid: dict, tol: float = 1e-3) -> list[int]:
 
 
 def check() -> list[str]:
-    s3 = s3fs.S3FileSystem()
-    if not s3.exists(MANIFEST):
+    if not MANIFEST.exists():
         return ['manifest.json missing']
     manifest = read_manifest()
     fails = []
@@ -402,7 +396,7 @@ def check() -> list[str]:
         if rec is None:
             fails.append(f'{name}: not in manifest')
             continue
-        with rasterio.open(s3_path(predictor_key(name))) as src:
+        with rasterio.open(str(predictor_path(name))) as src:
             got = grid_of(src.profile)
             print(
                 f'{name}: {src.profile["dtype"]} nodata={src.nodata} '
@@ -415,21 +409,21 @@ def check() -> list[str]:
 
     for kind in RESPONSE:
         rec = manifest['response'].get(kind)
-        if rec is None or not s3.exists(response_key(kind)):
+        if rec is None or not response_path(kind).exists():
             fails.append(f'{kind} points missing')
             continue
-        with s3.open(response_key(kind)) as fh:
+        with response_path(kind).open('rb') as fh:
             n = sum(1 for _ in fh) - 1
         print(f'{kind}: {n} points')
         if n != rec['points']:
             fails.append(f'{kind}: {n} rows, manifest says {rec["points"]}')
 
-    if not s3.exists(PUBLISHED_KEY):
+    if not PUBLISHED.exists():
         fails.append('published surface missing')
-    if 'huc2' not in manifest or not s3.exists(HUC_KEY):
+    if 'huc2' not in manifest or not HUC_RASTER.exists():
         fails.append('huc2 raster missing')
     else:
-        with rasterio.open(s3_path(HUC_KEY)) as src:
+        with rasterio.open(str(HUC_RASTER)) as src:
             if grid and grid_of(src.profile)['transform'] != grid['transform']:
                 fails.append('huc2 raster grid differs from predictors')
         if sorted(manifest['huc2']['windows']) != HUCS:
@@ -438,7 +432,7 @@ def check() -> list[str]:
 
 
 def cmd_verify(_) -> None:
-    print(f'verifying s3://{INPUTS}')
+    print(f'verifying {INPUTS}')
     fails = check()
     if fails:
         print('\nFAIL')

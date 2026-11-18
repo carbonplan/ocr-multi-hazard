@@ -5,6 +5,7 @@
 #   "pandas",
 #   "rasterio",
 #   "s3fs>=2024.0.0",
+#   "universal-pathlib>=0.3.10",
 # ]
 # ///
 """Train and predict the FDP random forest for HUC-2 watersheds.
@@ -60,11 +61,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
-import s3fs
-from fdp import CACHE, PUBLISHED_KEY, VM_TYPE, launch
-from fdp_inputs import HUC_KEY, HUCS, PREDICTORS, predictor_key, read_manifest
-from fdp_points import RUNS, SEED, run_key
+from fdp import CACHE, PUBLISHED, VM_TYPE, launch
+from fdp_inputs import HUC_RASTER, HUCS, PREDICTORS, predictor_path, put_file, read_manifest
+from fdp_points import RUNS, SEED, run_path
 from rasterio.windows import Window
+from upath import UPath
 
 HERE = Path(__file__).resolve().parent
 R_DIR = Path(sys.prefix) / 'share' / 'fdp-refit'  # where the fdp-refit package installs them
@@ -76,8 +77,8 @@ CONDA_EXTRAS = ['r-dismo', 'r-tuneranger']
 QUICK = {'iters': 3, 'trees': 300}
 
 
-def model_prefix(run: str, distance: str, quick: bool, huc: str) -> str:
-    return f'{RUNS}/{run}/{distance}{"-quick" if quick else ""}/huc{huc}'
+def model_prefix(run: str, distance: str, quick: bool, huc: str) -> UPath:
+    return RUNS / run / f'{distance}{"-quick" if quick else ""}' / f'huc{huc}'
 
 
 def r_script(name: str = R_SCRIPT) -> Path:
@@ -104,7 +105,7 @@ def prepare_predictors(huc: str, manifest: dict) -> tuple[Path, np.ndarray]:
     window = manifest['huc2']['windows'][huc]
     r0, c0, h, w = window
     win = Window(c0, r0, w, h)
-    with rasterio.open(f's3://{HUC_KEY}') as src:
+    with rasterio.open(str(HUC_RASTER)) as src:
         outside = src.read(1, window=win) != int(huc)
 
     dest = CACHE / 'predictors' / f'huc{huc}'
@@ -131,7 +132,7 @@ def prepare_predictors(huc: str, manifest: dict) -> tuple[Path, np.ndarray]:
     for name in PREDICTORS:
         t0 = time.time()
         dr, dc = offsets[name]
-        with rasterio.open(f's3://{predictor_key(name)}') as src:
+        with rasterio.open(str(predictor_path(name))) as src:
             if src.nodata is None:
                 sys.exit(f'{name} has no nodata value')
             data = src.read(1, window=Window(c0 + dc, r0 + dr, w, h))
@@ -274,24 +275,23 @@ def compare(
 
 def published_tif() -> Path:
     """The published surface (`fdp_inputs.py stage` puts it in S3), cached locally."""
-    tif = CACHE / Path(PUBLISHED_KEY).name
+    tif = CACHE / PUBLISHED.name
     if not tif.exists():
         tif.parent.mkdir(parents=True, exist_ok=True)
         part = tif.with_suffix('.part')
-        s3fs.S3FileSystem().get_file(PUBLISHED_KEY, str(part))
+        PUBLISHED.fs.get_file(PUBLISHED.path, str(part))
         part.rename(tif)
     return tif
 
 
-def upload(local: Path, prefix: str) -> None:
-    if '/runs/' not in prefix or not prefix.rsplit('/', 1)[-1].startswith('huc'):
-        raise ValueError(f'refusing to write to {prefix!r}')
-    s3 = s3fs.S3FileSystem()
-    if s3.exists(prefix):
-        s3.rm(prefix, recursive=True)
+def upload(local: Path, prefix: UPath) -> None:
+    if RUNS not in prefix.parents or not prefix.name.startswith('huc'):
+        raise ValueError(f'refusing to write to {prefix}')
+    if prefix.exists():
+        prefix.fs.rm(prefix.path, recursive=True)
     for f in sorted(local.iterdir()):
-        s3.put_file(str(f), f'{prefix}/{f.name}')
-    print(f'uploaded {len(list(local.iterdir()))} files -> s3://{prefix}')
+        put_file(f, prefix / f.name)
+    print(f'uploaded {len(list(local.iterdir()))} files -> {prefix}')
 
 
 def run_se(args, out: Path, predictors: Path, work: Path, threads: int) -> dict:
@@ -320,13 +320,12 @@ def cmd_task(args) -> None:
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
     wanted = ['fdp.tif', *(['contributions.tif'] if args.contributions else [])]
     wanted += ['se.tif'] if args.se else []
-    s3 = s3fs.S3FileSystem()
-    if not args.overwrite and all(s3.exists(f'{prefix}/{name}') for name in wanted):
-        print(f'HUC {huc}: s3://{prefix} already has {", ".join(wanted)}; skipped')
+    if not args.overwrite and all((prefix / name).exists() for name in wanted):
+        print(f'HUC {huc}: {prefix} already has {", ".join(wanted)}; skipped')
         return
     threads = args.threads or os.cpu_count()
     settings = QUICK if args.quick else {'iters': 70, 'trees': 1000}
-    print(f'HUC {huc} -> s3://{prefix} ({threads} threads, {settings})', flush=True)
+    print(f'HUC {huc} -> {prefix} ({threads} threads, {settings})', flush=True)
 
     work = Path(tempfile.mkdtemp(prefix=f'fdp-huc{huc}-', dir=args.work))
     out, tmp = work / 'out', work / 'tmp'
@@ -337,9 +336,10 @@ def cmd_task(args) -> None:
     manifest = read_manifest()
     predictors, inside = prepare_predictors(huc, manifest)
     inputs = {'window': manifest['huc2']['windows'][huc], 'cells': int(inside.sum())}
-    s3.get_file(run_key(args.run, 'points.csv'), str(work / 'points.csv'))
-    with s3.open(run_key(args.run, 'points.json')) as fh:
-        seed = json.load(fh).get('absence_sampling', {}).get('seed', SEED)
+    points = run_path(args.run, 'points.csv')
+    points.fs.get_file(points.path, str(work / 'points.csv'))
+    summary = json.loads(run_path(args.run, 'points.json').read_text())
+    seed = summary.get('absence_sampling', {}).get('seed', SEED)
     prepare_seconds = round(time.time() - t0)
 
     cmd = [
@@ -427,26 +427,25 @@ def cmd_se(args) -> None:
     if huc not in HUCS:
         sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
-    s3 = s3fs.S3FileSystem()
-    if not s3.exists(f'{prefix}/rf.rds'):
-        sys.exit(f's3://{prefix} has no trained forest; run `task` first')
+    if not (prefix / 'rf.rds').exists():
+        sys.exit(f'{prefix} has no trained forest; run `task` first')
     threads = args.threads or os.cpu_count()
-    print(f'HUC {huc} standard errors -> s3://{prefix} ({threads} threads)', flush=True)
+    print(f'HUC {huc} standard errors -> {prefix} ({threads} threads)', flush=True)
 
     work = Path(tempfile.mkdtemp(prefix=f'fdp-se-huc{huc}-', dir=args.work))
     out = work / 'out'
     out.mkdir()
     predictors, _ = prepare_predictors(huc, read_manifest())
     for name in ('rf.rds', 'fdp.tif', 'run.json'):
-        s3.get_file(f'{prefix}/{name}', str(out / name))
+        (prefix / name).fs.get_file((prefix / name).path, str(out / name))
     se = run_se(args, out, predictors, work, threads)
 
     record = json.loads((out / 'run.json').read_text())
     record['se'] = se | {'host': {'platform': platform.platform(), 'cpus': os.cpu_count()}}
     (out / 'run.json').write_text(json.dumps(record, indent=2))
     for name in (*SE_FILES, 'run.json'):
-        s3.put_file(str(out / name), f'{prefix}/{name}')
-    print(f'uploaded {", ".join(SE_FILES)} -> s3://{prefix}')
+        put_file(out / name, prefix / name)
+    print(f'uploaded {", ".join(SE_FILES)} -> {prefix}')
     if not args.keep:
         shutil.rmtree(work)
 

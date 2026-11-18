@@ -220,6 +220,7 @@
     rasterio     = ">=1.4,<2"
     requests     = ">=2,<3"
     s3fs         = ">=2025.9.0,<2026"
+    universal-pathlib = ">=0.3.10,<0.4"
     zarr         = ">=3.2.1,<4"
 
 # Only python (and fire's PROJ stack, above) comes from conda-forge; all other deps live in the standard [project] / [dependency-groups] tables.
