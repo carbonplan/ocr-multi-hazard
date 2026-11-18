@@ -43,11 +43,16 @@ def sciencebase_url(name: str) -> str:
 
 
 def download(url: str, dest: Path) -> None:
-    """Stream a ScienceBase file to `dest`.
+    """Stream a ScienceBase file to `dest`, unless it is already there.
 
     The endpoint ignores Range headers and streams the whole file, so there is
-    no way to pull just the tif member: the zip lands on disk in full.
+    no way to pull just the tif member: the zip lands on disk in full. It
+    arrives as `<dest>.part` and is renamed when complete.
     """
+    if dest.exists():
+        print(f'  downloaded: {dest}')
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + '.part')
     print(f'  downloading {dest.name}')
     t0 = time.time()

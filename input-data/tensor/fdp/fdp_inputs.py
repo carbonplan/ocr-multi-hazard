@@ -29,7 +29,9 @@ Polygons come from the USGS WBD service generalized to 50 m, half a cell;
 where generalized neighbours overlap, the higher HUC code wins.
 
 Every step is skipped when its output is already recorded in the manifest, so
-`stage` resumes after an interruption. Expect ~18 GB of ScienceBase downloads;
+`stage` resumes after an interruption. A step's ScienceBase zip is kept under
+$FDP_CACHE/sciencebase/ until the step's output is uploaded, so a step that
+fails after its download reuses the zip when rerun. Expect ~18 GB of downloads;
 `--coiled` runs it on a VM in us-west-2, next to the bucket.
 
 Usage:
@@ -56,6 +58,7 @@ import rasterio.features
 import rasterio.shutil
 import requests
 from fdp import (
+    CACHE,
     PROJ4,
     PUBLISHED,
     PUBLISHED_ZIP,
@@ -73,6 +76,7 @@ from pyproj import CRS
 from upath import UPath
 
 INPUTS = REFIT / 'inputs'
+DOWNLOADS = CACHE / 'sciencebase'
 MANIFEST = INPUTS / 'manifest.json'
 
 # Stack order of the released R script; ranger draws mtry candidates by column
@@ -141,14 +145,14 @@ def grid_of(profile) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _fetch(zip_name: str, work: Path) -> tuple[Path, dict]:
-    path = work / zip_name
+def _fetch(zip_name: str) -> tuple[Path, dict]:
+    path = DOWNLOADS / zip_name
     download(sciencebase_url(zip_name), path)
     return path, {'zip': zip_name, 'zip_bytes': path.stat().st_size, 'zip_sha256': sha256(path)}
 
 
 def stage_predictor(name: str, work: Path) -> dict:
-    zip_path, record = _fetch(f'Input_PredictorVar_CONUS_{PREDICTORS[name]}_100m.zip', work)
+    zip_path, record = _fetch(f'Input_PredictorVar_CONUS_{PREDICTORS[name]}_100m.zip')
     with zipfile.ZipFile(zip_path) as zf:
         tifs = [
             n
@@ -159,7 +163,6 @@ def stage_predictor(name: str, work: Path) -> dict:
             sys.exit(f'expected exactly one .tif in {zip_path.name}, found {tifs}')
         print(f'  extracting {tifs[0]}')
         zf.extract(tifs[0], work)
-    zip_path.unlink()
     src = work / tifs[0]
 
     cog = work / f'{name}.tif'
@@ -193,11 +196,12 @@ def stage_predictor(name: str, work: Path) -> dict:
     print(f'  uploading -> {predictor_path(name)}')
     put_file(cog, predictor_path(name))
     cog.unlink()
+    zip_path.unlink()
     return record
 
 
 def stage_response(kind: str, work: Path) -> dict:
-    zip_path, record = _fetch(RESPONSE[kind], work)
+    zip_path, record = _fetch(RESPONSE[kind])
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(work / kind)
     shp = next((work / kind).rglob('*.shp'))
@@ -219,6 +223,7 @@ def stage_response(kind: str, work: Path) -> dict:
         fmt='%.4f',
     )
     put_file(local, response_path(kind))
+    zip_path.unlink()
     print(f'  {len(xy["x"])} points -> {response_path(kind)}')
     return record | {'points': int(len(xy['x']))}
 
@@ -296,13 +301,13 @@ def stage_hucs(grid: dict, work: Path) -> dict:
 
 
 def stage_published(work: Path) -> None:
-    zip_path = work / PUBLISHED_ZIP
+    zip_path = DOWNLOADS / PUBLISHED_ZIP
     download(sciencebase_url(PUBLISHED_ZIP), zip_path)
     tif = work / PUBLISHED.name
     extract_tif(zip_path, tif)
-    zip_path.unlink()
     put_file(tif, PUBLISHED)
     tif.unlink()
+    zip_path.unlink()
 
 
 def cmd_stage(args) -> None:
