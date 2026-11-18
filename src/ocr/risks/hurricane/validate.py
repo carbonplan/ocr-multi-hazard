@@ -224,6 +224,14 @@ def _team_file(i: int) -> list[dict]:
     return _by_year(*landfall.chaz_arrays(ds))
 
 
+def _natural_earth() -> None:
+    """Download the shapefiles once, before workers read them."""
+    import cartopy.io.shapereader as shpreader
+
+    shpreader.natural_earth('10m', 'cultural', 'admin_0_countries')
+    shpreader.natural_earth('10m', 'physical', 'land')
+
+
 def first_record_year(csv: bytes) -> np.ndarray:
     """Calendar year of each track's first synoptic record, in landfall.observed_arrays' order."""
     bt = pd.read_csv(
@@ -245,8 +253,10 @@ def annual(source: str, workers: int | None = None) -> pd.DataFrame:
             raise ValueError(f'{year.size} first-record years for {lat.shape[1]} tracks')
         parts = [_by_year(lat, lon, wind, year)]
     else:
+        _natural_earth()
         if source == 'chaz-team':
-            fn, jobs = _team_file, range(10)
+            # a file holds every year: fewer at once
+            fn, jobs, workers = _team_file, range(10), workers or 5
         else:
             fn = _run_file
             jobs = [
@@ -279,7 +289,7 @@ def task(source: str) -> None:
     print(source, df[['members', 'NA TS', 'TS formed global']].sum().to_dict(), flush=True)
 
 
-def launch(sources: list[str], vm_type: str = 'm8g.2xlarge') -> None:
+def launch(sources: list[str], vm_type: str = 'm8g.4xlarge') -> None:
     batch.run(
         'validate',
         ['task'],
@@ -342,7 +352,7 @@ def main() -> None:
     t.add_argument('--source', help='default: $COILED_BATCH_TASK_INPUT')
     la = sub.add_parser('launch')
     la.add_argument('--runs', required=True, help='comma-separated run names under runs/era5')
-    la.add_argument('--vm-type', default='m8g.2xlarge')
+    la.add_argument('--vm-type', default='m8g.4xlarge')
     a = p.parse_args()
     if a.cmd == 'task':
         task(a.source or os.environ['COILED_BATCH_TASK_INPUT'])
