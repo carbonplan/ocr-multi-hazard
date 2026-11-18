@@ -12,6 +12,7 @@ import shutil
 import sys
 import time
 import zipfile
+from datetime import timedelta
 from functools import cache
 from pathlib import Path
 
@@ -77,8 +78,11 @@ def download(url: str, dest: Path) -> None:
 
 @cache
 def store() -> S3Store:
-    """ROOT's bucket; boto3's credential chain covers SSO profiles on laptops."""
-    return S3Store(ROOT.drive, region='us-west-2', credential_provider=Boto3CredentialProvider())
+    """ROOT's bucket; boto3's credential chain covers SSO profiles on laptops. obstore asks for
+    credentials again every 5 min, and botocore refreshes any within 10 min of expiring, so
+    obstore gets fresh ones before the old ones expire."""
+    provider = Boto3CredentialProvider(ttl=timedelta(minutes=5))
+    return S3Store(ROOT.drive, region='us-west-2', credential_provider=provider)
 
 
 def key(path: UPath) -> str:
@@ -98,9 +102,12 @@ def read_bytes(path: UPath) -> bytes:
 
 
 def get_file(path: UPath, dest: Path) -> None:
-    with dest.open('wb') as fh:
+    """Stream `path` to `dest`, by way of `<dest>.part`."""
+    part = dest.with_suffix(dest.suffix + '.part')
+    with part.open('wb') as fh:
         for chunk in obstore.get(store(), key(path)).stream():
             fh.write(chunk)
+    part.rename(dest)
 
 
 def put_file(local: Path, path: UPath) -> None:
