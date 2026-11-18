@@ -333,8 +333,14 @@ def ibtracs_csv(fs) -> bytes:
     return fs.cat(key)
 
 
+def atlantic_crossing(df: pd.DataFrame) -> pd.Series:
+    """Rows whose first US crossing is on the Atlantic or Gulf coast, whatever the wind there."""
+    pacific = region(df['lf_lat'].values, df['lf_lon'].values) == 'Pacific'
+    return df['crosses'] & ~pacific
+
+
 def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
-    pacific = df['crosses'] & (region(df['lf_lat'].values, df['lf_lon'].values) == 'Pacific')
+    pacific = df['crosses'] & ~atlantic_crossing(df)
     df = df.assign(crosses=df['crosses'] & ~pacific)
     pac = df[pacific & (df['lf_wind'] >= TS)]
     df = df.assign(lf_max_wind=df['lf_max_wind'].where(~pacific))
