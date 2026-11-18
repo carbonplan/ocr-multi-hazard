@@ -18,10 +18,12 @@ compares each refit with it.
 
 ## Retraining
 
-`train_fdp.R` ports the released R script (its header lists what differs). Three steps,
-each writing under `input/flood/fdp-refit/` and each skipping work already done. On Coiled,
-one pixi task runs all three in order for the served run, waiting for each job and stopping if
-one fails; a rerun resumes. Ctrl-C stops the waiting, not the running job.
+`train_fdp.R` ports the released R script (its header lists what differs). Three steps, each
+writing under `input/flood/fdp-refit/`. On Coiled, one pixi task runs all three in order for
+the served run, `noaa-200612-202512` (the run `runs/flood/v2.0.0.toml` gives `score`). It waits
+for each job and stops if one fails. Rerunning it skips work already done, and training never
+replaces a watershed's outputs without `--overwrite`; to refit, run step 3 below with
+`--overwrite`. Ctrl-C stops the task from waiting; the Coiled job keeps running.
 
 ```bash
 pixi run -e fdp fdp-refit

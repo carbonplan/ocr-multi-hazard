@@ -25,8 +25,11 @@ released script, which reads them as degrees (see train_fdp.R). `--quick` shrink
 `--contributions` adds per-cell attributions of the prediction to each
 predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
 
-`task` skips a watershed whose requested outputs are already uploaded, unless
-`--overwrite` is given.
+A watershed's `run.json` is uploaded last and records which outputs it has, so
+`task` skips a watershed whose `run.json` records every requested output from
+the current points. Without `--overwrite` it never replaces or deletes a
+watershed's outputs: it stops if they are incomplete, lack a requested output
+(`se` adds standard errors to an existing fit) or came from other points.
 
 `se` adds standard errors to a watershed already trained and uploaded, from
 its saved forest and prediction, without retraining.
@@ -48,6 +51,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -69,6 +73,7 @@ from fdp import (
     delete_prefix,
     exists,
     get_file,
+    has_objects,
     launch,
     put_file,
     read_bytes,
@@ -296,12 +301,37 @@ def published_tif() -> Path:
 
 
 def upload(local: Path, prefix: UPath) -> None:
+    """Replace `prefix` with the files in `local`, `run.json` last."""
     if RUNS not in prefix.parents or not prefix.name.startswith('huc'):
         raise ValueError(f'refusing to write to {prefix}')
     delete_prefix(prefix)
-    for f in sorted(local.iterdir()):
+    files = sorted(local.iterdir(), key=lambda f: (f.name == 'run.json', f.name))
+    for f in files:
         put_file(f, prefix / f.name)
-    print(f'uploaded {len(list(local.iterdir()))} files -> {prefix}')
+    print(f'uploaded {len(files)} files -> {prefix}')
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def existing_fit(args, prefix: UPath, points_sha256: str) -> bool:
+    """True when `prefix` holds every output `args` asks for, trained on these points; exits
+    when it holds something else that only `--overwrite` may replace; False when empty."""
+    if not exists(prefix / 'run.json'):
+        if has_objects(prefix):
+            sys.exit(f'{prefix} has an incomplete upload (no run.json); --overwrite refits it')
+        return False
+    record = json.loads(read_bytes(prefix / 'run.json'))
+    if record.get('points_sha256', points_sha256) != points_sha256:
+        sys.exit(f'{prefix} was trained on other points; --overwrite refits it')
+    wanted = [name for name in ('contributions', 'se') if getattr(args, name)]
+    if missing := [name for name in wanted if record.get(name) is None]:
+        sys.exit(
+            f'{prefix} has a fit without {", ".join(missing)}; `se` adds standard errors to '
+            'it, --overwrite refits it'
+        )
+    return True
 
 
 def run_se(args, out: Path, predictors: Path, work: Path, threads: int) -> dict:
@@ -328,10 +358,9 @@ def cmd_task(args) -> None:
     if huc not in HUCS:
         sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
-    wanted = ['fdp.tif', *(['contributions.tif'] if args.contributions else [])]
-    wanted += ['se.tif'] if args.se else []
-    if not args.overwrite and all(exists(prefix / name) for name in wanted):
-        print(f'HUC {huc}: {prefix} already has {", ".join(wanted)}; skipped')
+    points = read_bytes(run_path(args.run, 'points.csv'))
+    if not args.overwrite and existing_fit(args, prefix, sha256(points)):
+        print(f'HUC {huc}: {prefix} already has this fit; skipped')
         return
     threads = args.threads or os.cpu_count()
     settings = QUICK if args.quick else {'iters': 70, 'trees': 1000}
@@ -346,7 +375,7 @@ def cmd_task(args) -> None:
     manifest = read_manifest()
     predictors, inside = prepare_predictors(huc, manifest)
     inputs = {'window': manifest['huc2']['windows'][huc], 'cells': int(inside.sum())}
-    get_file(run_path(args.run, 'points.csv'), work / 'points.csv')
+    (work / 'points.csv').write_bytes(points)
     summary = json.loads(read_bytes(run_path(args.run, 'points.json')))
     seed = summary.get('absence_sampling', {}).get('seed', SEED)
     prepare_seconds = round(time.time() - t0)
@@ -410,6 +439,7 @@ def cmd_task(args) -> None:
                 'quick': args.quick,
                 'settings': settings,
                 'seed': seed,
+                'points_sha256': sha256(points),
                 'threads': threads,
                 'inputs': inputs,
                 'prepare_seconds': prepare_seconds,
@@ -436,8 +466,8 @@ def cmd_se(args) -> None:
     if huc not in HUCS:
         sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
-    if not exists(prefix / 'rf.rds'):
-        sys.exit(f'{prefix} has no trained forest; run `task` first')
+    if not exists(prefix / 'run.json'):
+        sys.exit(f'{prefix} has no complete fit; run `task` first')
     threads = args.threads or os.cpu_count()
     print(f'HUC {huc} standard errors -> {prefix} ({threads} threads)', flush=True)
 

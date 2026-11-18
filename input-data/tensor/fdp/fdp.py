@@ -111,6 +111,11 @@ def put_bytes(path: UPath, data: bytes) -> None:
     obstore.put(store(), key(path), data)
 
 
+def has_objects(path: UPath) -> bool:
+    """Whether any object is under `path`/."""
+    return any(batch for batch in obstore.list(store(), prefix=f'{key(path)}/', chunk_size=1))
+
+
 def delete_prefix(path: UPath) -> None:
     """Delete every object under `path`/."""
     for batch in obstore.list(store(), prefix=f'{key(path)}/'):

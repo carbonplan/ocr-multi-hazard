@@ -188,7 +188,8 @@
     platforms = ["linux-64", "osx-arm64-15"]
 
 # The served refit on Coiled, start to finish: `pixi run -e fdp fdp-refit`. Each step waits
-# for its job and skips work already done, so a rerun resumes.
+# for its job and skips work already done; training stops rather than replace a watershed's
+# outputs without --overwrite.
 [tool.pixi.feature.fdp.tasks]
     fdp-inputs = { cmd = "python input-data/tensor/fdp/fdp_inputs.py stage --coiled" }
     fdp-points = { cmd = "python input-data/tensor/fdp/fdp_points.py build --runs noaa-200612-202512 --coiled", depends-on = ["fdp-inputs"] }
