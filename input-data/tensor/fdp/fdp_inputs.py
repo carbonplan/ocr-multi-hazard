@@ -1,8 +1,10 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#   "boto3",
 #   "duckdb>=1.1",
 #   "numpy",
+#   "obstore>=0.12",
 #   "pyproj",
 #   "rasterio",
 #   "requests",
@@ -60,8 +62,10 @@ from fdp import (
     PUBLISHED_ZIP,
     REFIT,
     download,
+    exists,
     extract_tif,
     launch,
+    read_bytes,
     sciencebase_url,
 )
 from pyproj import CRS
@@ -113,9 +117,9 @@ def put_file(local: Path, path: UPath) -> None:
 
 
 def read_manifest() -> dict:
-    if not MANIFEST.exists():
+    if not exists(MANIFEST):
         return {'predictors': {}, 'response': {}}
-    return json.loads(MANIFEST.read_text())
+    return json.loads(read_bytes(MANIFEST))
 
 
 def write_manifest(manifest: dict) -> None:
@@ -312,7 +316,7 @@ def cmd_stage(args) -> None:
     with tempfile.TemporaryDirectory(prefix='fdp-inputs-') as tmp:
         work = Path(tmp)
         for name in PREDICTORS:
-            if name in manifest['predictors'] and predictor_path(name).exists():
+            if name in manifest['predictors'] and exists(predictor_path(name)):
                 print(f'{name}: staged')
                 continue
             print(f'{name}:')
@@ -320,7 +324,7 @@ def cmd_stage(args) -> None:
             write_manifest(manifest)
 
         for kind in RESPONSE:
-            if kind in manifest['response'] and response_path(kind).exists():
+            if kind in manifest['response'] and exists(response_path(kind)):
                 print(f'{kind} points: staged')
                 continue
             print(f'{kind} points:')
@@ -334,14 +338,14 @@ def cmd_stage(args) -> None:
             if rec['offset'] != [0, 0]:
                 print(f'{name}: offset {rec["offset"]} cells into the {REFERENCE} grid')
 
-        if 'huc2' not in manifest or not HUC_RASTER.exists():
+        if 'huc2' not in manifest or not exists(HUC_RASTER):
             print('huc2:')
             manifest['huc2'] = stage_hucs(manifest['grid'], work)
             write_manifest(manifest)
         else:
             print('huc2: staged')
 
-        if PUBLISHED.exists():
+        if exists(PUBLISHED):
             print('published surface: staged')
         else:
             print('published surface:')
@@ -383,7 +387,7 @@ def offset(record: dict, grid: dict, tol: float = 1e-3) -> list[int]:
 
 
 def check() -> list[str]:
-    if not MANIFEST.exists():
+    if not exists(MANIFEST):
         return ['manifest.json missing']
     manifest = read_manifest()
     fails = []
@@ -409,18 +413,17 @@ def check() -> list[str]:
 
     for kind in RESPONSE:
         rec = manifest['response'].get(kind)
-        if rec is None or not response_path(kind).exists():
+        if rec is None or not exists(response_path(kind)):
             fails.append(f'{kind} points missing')
             continue
-        with response_path(kind).open('rb') as fh:
-            n = sum(1 for _ in fh) - 1
+        n = len(read_bytes(response_path(kind)).splitlines()) - 1
         print(f'{kind}: {n} points')
         if n != rec['points']:
             fails.append(f'{kind}: {n} rows, manifest says {rec["points"]}')
 
-    if not PUBLISHED.exists():
+    if not exists(PUBLISHED):
         fails.append('published surface missing')
-    if 'huc2' not in manifest or not HUC_RASTER.exists():
+    if 'huc2' not in manifest or not exists(HUC_RASTER):
         fails.append('huc2 raster missing')
     else:
         with rasterio.open(str(HUC_RASTER)) as src:

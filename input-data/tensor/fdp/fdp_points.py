@@ -1,7 +1,9 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#   "boto3",
 #   "numpy",
+#   "obstore>=0.12",
 #   "pandas",
 #   "pyproj",
 #   "rasterio",
@@ -61,7 +63,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import requests
-from fdp import REFIT, ROOT, launch
+from fdp import REFIT, ROOT, exists, get_file, launch, read_bytes
 from fdp_inputs import HUC_RASTER, HUCS, predictor_path, put_file, read_manifest, response_path
 from pyproj import Transformer
 from rasterio.windows import Window
@@ -165,8 +167,8 @@ def noaa_details(pinned: list[dict] | None = None) -> tuple[pd.DataFrame, list[d
     frames, provenance = [], []
     for year, name in sorted(latest.items()):
         path, archived = raw / name, NOAA_ARCHIVE / name
-        if not path.exists() and archived.exists():
-            archived.fs.get_file(archived.path, str(path))
+        if not path.exists() and exists(archived):
+            get_file(archived, path)
         elif not path.exists():
             r = requests.get(NOAA + name, timeout=300)
             r.raise_for_status()
@@ -319,12 +321,11 @@ def write_run(run: str, presence: pd.DataFrame, absence: pd.DataFrame, summary: 
 
 
 def read_summary(run: str) -> dict:
-    return json.loads(run_path(run, 'points.json').read_text())
+    return json.loads(read_bytes(run_path(run, 'points.json')))
 
 
 def released(kind: str) -> pd.DataFrame:
-    with response_path(kind).open('rb') as fh:
-        return pd.read_csv(fh)
+    return pd.read_csv(io.BytesIO(read_bytes(response_path(kind))))
 
 
 def cmd_build(args) -> None:
@@ -336,7 +337,7 @@ def cmd_build(args) -> None:
         return
     targets = [('original', 0)] if 'original' in args.runs else []
     targets += [(run, seed) for run in NOAA_RUNS if run in args.runs for seed in args.seeds]
-    existing = [seeded(r, k) for r, k in targets if run_path(seeded(r, k), 'points.csv').exists()]
+    existing = [seeded(r, k) for r, k in targets if exists(run_path(seeded(r, k), 'points.csv'))]
     if existing and not args.overwrite:
         print(f'already built, skipped: {", ".join(existing)} (--overwrite replaces them)')
         targets = [(r, k) for r, k in targets if seeded(r, k) not in existing]

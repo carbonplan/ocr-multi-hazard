@@ -12,9 +12,13 @@ import shutil
 import sys
 import time
 import zipfile
+from functools import cache
 from pathlib import Path
 
+import obstore
 import requests
+from obstore.auth.boto3 import Boto3CredentialProvider
+from obstore.store import S3Store
 from upath import UPath
 
 ROOT = UPath('s3://carbonplan-ocr')
@@ -64,6 +68,34 @@ def download(url: str, dest: Path) -> None:
     part.rename(dest)
     dt = time.time() - t0
     print(f'    {got / 1e9:.2f} GB in {dt:.0f}s ({got / 1e6 / (dt + 1e-9):.1f} MB/s)')
+
+
+@cache
+def store() -> S3Store:
+    """ROOT's bucket; boto3's credential chain covers SSO profiles on laptops."""
+    return S3Store(ROOT.drive, region='us-west-2', credential_provider=Boto3CredentialProvider())
+
+
+def key(path: UPath) -> str:
+    return str(path.relative_to(ROOT))
+
+
+def exists(path: UPath) -> bool:
+    try:
+        obstore.head(store(), key(path))
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def read_bytes(path: UPath) -> bytes:
+    return bytes(obstore.get(store(), key(path)).bytes())
+
+
+def get_file(path: UPath, dest: Path) -> None:
+    with dest.open('wb') as fh:
+        for chunk in obstore.get(store(), key(path)).stream():
+            fh.write(chunk)
 
 
 def extract_tif(zip_path: Path, dest: Path) -> None:

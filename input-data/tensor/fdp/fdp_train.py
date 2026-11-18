@@ -1,7 +1,9 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#   "boto3",
 #   "numpy",
+#   "obstore>=0.12",
 #   "pandas",
 #   "rasterio",
 #   "s3fs>=2024.0.0",
@@ -61,7 +63,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
-from fdp import CACHE, PUBLISHED, VM_TYPE, launch
+from fdp import CACHE, PUBLISHED, VM_TYPE, exists, get_file, launch, read_bytes
 from fdp_inputs import HUC_RASTER, HUCS, PREDICTORS, predictor_path, put_file, read_manifest
 from fdp_points import RUNS, SEED, run_path
 from rasterio.windows import Window
@@ -279,7 +281,7 @@ def published_tif() -> Path:
     if not tif.exists():
         tif.parent.mkdir(parents=True, exist_ok=True)
         part = tif.with_suffix('.part')
-        PUBLISHED.fs.get_file(PUBLISHED.path, str(part))
+        get_file(PUBLISHED, part)
         part.rename(tif)
     return tif
 
@@ -320,7 +322,7 @@ def cmd_task(args) -> None:
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
     wanted = ['fdp.tif', *(['contributions.tif'] if args.contributions else [])]
     wanted += ['se.tif'] if args.se else []
-    if not args.overwrite and all((prefix / name).exists() for name in wanted):
+    if not args.overwrite and all(exists(prefix / name) for name in wanted):
         print(f'HUC {huc}: {prefix} already has {", ".join(wanted)}; skipped')
         return
     threads = args.threads or os.cpu_count()
@@ -336,9 +338,8 @@ def cmd_task(args) -> None:
     manifest = read_manifest()
     predictors, inside = prepare_predictors(huc, manifest)
     inputs = {'window': manifest['huc2']['windows'][huc], 'cells': int(inside.sum())}
-    points = run_path(args.run, 'points.csv')
-    points.fs.get_file(points.path, str(work / 'points.csv'))
-    summary = json.loads(run_path(args.run, 'points.json').read_text())
+    get_file(run_path(args.run, 'points.csv'), work / 'points.csv')
+    summary = json.loads(read_bytes(run_path(args.run, 'points.json')))
     seed = summary.get('absence_sampling', {}).get('seed', SEED)
     prepare_seconds = round(time.time() - t0)
 
@@ -427,7 +428,7 @@ def cmd_se(args) -> None:
     if huc not in HUCS:
         sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
-    if not (prefix / 'rf.rds').exists():
+    if not exists(prefix / 'rf.rds'):
         sys.exit(f'{prefix} has no trained forest; run `task` first')
     threads = args.threads or os.cpu_count()
     print(f'HUC {huc} standard errors -> {prefix} ({threads} threads)', flush=True)
@@ -437,7 +438,7 @@ def cmd_se(args) -> None:
     out.mkdir()
     predictors, _ = prepare_predictors(huc, read_manifest())
     for name in ('rf.rds', 'fdp.tif', 'run.json'):
-        (prefix / name).fs.get_file((prefix / name).path, str(out / name))
+        get_file(prefix / name, out / name)
     se = run_se(args, out, predictors, work, threads)
 
     record = json.loads((out / 'run.json').read_text())
