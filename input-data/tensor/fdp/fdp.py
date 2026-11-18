@@ -147,15 +147,16 @@ def launch(
     conda_extras: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Run `python -m <module> <args...>` (`script`) on a Coiled VM (x86, us-west-2, next to the
-    bucket) and wait for it, exiting non-zero if any task fails; with `map_over`, one VM per
+    bucket) and wait for every task, exiting non-zero if any fails; with `map_over`, one VM per
     value, which the module reads from $COILED_BATCH_TASK_INPUT. Package sync ships these scripts
     as they are now, installed in the `fdp` environment as the fdp-refit package. The VM uses the
-    Coiled workspace's AWS access."""
+    Coiled workspace's AWS access. Each job's cluster is named `name` plus its start time, so a
+    retry never shares a name with a cluster still running."""
     import coiled
 
     job = coiled.batch.run(
         command=['python', '-m', *script],
-        name=name,
+        name=f'{name}-{time.strftime("%Y%m%d-%H%M%S")}',
         region='us-west-2',
         vm_type=[vm_type],
         # a one-task job runs its task on the scheduler VM
@@ -167,22 +168,30 @@ def launch(
         package_sync_conda_extras=list(conda_extras) or None,
         env={VM_TYPE: vm_type},
     )
-    logs = f'coiled batch logs {job["cluster_id"]}'
-    print(f'{name}: cluster {job["cluster_id"]}; logs: {logs}', flush=True)
-    while (state := job_state(coiled.batch.status(job['cluster_id']))) is None:
-        time.sleep(POLL_SECONDS)
-    if state == 'error':
-        sys.exit(f'{name} failed; see {logs}')
+    cluster = job['cluster_id']
+    logs = f'coiled batch logs {cluster}'
+    print(f'{name}: cluster {cluster}; logs: {logs}', flush=True)
+    try:
+        while (failed := job_failures(coiled.batch.status(cluster))) is None:
+            time.sleep(POLL_SECONDS)
+    except KeyboardInterrupt:
+        sys.exit(
+            f'stopped waiting; the job keeps running (stop it with `coiled cluster stop {cluster}`)'
+        )
+    if failed:
+        sys.exit(f'{name}: {failed} failed; see {logs}')
     print(f'{name}: done', flush=True)
 
 
-def job_state(jobs: list[dict]) -> str | None:
-    """'done', 'error' or None (still running), from `coiled.batch.status` (as ocr.cli reads it)."""
+def job_failures(jobs: list[dict]) -> str | None:
+    """None while any task can still run; once every task has finished or the cluster has
+    stopped, '' if every task succeeded, else how many did not."""
     tasks = [t for j in jobs for t in j['tasks']]
-    if any(t['exit_code'] or t['state'] == 'error' for t in tasks):
-        return 'error'
-    if tasks and all(t['state'] == 'done' for t in tasks):
-        return 'done'
-    if jobs and jobs[0]['cluster_state'] in ('error', 'stopped'):
-        return 'error'
-    return None
+    finished = bool(tasks) and all(t['exit_code'] or t['state'] in ('done', 'error') for t in tasks)
+    stopped = bool(jobs) and jobs[0]['cluster_state'] in ('error', 'stopped')
+    if not (finished or stopped):
+        return None
+    bad = sum(1 for t in tasks if t['exit_code'] or t['state'] != 'done')
+    if not tasks:
+        return 'the cluster stopped before any task'
+    return f'{bad} of {len(tasks)} tasks' if bad else ''
