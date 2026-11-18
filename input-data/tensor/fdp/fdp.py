@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import time
 import zipfile
@@ -27,6 +26,7 @@ PROJ4 = (
     '+x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs'
 )
 SB_ITEM = '6170694ed34ea36449a67ef7'
+POLL_SECONDS = 60
 CACHE = Path(os.environ.get('FDP_CACHE', Path.home() / '.cache/ocr/fdp'))
 
 
@@ -87,33 +87,44 @@ def launch(
     conda_extras: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Run `python -m <module> <args...>` (`script`) on a Coiled VM (x86, us-west-2, next to the
-    bucket); with `map_over`, one VM per value, which the module reads from
-    $COILED_BATCH_TASK_INPUT. Package sync ships these scripts as they are now, installed in the
-    `fdp` environment as the fdp-refit package. The VM uses the Coiled workspace's AWS access."""
-    cmd = [
-        'coiled',
-        'batch',
-        'run',
-        '--name',
-        name,
-        '--region',
-        'us-west-2',
-        '--vm-type',
-        vm_type,
-        '--disk-size',
-        str(disk_size),
-        '--tag',
-        'Project=OCR',
-        '--spot-policy',
-        'spot_with_fallback' if spot else 'on-demand',
-    ]
-    if map_over:
-        cmd += ['--map-over-values', ','.join(map_over)]
-    for pkg in conda_extras:
-        cmd += ['--package-sync-conda-extras', pkg]
-    cmd += ['--', 'python', '-m', *script]
-    print(' '.join(cmd))
-    subprocess.run(cmd, check=True)
+    bucket) and wait for it, exiting non-zero if any task fails; with `map_over`, one VM per
+    value, which the module reads from $COILED_BATCH_TASK_INPUT. Package sync ships these scripts
+    as they are now, installed in the `fdp` environment as the fdp-refit package. The VM uses the
+    Coiled workspace's AWS access."""
+    import coiled
+
+    job = coiled.batch.run(
+        command=['python', '-m', *script],
+        name=name,
+        region='us-west-2',
+        vm_type=[vm_type],
+        # a one-task job runs its task on the scheduler VM
+        scheduler_vm_type=[vm_type] if len(map_over or [None]) == 1 else None,
+        disk_size=str(disk_size),
+        tag={'Project': 'OCR'},
+        spot_policy='spot_with_fallback' if spot else 'on-demand',
+        map_over_values=map_over,
+        package_sync_conda_extras=list(conda_extras) or None,
+    )
+    logs = f'coiled batch logs {job["cluster_id"]}'
+    print(f'{name}: cluster {job["cluster_id"]}; logs: {logs}', flush=True)
+    while (state := job_state(coiled.batch.status(job['cluster_id']))) is None:
+        time.sleep(POLL_SECONDS)
+    if state == 'error':
+        sys.exit(f'{name} failed; see {logs}')
+    print(f'{name}: done', flush=True)
+
+
+def job_state(jobs: list[dict]) -> str | None:
+    """'done', 'error' or None (still running), from `coiled.batch.status` (as ocr.cli reads it)."""
+    tasks = [t for j in jobs for t in j['tasks']]
+    if any(t['exit_code'] or t['state'] == 'error' for t in tasks):
+        return 'error'
+    if tasks and all(t['state'] == 'done' for t in tasks):
+        return 'done'
+    if jobs and jobs[0]['cluster_state'] in ('error', 'stopped'):
+        return 'error'
+    return None
 
 
 def vm_type() -> str | None:

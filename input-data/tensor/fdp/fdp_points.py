@@ -28,8 +28,8 @@ nlcd` (EPSG:5070 metres) and a `points.json` summary:
 `--seeds 1 2 ...` adds `<run>-seed<k>` runs whose absences are drawn with seed
 SEED + k; seed 0 is the unsuffixed run. `--noaa-from <run>` reuses the NOAA
 files that run recorded, kept under `input/flood/raw/noaa-storm-events/`, so runs
-built later share its presences even after NOAA reissues a year's file. Existing
-runs are not overwritten without `--overwrite`.
+built later share its presences even after NOAA reissues a year's file. Runs
+already built are skipped unless `--overwrite` is given.
 
 Absences for the NOAA runs are resampled with the paper's rules (Collins et al.
 2022, section 2): within each HUC-2, as many
@@ -343,7 +343,10 @@ def cmd_build(args) -> None:
     targets += [(run, seed) for run in NOAA_RUNS if run in args.runs for seed in args.seeds]
     existing = [seeded(r, k) for r, k in targets if s3.exists(run_key(seeded(r, k), 'points.csv'))]
     if existing and not args.overwrite:
-        sys.exit(f'already built: {", ".join(existing)}; pass --overwrite to replace them')
+        print(f'already built, skipped: {", ".join(existing)} (--overwrite replaces them)')
+        targets = [(r, k) for r, k in targets if seeded(r, k) not in existing]
+        if not targets:
+            return
     pinned = read_summary(args.noaa_from)['noaa_files'] if args.noaa_from else None
 
     manifest = read_manifest()
@@ -357,7 +360,7 @@ def cmd_build(args) -> None:
     pres = tag(released('presence'), grid, hucs, nlcd)
     absn = tag(released('absence'), grid, hucs, nlcd)
 
-    if 'original' in args.runs:
+    if ('original', 0) in targets:
         print('original:')
         summary = {
             'run': 'original',
@@ -370,7 +373,7 @@ def cmd_build(args) -> None:
         }
         write_run('original', pres, absn, summary)
 
-    runs = [run for run in NOAA_RUNS if run in args.runs]
+    runs = [run for run in NOAA_RUNS if any(r == run for r, _ in targets)]
     if runs:
         events, provenance = noaa_details(pinned)
         rebuilt, _ = noaa_cells(events, grid, ORIGINAL_END)
@@ -380,7 +383,7 @@ def cmd_build(args) -> None:
         end = NOAA_RUNS[run]
         presence, counts = noaa_cells(events, grid, end)
         presence = tag(presence[['x', 'y']], grid, hucs, nlcd)
-        for seed in args.seeds:
+        for seed in [k for r, k in targets if r == run]:
             name = seeded(run, seed)
             print(f'{name}:')
             print('  sampling absences')

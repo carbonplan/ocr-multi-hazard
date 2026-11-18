@@ -23,6 +23,9 @@ released script, which reads them as degrees (see train_fdp.R). `--quick` shrink
 `--contributions` adds per-cell attributions of the prediction to each
 predictor (contrib_fdp.R); `--se` adds per-cell standard errors (se_fdp.R).
 
+`task` skips a watershed whose requested outputs are already uploaded, unless
+`--overwrite` is given.
+
 `se` adds standard errors to a watershed already trained and uploaded, from
 its saved forest and prediction, without retraining.
 
@@ -315,6 +318,12 @@ def cmd_task(args) -> None:
     if huc not in HUCS:
         sys.exit(f'--huc must be one of {HUCS}, got {huc!r}')
     prefix = model_prefix(args.run, args.distance, args.quick, huc)
+    wanted = ['fdp.tif', *(['contributions.tif'] if args.contributions else [])]
+    wanted += ['se.tif'] if args.se else []
+    s3 = s3fs.S3FileSystem()
+    if not args.overwrite and all(s3.exists(f'{prefix}/{name}') for name in wanted):
+        print(f'HUC {huc}: s3://{prefix} already has {", ".join(wanted)}; skipped')
+        return
     threads = args.threads or os.cpu_count()
     settings = QUICK if args.quick else {'iters': 70, 'trees': 1000}
     print(f'HUC {huc} -> s3://{prefix} ({threads} threads, {settings})', flush=True)
@@ -328,7 +337,6 @@ def cmd_task(args) -> None:
     manifest = read_manifest()
     predictors, inside = prepare_predictors(huc, manifest)
     inputs = {'window': manifest['huc2']['windows'][huc], 'cells': int(inside.sum())}
-    s3 = s3fs.S3FileSystem()
     s3.get_file(run_key(args.run, 'points.csv'), str(work / 'points.csv'))
     with s3.open(run_key(args.run, 'points.json')) as fh:
         seed = json.load(fh).get('absence_sampling', {}).get('seed', SEED)
@@ -450,7 +458,8 @@ def cmd_se(args) -> None:
 
 def cmd_launch(args) -> None:
     task = ['fdp_train', 'task', '--run', args.run, '--distance', args.distance]
-    task += [f'--{flag}' for flag in ('quick', 'contributions', 'se') if getattr(args, flag)]
+    flags = ('quick', 'contributions', 'se', 'overwrite')
+    task += [f'--{flag}' for flag in flags if getattr(args, flag)]
     launch(
         f'fdp-{args.run}-{args.distance}{"-quick" if args.quick else ""}',
         task,
@@ -478,6 +487,9 @@ def main() -> None:
         '--contributions', action='store_true', help='also write per-cell predictor attributions'
     )
     outputs.add_argument('--se', action='store_true', help='also write per-cell standard errors')
+    outputs.add_argument(
+        '--overwrite', action='store_true', help='retrain watersheds already uploaded'
+    )
 
     local = argparse.ArgumentParser(add_help=False)
     local.add_argument('--huc', help='defaults to $COILED_BATCH_TASK_INPUT')

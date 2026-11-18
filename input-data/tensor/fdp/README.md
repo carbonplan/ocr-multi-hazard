@@ -19,8 +19,18 @@ compares each refit with it.
 ## Retraining
 
 `train_fdp.R` ports the released R script (its header lists what differs). Three steps,
-each resumable and each writing under `input/flood/fdp-refit/`. On Coiled, from start to
-finish (each step needs the previous one's output):
+each writing under `input/flood/fdp-refit/` and each skipping work already done. On Coiled,
+one pixi task runs all three in order for the served run, waiting for each job and stopping if
+one fails; a rerun resumes. Ctrl-C stops the waiting, not the running job.
+
+```bash
+pixi run -e fdp fdp-refit
+
+# then the flood pipeline: score, pyramid, buildings, regions
+ocr run runs/flood/v2.0.0.toml
+```
+
+The steps, as the tasks run them (`fdp-inputs`, `fdp-points`, `fdp-train` in `pyproject.toml`):
 
 ```bash
 # 1. predictors, released points, the HUC-2 raster and the published surface (~18 GB of downloads)
@@ -32,9 +42,6 @@ pixi run -e fdp python input-data/tensor/fdp/fdp_points.py build --runs noaa-200
 # 3. every watershed of that run, one VM each, with the layers `score` reads
 pixi run -e fdp python input-data/tensor/fdp/fdp_train.py launch --run noaa-200612-202512 \
   --contributions --se --vm-type r7i.4xlarge
-
-# then the flood pipeline: score, pyramid, buildings, regions
-ocr run runs/flood/v2.0.0.toml
 ```
 
 Without `--coiled`, steps 1 and 2 run locally; `fdp_train.py task --run <run> --huc 03` trains
