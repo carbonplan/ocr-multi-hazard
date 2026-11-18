@@ -61,7 +61,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import s3fs
-from fdp import CACHE, PUBLISHED_KEY, launch, vm_type
+from fdp import CACHE, PUBLISHED_KEY, VM_TYPE, launch
 from fdp_inputs import HUC_KEY, HUCS, PREDICTORS, predictor_key, read_manifest
 from fdp_points import RUNS, SEED, run_key
 from rasterio.windows import Window
@@ -410,7 +410,7 @@ def cmd_task(args) -> None:
                 'host': {
                     'platform': platform.platform(),
                     'cpus': os.cpu_count(),
-                    'vm_type': vm_type(),
+                    'vm_type': os.environ.get(VM_TYPE),
                 },
             },
             indent=2,

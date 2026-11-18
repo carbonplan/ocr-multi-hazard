@@ -26,6 +26,7 @@ PROJ4 = (
     '+x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs'
 )
 SB_ITEM = '6170694ed34ea36449a67ef7'
+VM_TYPE = 'FDP_VM_TYPE'  # set by `launch` on its VMs
 POLL_SECONDS = 60
 CACHE = Path(os.environ.get('FDP_CACHE', Path.home() / '.cache/ocr/fdp'))
 
@@ -105,6 +106,7 @@ def launch(
         spot_policy='spot_with_fallback' if spot else 'on-demand',
         map_over_values=map_over,
         package_sync_conda_extras=list(conda_extras) or None,
+        env={VM_TYPE: vm_type},
     )
     logs = f'coiled batch logs {job["cluster_id"]}'
     print(f'{name}: cluster {job["cluster_id"]}; logs: {logs}', flush=True)
@@ -125,20 +127,3 @@ def job_state(jobs: list[dict]) -> str | None:
     if jobs and jobs[0]['cluster_state'] in ('error', 'stopped'):
         return 'error'
     return None
-
-
-def vm_type() -> str | None:
-    """This machine's EC2 instance type, or None off EC2 (IMDSv2)."""
-    imds = 'http://169.254.169.254/latest'
-    try:
-        token = requests.put(
-            f'{imds}/api/token', headers={'X-aws-ec2-metadata-token-ttl-seconds': '60'}, timeout=1
-        ).text
-        r = requests.get(
-            f'{imds}/meta-data/instance-type',
-            headers={'X-aws-ec2-metadata-token': token},
-            timeout=1,
-        )
-        return r.text if r.ok else None
-    except requests.RequestException:
-        return None
