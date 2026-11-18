@@ -30,9 +30,10 @@ where generalized neighbours overlap, the higher HUC code wins.
 
 Every step is skipped when its output is already recorded in the manifest, so
 `stage` resumes after an interruption. A step's ScienceBase zip is kept under
-$FDP_CACHE/sciencebase/ until the step's output is uploaded, so a step that
-fails after its download reuses the zip when rerun. Expect ~18 GB of downloads;
-`--coiled` runs it on a VM in us-west-2, next to the bucket.
+$FDP_CACHE/sciencebase/ until the manifest records the step, so a step that
+fails after its download reuses the zip when rerun on the same machine. Expect
+~18 GB of downloads; `--coiled` runs it on a VM in us-west-2, next to the
+bucket.
 
 Usage:
   python fdp_inputs.py stage [--coiled]
@@ -196,7 +197,6 @@ def stage_predictor(name: str, work: Path) -> dict:
     print(f'  uploading -> {predictor_path(name)}')
     put_file(cog, predictor_path(name))
     cog.unlink()
-    zip_path.unlink()
     return record
 
 
@@ -223,7 +223,6 @@ def stage_response(kind: str, work: Path) -> dict:
         fmt='%.4f',
     )
     put_file(local, response_path(kind))
-    zip_path.unlink()
     print(f'  {len(xy["x"])} points -> {response_path(kind)}')
     return record | {'points': int(len(xy['x']))}
 
@@ -324,6 +323,7 @@ def cmd_stage(args) -> None:
             print(f'{name}:')
             manifest['predictors'][name] = stage_predictor(name, work)
             write_manifest(manifest)
+            (DOWNLOADS / manifest['predictors'][name]['zip']).unlink()
 
         for kind in RESPONSE:
             if kind in manifest['response'] and exists(response_path(kind)):
@@ -332,6 +332,7 @@ def cmd_stage(args) -> None:
             print(f'{kind} points:')
             manifest['response'][kind] = stage_response(kind, work)
             write_manifest(manifest)
+            (DOWNLOADS / RESPONSE[kind]).unlink()
             shutil.rmtree(work / kind, ignore_errors=True)
 
         manifest['grid'] = grid_of_record(manifest['predictors'][REFERENCE])
@@ -340,7 +341,7 @@ def cmd_stage(args) -> None:
             if rec['offset'] != [0, 0]:
                 print(f'{name}: offset {rec["offset"]} cells into the {REFERENCE} grid')
 
-        if 'huc2' not in manifest or not exists(HUC_RASTER):
+        if 'huc2' not in manifest or not (exists(HUC_RASTER) and exists(HUC_GEOJSON)):
             print('huc2:')
             manifest['huc2'] = stage_hucs(manifest['grid'], work)
             write_manifest(manifest)
@@ -425,6 +426,8 @@ def check() -> list[str]:
 
     if not exists(PUBLISHED):
         fails.append('published surface missing')
+    if not exists(HUC_GEOJSON):
+        fails.append('huc2 geojson missing')
     if 'huc2' not in manifest or not exists(HUC_RASTER):
         fails.append('huc2 raster missing')
     else:
