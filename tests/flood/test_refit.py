@@ -154,6 +154,19 @@ def test_score_rejects_overlapping_watersheds(root: Path) -> None:
         _score()
 
 
+def test_score_reports_every_problem_before_committing(root: Path) -> None:
+    _write_run(root, disjoint=False)
+    path = root / RUNS / 'test-run/planar/huc03/se.tif'
+    with rasterio.open(path, 'r+') as dst:
+        dst.write(np.full((1, dst.height, dst.width), 5.0, 'float32'))
+    with pytest.raises(ValueError) as err:
+        _score()
+    assert 'HUC 03: fdp_se outside' in str(err.value)
+    assert 'HUC 05: fdp overlaps' in str(err.value)
+    repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
+    assert len(list(repo.ancestry(branch='main'))) == 1
+
+
 def test_score_checks_the_sum_identity(root: Path) -> None:
     _write_run(root)
     meta = root / RUNS / 'test-run/planar/huc05/contributions.json'
@@ -167,10 +180,10 @@ def test_score_checks_the_sum_identity(root: Path) -> None:
 
 def test_off_lattice_watershed_fails(root: Path) -> None:
     _write_run(root)
-    path = root / RUNS / 'test-run/planar/huc05/fdp.tif'
-    with rasterio.open(path, 'r+') as dst:
-        t = dst.transform
-        dst.transform = rasterio.Affine(t.a, 0, t.c + 30, 0, t.e, t.f)
+    for name in ('fdp.tif', 'se.tif', 'contributions.tif'):
+        with rasterio.open(root / RUNS / 'test-run/planar/huc05' / name, 'r+') as dst:
+            t = dst.transform
+            dst.transform = rasterio.Affine(t.a, 0, t.c + 30, 0, t.e, t.f)
     with pytest.raises(ValueError, match='off the shared lattice'):
         _score()
 

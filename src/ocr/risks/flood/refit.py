@@ -85,7 +85,12 @@ def read_watershed(
     with rasterio.open(cfg.uri(f'{prefix}/fdp.tif')) as src:
         if src.crs != CRS:
             raise ValueError(f'HUC {huc}: fdp.tif is in {src.crs}, not {CRS}')
-        return Watershed(huc, prefix, src.transform, src.shape, meta)
+        shed = Watershed(huc, prefix, src.transform, src.shape, meta)
+    for file in ('se.tif', 'contributions.tif'):
+        with rasterio.open(shed.uri(cfg, file)) as src:
+            if (src.crs, src.transform, src.shape) != (CRS, shed.transform, shed.shape):
+                raise ValueError(f'HUC {huc}: {file} is not on the grid of its fdp.tif')
+    return shed
 
 
 @dataclass(frozen=True)
@@ -195,22 +200,20 @@ def write_dominant(group: zarr.Group) -> None:
                 out[r : r + bh, c : c + bw] = np.where(valid, block.argmax(axis=0), NO_DRIVER)
 
 
-def _open(cfg: StorageConfig, s: Watershed, file: str, stack: ExitStack):
-    """A watershed's raster, open until `stack` closes. Errors unless it is on fdp.tif's grid."""
-    src = stack.enter_context(rasterio.open(s.uri(cfg, file)))
-    if (src.crs, src.transform, src.shape) != (CRS, s.transform, s.shape):
-        raise ValueError(f'HUC {s.huc}: {file} is not on the grid of its fdp.tif')
-    return src
+def _fail(fails: list[str], message: str) -> None:
+    if message not in fails:
+        fails.append(message)
 
 
-def _pack(values: np.ma.MaskedArray, name: str, huc: str) -> np.ma.MaskedArray:
-    """fdp or fdp_se in int16 steps of STEP."""
+def _pack(values: np.ma.MaskedArray, name: str, huc: str, fails: list[str]) -> np.ma.MaskedArray:
+    """fdp or fdp_se in int16 steps of STEP, clipped to [0, int16 max]."""
     values = np.ma.masked_invalid(values)
     steps = np.ma.round(values.astype('float64') / STEP)
     top = np.iinfo('int16').max
     # se_fdp.R floors the calibrated variance at 0 and has no upper bound
     if steps.count() and (steps.min() < 0 or steps.max() > top):
-        raise ValueError(f'HUC {huc}: {name} outside [0, {top * STEP:g}]')
+        _fail(fails, f'HUC {huc}: {name} outside [0, {top * STEP:g}]')
+        steps = np.ma.clip(steps, 0, top)
     return np.ma.array(steps.filled(NODATA).astype('int16'), mask=np.ma.getmaskarray(steps))
 
 
@@ -220,17 +223,19 @@ def _write_layer(
     grid: Grid,
     sheds: list[Watershed],
     layer: tuple[str, tuple, str, int],
+    fails: list[str],
     sample: dict[str, list] | None = None,
     rng: np.random.Generator | None = None,
 ) -> None:
     """Fill one layer of `group` a row of shards at a time, each row from the watersheds it
-    crosses. With `sample`, adds up to CHECK_CELLS set cells per watershed and row to it."""
+    crosses; a cell two watersheds set keeps the first one's value. Problems go to `fails`. With
+    `sample`, adds up to CHECK_CELLS set cells per watershed and row to it."""
     name, key, file, band = layer
     arr = group[name]
     step = (arr.shards or arr.chunks)[-2]
     ny, nx = grid.shape
     with ExitStack() as stack:
-        sources = {s.huc: _open(cfg, s, file, stack) for s in sheds}
+        sources = {s.huc: stack.enter_context(rasterio.open(s.uri(cfg, file))) for s in sheds}
         for r0 in range(0, ny, step):
             r1 = min(r0 + step, ny)
             strip = np.full((r1 - r0, nx), arr.fill_value, arr.dtype)
@@ -243,11 +248,13 @@ def _write_layer(
                     band, window=Window(0, lo - row, w, hi - lo), masked=True
                 )
                 if name in (FDP, SE):
-                    values = _pack(values, name, s.huc)
+                    values = _pack(values, name, s.huc, fails)
                 valid = ~np.ma.getmaskarray(values)
                 target = strip[lo - r0 : hi - r0, col : col + w]
-                if (target[valid] != arr.fill_value).any():
-                    raise ValueError(f'HUC {s.huc}: {name} overlaps a watershed already written')
+                taken = target != arr.fill_value
+                if (valid & taken).any():
+                    _fail(fails, f'HUC {s.huc}: {name} overlaps a watershed already written')
+                    valid &= ~taken
                 target[valid] = values.data[valid]
                 if sample is not None:
                     rows, cols = np.nonzero(valid)
@@ -303,7 +310,8 @@ def score(
 ) -> str:
     """Write the refit of `hucs` (all by default) from model run `run` to group "0" of `out.store`
     and return the snapshot id. Refuses an existing store (the stage's `--overwrite` deletes it
-    first). Checks the result before committing."""
+    first). Checks the inputs' grids before writing and the result before committing, and
+    raises one ValueError listing every problem found."""
     cfg = StorageConfig()
     sheds = [read_watershed(cfg, huc, run, distance) for huc in sorted(hucs)]
     grid = union_grid(sheds)
@@ -320,17 +328,18 @@ def score(
     group = zarr.open_group(session.store, path='0', mode='r+')
 
     rng = np.random.default_rng(0)
+    fails = []
     sample = {s.huc: [] for s in sheds}
     layers = [(FDP, (), 'fdp.tif', 1), (SE, (), 'se.tif', 1)]
     layers += [(CONTRIBUTION, (i,), 'contributions.tif', i + 1) for i in range(ds.sizes['driver'])]
     for layer in layers:
         name, key = layer[:2]
         print(f'{name}{list(key)}: {len(sheds)} watersheds')
-        _write_layer(cfg, group, grid, sheds, layer, sample if name == FDP else None, rng)
+        _write_layer(cfg, group, grid, sheds, layer, fails, sample if name == FDP else None, rng)
     cells = _sample_cells(sample, rng)
     print(DOMINANT)
     write_dominant(group)
 
-    if fails := check(group, sheds, cells):
+    if fails := fails + check(group, sheds, cells):
         raise ValueError('refit check failed:\n  ' + '\n  '.join(fails))
     return session.commit(f'FDP refit {run} {distance}, HUCs {",".join(s.huc for s in sheds)}')
