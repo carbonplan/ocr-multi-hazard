@@ -120,8 +120,8 @@ The flood pipeline's `score` stage (`ocr.risks.flood.refit`) mosaics the watersh
 run given in `runs/flood/v2.0.0.toml` into `output/flood/<version>/store.icechunk`, in the
 layout documented in [the data schema](../../../docs/reference/data-schema.md#flood-risk-variables).
 It fills one row of shards of one layer at a time, so it needs no large VM, and checks the sum
-identity and dominant driver at sampled cells of each watershed before committing.
-`pyramid`, `buildings` and `regions` then run as for any risk:
+identity, dominant driver and point group at sampled cells of each watershed before
+committing. `pyramid`, `buildings` and `regions` then run as for any risk:
 
 ```bash
 ocr run runs/flood/v2.0.0.toml

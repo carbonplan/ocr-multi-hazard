@@ -12,7 +12,7 @@ import zarr
 from ocr import stages
 from ocr.config import OutputPaths, Risk, StorageConfig
 from ocr.risks.flood import refit
-from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, RUNS, SE, score
+from ocr.risks.flood.refit import CONTRIBUTION, DOMINANT, FDP, POINT, RUNS, SE, VALUES, score
 
 DRIVERS = ['floodplain', 'hand', 'roads']
 NODATA = -32768
@@ -133,6 +133,12 @@ def test_score_mosaics_watersheds(root: Path) -> None:
     dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(np.isfinite(fdp))
     np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
 
+    point = _open(POINT)[VALUES]
+    names = [FDP, SE, *(f'{CONTRIBUTION}_{d}' for d in DRIVERS)]
+    assert point.layer.attrs['flag_meanings'].split() == names
+    layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
+    np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
+
 
 def _small_shards(ds: xr.Dataset) -> dict:
     # 64 x 96 cells in 12 x 20 shards, so both ends of each axis are partial
@@ -142,6 +148,9 @@ def _small_shards(ds: xr.Dataset) -> dict:
 
 def test_score_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(refit, 'recommend_encoding', _small_shards)
+    # point: 8-cell shards, copied in 32-cell blocks with partial edges
+    monkeypatch.setattr(refit, 'POINT_SHARD', 8)
+    monkeypatch.setattr(refit, 'POINT_CHUNK', 4)
     _write_run(root)
     with dask.config.set({'array.chunk-size': '4KiB'}):  # template chunks unaligned to shards
         _score()
@@ -152,6 +161,10 @@ def test_score_spans_many_shards(root: Path, monkeypatch: pytest.MonkeyPatch) ->
     np.testing.assert_array_equal(raw[FDP][:], _mosaic(root, 'fdp.tif', packed=True)[0])
     np.testing.assert_array_equal(raw[SE][:], _mosaic(root, 'se.tif', packed=True)[0])
     np.testing.assert_array_equal(raw[CONTRIBUTION][:], _mosaic(root, 'contributions.tif'))
+    point = _open(POINT)[VALUES]
+    assert point.encoding['shards'] == (5, 8, 8) and point.encoding['chunks'] == (5, 4, 4)
+    layers = [ds[FDP], ds[SE], *ds[CONTRIBUTION]]
+    np.testing.assert_array_equal(point.values, np.stack([v.values for v in layers]))
     dominant = ds[CONTRIBUTION].fillna(0).argmax('driver').where(ds[FDP].notnull())
     np.testing.assert_array_equal(ds[DOMINANT].values, dominant.values)
 
@@ -262,6 +275,7 @@ def test_pyramid_stage_on_refit_store(root: Path) -> None:
     repo = icechunk.Repository.open(StorageConfig().icechunk_storage(OUT.store))
     session = repo.readonly_session('main')
     level1 = xr.open_zarr(session.store, group='1', consolidated=False, chunks=None)
+    assert POINT in zarr.open_group(session.store, mode='r')  # overwrite drops levels only
     assert dict(level1.sizes) == {'driver': 3, 'y': 32, 'x': 48}
     assert set(level1.data_vars) == {FDP, SE, CONTRIBUTION, DOMINANT}
     assert zarr.open_group(session.store, path='1', mode='r')[CONTRIBUTION].dtype == 'int16'

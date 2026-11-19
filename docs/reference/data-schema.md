@@ -145,6 +145,7 @@ Flood risk is CarbonPlan's refit of the USGS Flood Damage Probability (FDP) mode
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | `0`         | Full-resolution variables, chunked for map tiles                                                              |
 | `1` ... `N` | The same variables averaged 2× per level for the map; `dominant_driver` is recomputed from each level's `contribution` |
+| `point`     | Every variable at full resolution in one array, chunked for reading one location                             |
 
 #### Core risk variables
 
@@ -176,6 +177,14 @@ The `driver` coordinate indexes the model's predictors; its `flag_meanings` attr
 | 8     | `channel`    | Channelization                 |
 | 9     | `roads`      | Road density                   |
 | 10    | `m3dp`       | Maximum 3-day precipitation    |
+
+#### Point group
+
+| Variable | Type  | Dimensions    | Description                                                                                                                   |
+| -------- | ----- | ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `values` | int16 | (layer, y, x) | `fdp`, `fdp_se`, then `contribution_{driver}` for each driver, packed as above; the `layer` coordinate's `flag_meanings` names them |
+
+Chunks are 13 × 32 × 32, so reading every value at one location fetches a single ~26 KB chunk.
 
 #### Group attributes
 

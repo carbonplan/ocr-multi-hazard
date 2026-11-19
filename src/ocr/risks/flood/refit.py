@@ -15,7 +15,11 @@ to their union:
 
 The first three are packed in steps of STEP (scale_factor), with fill NODATA. The `driver`
 coordinate is the driver's index; its flag_meanings name them in order. These layers are chunked
-for map tiles, and the pyramid stage adds coarser levels of them.
+for map tiles, and the pyramid stage adds coarser levels of them. Group "point" holds the same
+packed values once more at full resolution, chunked for reading every layer of one cell at once:
+
+    values  (layer, y, x)  int16  fdp, fdp_se, then each driver's contribution, as named by
+                                  the `layer` coordinate's flag_meanings
 
 Group "0" attributes carry the driver order, the run, and each watershed's baseline, forest (the
 ETag of its rf.rds) and the R and R package versions that fit it. Score fills
@@ -62,6 +66,10 @@ PACKED = {
     '_FillValue': NODATA,
     'fill_value': NODATA,  # zarr's, for chunks never written
 }
+POINT = 'point'
+VALUES = 'values'
+POINT_CHUNK = 32  # cells per side: one click reads 32 x 32 x 13 int16 (26 KB raw)
+POINT_SHARD = 512
 CHECK_CELLS = 1000  # per watershed, read back from the store for the sum identity
 # order of summary.json's `packages` where it is a list rather than named
 SUMMARY_PACKAGES = ('raster', 'terra', 'sp', 'dismo', 'ranger', 'tuneRanger', 'mlr')
@@ -181,6 +189,45 @@ def template(grid: Grid, sheds: list[Watershed], run: str, distance: str) -> xr.
     return attach_geozarr_metadata(ds.proj.assign_crs(spatial_ref=CRS).proj.write_crs_info())
 
 
+def point_template(ds: xr.Dataset) -> xr.Dataset:
+    """Group "point" for `ds` (`template`), all missing and lazy like it."""
+    layers = [FDP, SE, *(f'{CONTRIBUTION}_{d}' for d in ds.attrs['drivers'])]
+    n, ny, nx = len(layers), ds.sizes['y'], ds.sizes['x']
+    shard = (n, POINT_SHARD, POINT_SHARD)
+    data = dask.array.full((n, ny, nx), np.nan, dtype='float32', chunks=shard)
+    point = xr.Dataset(
+        {VALUES: (('layer', 'y', 'x'), data, {'long_name': 'every layer, for reading one cell'})},
+        coords={
+            'x': ds.x.variable,
+            'y': ds.y.variable,
+            'layer': (
+                'layer',
+                np.arange(n, dtype='int8'),
+                {'flag_values': list(range(n)), 'flag_meanings': ' '.join(layers)},
+            ),
+        },
+    )
+    point[VALUES].encoding = PACKED | {
+        'chunks': (n, POINT_CHUNK, POINT_CHUNK),
+        'shards': shard,
+    }
+    return attach_geozarr_metadata(point.proj.assign_crs(spatial_ref=CRS).proj.write_crs_info())
+
+
+def write_point(base: zarr.Group, point: zarr.Group) -> None:
+    """Fill `point`'s values from `base`'s packed layers, whole shards at a time."""
+    out, step = point[VALUES], 4 * POINT_SHARD
+    _, ny, nx = out.shape
+    for r in range(0, ny, step):
+        for c in range(0, nx, step):
+            win = (slice(r, r + step), slice(c, c + step))
+            block = np.concatenate(
+                [base[FDP][win][None], base[SE][win][None], base[CONTRIBUTION][:, *win]]
+            )
+            if (block != NODATA).any():
+                out[:, *win] = block
+
+
 def _driver_flags(drivers: list[str]) -> dict:
     return {'flag_values': list(range(len(drivers))), 'flag_meanings': ' '.join(drivers)}
 
@@ -297,10 +344,12 @@ def _sample_cells(
     return cells
 
 
-def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray]) -> list[str]:
-    """Per watershed, at `cells` (rows, cols), where fdp is set: fdp_se and every contribution are
-    set, and where the contributions are, baseline + contributions = fdp and dominant_driver is
-    the largest contribution."""
+def check(
+    group: zarr.Group, point: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray]
+) -> list[str]:
+    """Per watershed, at `cells` (rows, cols), where fdp is set: `point` holds the same values as
+    the layers, fdp_se and every contribution are set, and where the contributions are, baseline +
+    contributions = fdp and dominant_driver is the largest contribution."""
     contrib = group[CONTRIBUTION]
     n = contrib.shape[0]
     fails = []
@@ -313,6 +362,9 @@ def check(group: zarr.Group, sheds: list[Watershed], cells: dict[str, np.ndarray
         se = group[SE].vindex[rows, cols]
         raw = contrib.vindex[np.arange(n)[:, None], rows[None], cols[None]]
         dominant = group[DOMINANT].vindex[rows, cols]
+        values = point[VALUES].vindex[np.arange(n + 2)[:, None], rows[None], cols[None]]
+        if (values != np.concatenate([p[None], se[None], raw])).any():
+            fails.append(f'HUC {s.huc}: point values differ from the layers')
         if missing := int((se == NODATA).sum()):
             fails.append(f'HUC {s.huc}: fdp_se missing at {missing} of {rows.size} cells checked')
         full = (raw != NODATA).all(axis=0)
@@ -338,7 +390,8 @@ def score(
     distance: Literal['planar', 'lonlat'] = DISTANCE,
     hucs: Annotated[tuple[Literal[*HUCS], ...], MinLen(1)] = HUCS,
 ) -> str:
-    """Write the refit of `hucs` (all by default) from model run `run` to group "0" of `out.store`
+    """Write the refit of `hucs` (all by default) from model run `run` to groups "0" and "point" of
+    `out.store`
     and return the snapshot id. Refuses an existing store (the stage's `--overwrite` deletes it
     first). Checks the inputs' grids before writing and the result before committing, and
     raises one ValueError listing every problem found."""
@@ -358,7 +411,11 @@ def score(
     ds.to_zarr(
         session.store, group='0', mode='w', compute=False, consolidated=False, encoding=encoding
     )
+    point_template(ds).to_zarr(
+        session.store, group=POINT, mode='w', compute=False, consolidated=False
+    )
     group = zarr.open_group(session.store, path='0', mode='r+')
+    point = zarr.open_group(session.store, path=POINT, mode='r+')
 
     rng = np.random.default_rng(0)
     fails = []
@@ -372,7 +429,9 @@ def score(
     cells = _sample_cells(sample, rng)
     print(DOMINANT)
     write_dominant(group)
+    print(POINT)
+    write_point(group, point)
 
-    if fails := fails + check(group, sheds, cells):
+    if fails := fails + check(group, point, sheds, cells):
         raise ValueError('refit check failed:\n  ' + '\n  '.join(fails))
     return session.commit(f'FDP refit {run} {distance}, HUCs {",".join(s.huc for s in sheds)}')
