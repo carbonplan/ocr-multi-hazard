@@ -1,7 +1,12 @@
-# Laptop smoke run: `OCR_STORAGE_LOCAL_ROOT=~/ocr-data pixi run flood-local` (needs a flood store and TIGER under that root).
+# Laptop smoke run: `OCR_STORAGE_LOCAL_ROOT=~/ocr-data pixi run flood-local` (needs `input/flood/fdp-refit/runs/noaa-200612-202512/planar/huc18/` and TIGER under that root).
 risk = "flood"
 version = "v2.0.0-dev"
-stages = ["buildings", "regions"]
+stages = ["score", "buildings", "regions"]
+
+[kwargs.score]
+run = "noaa-200612-202512"
+distance = "planar"
+hucs = ["18"]  # covers the buildings bbox
 
 [kwargs.buildings]
 memory_limit = "8GB"

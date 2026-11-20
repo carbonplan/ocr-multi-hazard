@@ -1,5 +1,6 @@
 import json
 import tempfile
+from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
@@ -59,12 +60,15 @@ def _axis(coord: np.ndarray) -> Axis:
 
 
 def _validate_dataset(ds: xr.Dataset) -> tuple[CRS, Axis, Axis]:
-    """Check `ds` is a 2D grid with a CRS and evenly spaced coords; return its CRS and (y, x) axes."""
+    """Check `ds` is a grid with a CRS and evenly spaced coords; return its CRS and (y, x) axes.
+    Variables are over (y, x) plus at most one other dim."""
     if (crs := ds.odc.crs) is None:
         raise ValueError('ds has no CRS; write CF attrs (xproj write_crs_info)')
     ydim, xdim = ds.odc.spatial_dims
-    if not_2d := [v for v, da in ds.data_vars.items() if set(da.dims) != {ydim, xdim}]:
-        raise ValueError(f'variables {not_2d} are not 2D over {(ydim, xdim)}')
+    if bad := [
+        v for v, da in ds.data_vars.items() if not {ydim, xdim} <= set(da.dims) or da.ndim > 3
+    ]:
+        raise ValueError(f'variables {bad} are not over {(ydim, xdim)} plus at most one dim')
     # Start and spacing of each axis, so SQL can turn a point into row/column.
     return crs, _axis(ds[ydim].values), _axis(ds[xdim].values)
 
@@ -85,17 +89,34 @@ def _sample(ds: xr.Dataset, iy: np.ndarray, ix: np.ndarray) -> dict[str, pa.Arra
 
     ydim, xdim = ds.odc.spatial_dims
     inside = (iy >= 0) & (iy < ds.sizes[ydim]) & (ix >= 0) & (ix < ds.sizes[xdim])
-    pts = ds.isel(
-        {
-            ydim: xr.DataArray(np.where(inside, iy, 0), dims='pt'),
-            xdim: xr.DataArray(np.where(inside, ix, 0), dims='pt'),
-        }
-    )
-    # NaN -> NULL: pyarrow's stats skip NaN, so DuckDB NaN filters (region stats, lod_shown) miss it (duckdb#25521).
-    return {
-        str(v): pa.array(da.values, mask=~inside | np.isnan(da.values))
-        for v, da in pts.data_vars.items()
+    points = {
+        ydim: xr.DataArray(np.where(inside, iy, 0), dims='pt'),
+        xdim: xr.DataArray(np.where(inside, ix, 0), dims='pt'),
     }
+    columns = {}
+    for name, layer in _layers(ds, (ydim, xdim)):
+        values = layer.isel(points).values
+        # NaN -> NULL: pyarrow's stats skip NaN, so DuckDB NaN filters (region stats, lod_shown) miss it (duckdb#25521).
+        missing = ~inside | np.isnan(values)
+        if 'flag_values' in layer.attrs:  # class codes keep their stored integer type
+            values = np.where(missing, 0, values).astype(layer.encoding['dtype'])
+        elif 'scale_factor' in layer.encoding:  # packed ints decode to float64; float32 holds them
+            values = values.astype('float32')
+        columns[name] = pa.array(values, mask=missing)
+    return columns
+
+
+def _layers(ds: xr.Dataset, spatial: tuple[str, str]) -> Iterator[tuple[str, xr.DataArray]]:
+    """Each 2D variable, and each index of a variable's other dim as `<var>_<label>`; the label is
+    that dim's flag_meanings entry, or else its coordinate value."""
+    for v, da in ds.data_vars.items():
+        if not (other := [d for d in da.dims if d not in spatial]):
+            yield str(v), da
+            continue
+        coord = da[other[0]]
+        labels = coord.attrs.get('flag_meanings', ' '.join(map(str, coord.values))).split()
+        for i, label in enumerate(labels):
+            yield f'{v}_{label}', da.isel({other[0]: i})
 
 
 def sample_buildings(
@@ -109,10 +130,10 @@ def sample_buildings(
     bbox: tuple[float, float, float, float] = CONUS.bbox,
     temp_dir: str | Path | None = None,
 ) -> None:
-    """Sample a 2D xarray dataset at every Overture building in a CONUS block and write GeoParquet to `out`
+    """Sample an xarray dataset at every Overture building in a CONUS block and write GeoParquet to `out`
     (local path or s3://). Point sampling, not zonal stats.
 
-    `ds` must be a 2D grid with a CRS and evenly spaced coords; sampling points move into its CRS. Open it
+    `ds` must be a grid with a CRS and evenly spaced coords, its variables over (y, x) plus at most one dim; sampling points move into its CRS. Open it
     with chunks=None; dask is about 3.5x slower! Pick vars first with ds[[...]].
 
     Each building gets GEOID, the TIGER block (`blocks`, default RegionLevel.BLOCK.uri) holding its
@@ -121,7 +142,8 @@ def sample_buildings(
     `source` overrides the Overture buildings URL. `bbox` (lon/lat xmin, ymin, xmax, ymax; default CONUS)
     keeps buildings whose bbox lies inside it, e.g. a city for a dev run.
 
-    Columns: id (GERS ID), GEOID, one per var, geometry and bbox. Metadata: VECTOR_METADATA, the Overture
+    Columns: id (GERS ID), GEOID, one per 2D var or per index of a var's other dim (`_layers`), geometry
+    and bbox. Class codes (flag_values) keep their stored integer type, packed ints become float32. Metadata: VECTOR_METADATA, the Overture
     release, its license, attribution (+ url), TIGER vintage and `ds.attrs` (as dataset_<name>).
 
     Streams through local files in `temp_dir`, so peak RAM is the cell indexes and sampled values, not

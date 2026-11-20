@@ -189,6 +189,18 @@ def test_score_dry_run_does_not_plan(batch: MagicMock, monkeypatch: pytest.Monke
     batch.run.assert_not_called()
 
 
+def test_score_without_parts_is_one_job(batch: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = MagicMock()
+    monkeypatch.setattr(cli, 'plan_score', plan)
+    r = invoke('score', '--kwargs', '{"score": {"run": "r"}}')
+    assert r.exit_code == 0, r.output
+    plan.assert_not_called()
+    kw = batch.run.call_args.kwargs
+    assert 'map_over_values' not in kw
+    assert kw['command'][-1] == 'score'
+    assert json.loads(kw['env'][cli.KWARGS_ENV]) == {'score': {'run': 'r'}}
+
+
 def test_coiled_forwards_overwrite(batch: MagicMock) -> None:
     assert invoke('buildings', '--overwrite').exit_code == 0
     assert batch.run.call_args.kwargs['command'][-1] == '--overwrite'
@@ -202,9 +214,7 @@ def test_overwrite_reaches_task(monkeypatch: pytest.MonkeyPatch) -> None:
     assert task.call_args.args[2] is True
 
 
-def test_dry_run_orders_stages(monkeypatch: pytest.MonkeyPatch) -> None:
-    flood = dataclasses.replace(RISKS[Risk.FLOOD], score=lambda out: None)
-    monkeypatch.setitem(RISKS, Risk.FLOOD, flood)
+def test_dry_run_orders_stages() -> None:
     r = CliRunner().invoke(
         cli.app,
         [
@@ -324,7 +334,7 @@ def test_missing_input_fails_before_run(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setitem(STAGES, 'buildings', task)
     args = ['stage', '--version', 'v2.0.0', 'flood', 'buildings']
     r = CliRunner().invoke(cli.app, args)
-    assert r.exit_code != 0 and 'run the flood ETL first' in r.output
+    assert r.exit_code != 0 and 'run score first' in r.output
     task.assert_not_called()
 
     # Once the flood store and TIGER blocks exist, buildings runs without score (pyramid skipped too).
@@ -342,8 +352,9 @@ def test_missing_input_fails_before_run(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_unimplemented_stage_fails_before_submit(
     batch: MagicMock, dry_run: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Flood has no score yet: fail here, not after a Coiled VM boots.
+    # Fail here, not after a Coiled VM boots.
     monkeypatch.setattr(cli, 'preflight', stages.preflight)
+    monkeypatch.setitem(RISKS, Risk.FLOOD, dataclasses.replace(RISKS[Risk.FLOOD], score=None))
     r = invoke('score', *(['--dry-run'] if dry_run else []))
     assert r.exit_code != 0 and 'score: not implemented' in r.output
     batch.run.assert_not_called()
@@ -447,6 +458,16 @@ def test_bbox_needs_prerelease_version() -> None:
     assert r.exit_code != 0 and 'v2.0.0-scratch' in r.output
     assert CliRunner().invoke(cli.app, [*args, 'v2.0.0-scratch']).exit_code == 0
     assert CliRunner().invoke(cli.app, [*args, 'v2.0.0', '--prefix', 'scratch/me']).exit_code == 0
+
+
+def test_hucs_needs_prerelease_version() -> None:
+    kwargs = json.dumps({'score': {'hucs': ['03']}})
+    args = ['stage', '--dry-run', '--kwargs', kwargs, 'flood', 'score', '--version']
+    r = CliRunner().invoke(cli.app, [*args, 'v2.0.0'])
+    assert r.exit_code != 0 and 'hucs subsets score' in r.output
+    r = CliRunner().invoke(cli.app, [*args, 'v0.0.0-fdp-test'])
+    assert r.exit_code == 0, r.output
+    assert "kwargs={'hucs': ['03']}" in r.output
 
 
 def test_coiled_prints_job_and_logs(batch: MagicMock) -> None:

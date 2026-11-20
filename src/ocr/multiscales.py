@@ -1,3 +1,4 @@
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import icechunk
@@ -11,9 +12,10 @@ icechunk.IcechunkStore.__str__ = lambda self: 'icechunk.IcechunkStore'
 
 
 def drop_levels(session: icechunk.Session) -> None:
-    """Delete the pyramid levels (every group but "0") and the root multiscales attrs; uncommitted."""
+    """Delete the pyramid levels (numbered groups but "0") and the root multiscales attrs;
+    other groups are kept. Uncommitted."""
     root = zarr.open_group(session.store, mode='r+')
-    for name in [n for n in root.group_keys() if n != '0']:
+    for name in [n for n in root.group_keys() if n.isdigit() and n != '0']:
         del root[name]
     root.attrs.pop('multiscales', None)
 
@@ -26,19 +28,29 @@ def write_multiscales(
     variables: list[str] | None = None,
     message: str = 'write multiscales',
     overwrite: bool = False,
+    derived: Mapping[str, Callable[[zarr.Group], None]] | None = None,
     **pyramid_kwargs: Any,
 ) -> str:
     """Write multiscale levels 1..N over the base raster in group "0" and commit.
 
-    `overwrite` first drops the existing levels (every group but "0"), so settings can change.
-    Extra kwargs go to `topozarr.create_pyramid`. Returns the snapshot id.
+    `overwrite` first drops the existing levels (numbered groups but "0"), so settings can
+    change; other groups are kept.
+    `derived` maps variables computed from a level's others to the function that writes one
+    into a level group; those in group "0" are not coarsened, but written on each new level from
+    its coarsened variables. Extra kwargs go to `topozarr.create_pyramid`. Returns the snapshot id.
     """
     session = repo.writable_session(branch)
     if overwrite:
         drop_levels(session)
     ds = xr.open_zarr(session.store, group='0', consolidated=False, chunks=None)
-    if variables is not None:
-        ds = ds[variables]
-    pyramid = create_pyramid(ds.proj.assign_crs(spatial_ref=crs), **pyramid_kwargs)
-    pyramid.write(session.store, mode='a', levels=list(range(1, pyramid.levels)))
+    ds = ds.proj.assign_crs(spatial_ref=crs)
+    derived = {name: write for name, write in (derived or {}).items() if name in ds}
+    names = [n for n in (variables if variables is not None else ds.data_vars) if n not in derived]
+    pyramid = create_pyramid(ds[names], **pyramid_kwargs)
+    levels = list(range(1, pyramid.levels))
+    pyramid.write(session.store, mode='a', levels=levels)
+    for level in levels:
+        group = zarr.open_group(session.store, path=str(level), mode='r+')
+        for write in derived.values():
+            write(group)
     return session.commit(message)

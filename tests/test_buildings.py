@@ -47,6 +47,21 @@ def test_sample_inside_and_out_of_bounds() -> None:
     assert got['cls'].type == pa.int8()  # off-raster is null, not a cast to float
 
 
+def test_sample_splits_a_third_dim_into_columns() -> None:
+    ds = _ds()
+    ds['part'] = ds['risk'].expand_dims(driver=[0, 1]) * xr.DataArray([1, -1], dims='driver')
+    ds['driver'].attrs['flag_meanings'] = 'slope soil'
+    # a class code, decoded to float with NaN for its fill, as xarray opens a uint8 _FillValue
+    ds['top'] = xr.where(ds['risk'] > 1, 1.0, np.nan).astype('float32')
+    ds['top'].attrs['flag_values'] = [0, 1]
+    ds['top'].encoding['dtype'] = np.dtype('uint8')
+    got = _sample(ds, np.array([0, 3]), np.array([2, 4]))
+    assert got['part_slope'].to_pylist() == [2, 19] and got['part_soil'].to_pylist() == [-2, -19]
+    assert got['top'].to_pylist() == [1, 1] and got['top'].type == pa.uint8()
+    got = _sample(ds, np.array([0]), np.array([0]))
+    assert got['top'].to_pylist() == [None]
+
+
 def test_axis() -> None:
     assert _axis(np.array([22.0, 22.5, 23.0])) == (22.0, 0.5)
     step = np.float32(0.00030799387843481654)
@@ -64,8 +79,8 @@ def test_rejects_bad_inputs_before_s3(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match='no CRS'):
         sample_buildings(_ds().drop_attrs(), out)
     ds = _ds()
-    ds['risk3d'] = ds['risk'].expand_dims(time=2)
-    with pytest.raises(ValueError, match='not 2D'):
+    ds['risk4d'] = ds['risk'].expand_dims(time=2, band=2)
+    with pytest.raises(ValueError, match='plus at most one dim'):
         sample_buildings(ds, out)
     with pytest.raises(ValueError, match='not a valid PointSamplingStrategy'):
         sample_buildings(_ds(), out, point_strategy='1; DROP TABLE x')

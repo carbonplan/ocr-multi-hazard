@@ -2,6 +2,19 @@
 
 We developed the Open Climate Risk (OCR) wildfire model to be reproducible, and reliant on only free, publicly available input data, enumerated below.
 
+## [Collins et al. 2022](https://doi.org/10.1088/1748-9326/ac4f0f)
+
+_The USGS flood damage probability model: 100 m rasters of its 11 predictors and its training points, the R code, and the published probability surface. The flood layers refit this model._
+
+- Collins, E. L., Sanchez, G. M., Terando, A., Stillwell, C. C., Mitasova, H., Sebastian, A., Meentemeyer, R. K. 2022\. Predicting flood damage probability across the conterminous United States. Environmental Research Letters, 17(3), 034006. [https://doi.org/10.1088/1748-9326/ac4f0f](https://doi.org/10.1088/1748-9326/ac4f0f)
+- Collins, E. L., Stillwell, C. C., Terando, A. J., Sanchez, G. M., Mitasova, H., Sebastian, A., Meentemeyer, R. K. 2022\. Data and Code for Predicting Flood Damage Probability Across the Conterminous United States. U.S. Geological Survey. [https://doi.org/10.5066/P954TTQN](https://doi.org/10.5066/P954TTQN)
+
+## [NOAA Storm Events Database](https://www.ncei.noaa.gov/stormevents/)
+
+_Reports of storm events and their damage; the flood refit's presences are its Flood and Flash Flood reports, December 2006–December 2025._
+
+- NOAA National Centers for Environmental Information, Storm Events Database, bulk CSV files, [https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/](https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/)
+
 ## [Overture Maps Foundation buildings dataset](https://docs.overturemaps.org/guides/buildings/)
 
 _A collection of 156 million buildings in the contiguous United States._

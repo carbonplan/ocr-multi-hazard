@@ -20,7 +20,7 @@
         "pydantic-settings>=2.16.1,<3",
         "semver>=3.1.0,<4", # required by pydantic_extra_types.semantic_version
         "s3fs>=2026.9.0",
-        "topozarr>=0.3.0,<0.4",
+        "topozarr>=0.4.0,<0.5",
         "universal-pathlib>=0.3.10,<0.4",
         "xarray>=2026.9.0",
         "xproj>=0.2.1,<0.3",
@@ -46,7 +46,7 @@
         "typer>=0.27.3,<0.28",
         "xclim>=0.62.0,<0.63",
     ]
-    flood         = ["rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
+    flood         = ["dask>=2026.8.0", "rasterio>=1.5.2,<2", "rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
     coiled-deploy = ["coiled>=1.135.6,<2", "jupyter-server-proxy>=4.6.0,<5", "jupyterlab>=4.6.4,<5"]
     data-mgmt = [
         "boto3>=1.40.0,<2", # aiobotocore (via s3fs) pins botocore
@@ -146,6 +146,9 @@
     dev      = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
     docs     = ["coiled-deploy", "docs", "fire"]
     flood    = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
+    # Standalone: Coiled package sync replicates the whole environment, and the
+    # default one carries packages its solver cannot resolve.
+    fdp = { features = ["fdp"], no-default-feature = true }
 
 # Tasks grouped by features
 [tool.pixi.feature.dev.tasks]
@@ -159,7 +162,6 @@
     docs-serve = { cmd = "sphinx-autobuild docs _build/html" }
 
 [tool.pixi.feature.flood.tasks]
-    flood-etl   = { cmd = "python -m ocr.risks.flood.etl.flood" }  # pixi run flood-etl --version v2.0.0 [--overwrite]
     flood-all   = { cmd = "ocr run runs/flood/v2.0.0.toml" }
     flood-local = { cmd = "ocr run runs/flood/local.toml" }
 
@@ -176,6 +178,53 @@
 
 [tool.pixi.feature.data-mgmt.tasks]
     jupyter = { cmd = "jupyter lab" }
+
+# What the FDP training scripts (input-data/tensor/fdp) import, so Coiled package
+# sync has a small environment to replicate. R, raster, terra, sp, ranger and mlr are pinned
+# to the versions the served run recorded; the other R packages to versions that solve with
+# them. dismo and tuneRanger have no osx-arm64 build, so Coiled adds them unpinned as conda
+# extras (fdp_train.CONDA_EXTRAS) and fdp_train.check_r_packages checks their versions.
+# dismo has no ARM build at all, so training VMs are x86 and the feature has no linux-aarch64.
+[tool.pixi.feature.fdp]
+    platforms = ["linux-64", "osx-arm64-15"]
+
+# The served refit on Coiled, start to finish: `pixi run -e fdp fdp-refit`. Each step waits
+# for its job and skips work already done; training stops rather than replace a watershed's
+# outputs without --overwrite.
+[tool.pixi.feature.fdp.tasks]
+    fdp-inputs = { cmd = "python input-data/tensor/fdp/fdp_inputs.py stage --coiled" }
+    fdp-points = { cmd = "python input-data/tensor/fdp/fdp_points.py build --runs noaa-200612-202512 --coiled", depends-on = ["fdp-inputs"] }
+    fdp-train  = { cmd = "python input-data/tensor/fdp/fdp_train.py launch --run noaa-200612-202512 --contributions --se --vm-type r7i.4xlarge", depends-on = ["fdp-points"] }
+    fdp-refit  = { depends-on = ["fdp-train"] }
+
+[tool.pixi.feature.fdp.pypi-dependencies]
+    fdp-refit = { path = "input-data/tensor/fdp", editable = true }
+
+[tool.pixi.feature.fdp.dependencies]
+    boto3        = ">=1.40.0,<2"
+    coiled       = ">=1.120.0,<2"
+    compilers    = "==2.0.0"
+    duckdb       = ">=1.3.2,<2"
+    numpy        = ">=2,<3"
+    obstore      = ">=0.12.0,<0.13"
+    pandas       = ">=2,<3"
+    pyarrow      = ">=21.0.0,<22"
+    pyproj       = ">=3.7.2,<4"
+    python       = "3.13.*"
+    r-base       = "==4.5.3"
+    "r-data.table" = "==1.18.6.1"
+    r-jsonlite   = "==2.0.0"
+    r-mlr        = "==2.19.4"
+    r-ranger     = "==0.18.0"
+    r-raster     = "==3.6_32"
+    r-rcpp       = "==1.1.2"
+    r-snow       = "==0.4_4"
+    r-sp         = "==2.2_3"
+    r-terra      = "==1.9_50"
+    rasterio     = ">=1.4,<2"
+    requests     = ">=2,<3"
+    universal-pathlib = ">=0.3.10,<0.4"
+    zarr         = ">=3.2.1,<4"
 
 # Only python (and fire's PROJ stack, above) comes from conda-forge; all other deps live in the standard [project] / [dependency-groups] tables.
 [tool.pixi.dependencies]

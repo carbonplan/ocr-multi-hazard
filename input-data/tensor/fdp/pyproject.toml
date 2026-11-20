@@ -1,0 +1,16 @@
+# The FDP refit scripts as a package, so Coiled package sync ships them with the `fdp`
+# environment; the R scripts install under <prefix>/share/fdp-refit.
+[build-system]
+    build-backend = "setuptools.build_meta"
+    requires      = ["setuptools>=64"]
+
+[project]
+    name            = "fdp-refit"
+    requires-python = ">=3.13"
+    version         = "0.1.0"
+
+[tool.setuptools]
+    py-modules = ["fdp", "fdp_inputs", "fdp_points", "fdp_train"]
+
+[tool.setuptools.data-files]
+    "share/fdp-refit" = ["contrib_fdp.R", "fdp_contrib.cpp", "se_fdp.R", "train_fdp.R"]
