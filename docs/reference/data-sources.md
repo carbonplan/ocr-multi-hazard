@@ -44,6 +44,6 @@ _Shapefiles and identifiers for US census blocks, census tracts, counties, state
 
 ## [Meiler et al. 2026](https://doi.org/10.1038/s41597-025-06452-0)
 
-_Global coastal tropical-cyclone wind hazard maps from the CHAZ model: return periods and exceedance intensities for ERA5 and six CMIP6 GCMs (SSP2-4.5, SSP3-7.0, SSP5-8.5)._
+_Global coastal tropical-cyclone wind hazard maps from the CHAZ model: return periods (33 and 50 m/s) and exceedance intensities (10 to 1000-year return periods), downscaled from ERA5 reanalysis (1981-2019) and six CMIP6 GCMs (1995-2014, 2041-2060, 2081-2100; SSP2-4.5, SSP3-7.0, SSP5-8.5)._
 
-- Meiler, S., et al. Global coastal wind hazard maps from the CHAZ tropical cyclone model. _Scientific Data_ 13, 136 (2026). Data: [doi:10.5061/dryad.qfttdz0vz](https://doi.org/10.5061/dryad.qfttdz0vz). Available under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+- Meiler, S., Lee, C.-Y., Camargo, S. J., & Sobel, A. H. Global coastal wind hazard maps from the CHAZ tropical cyclone model. _Scientific Data_ 13, 136 (2026). Data: [doi:10.5061/dryad.qfttdz0vz](https://doi.org/10.5061/dryad.qfttdz0vz). Available under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).

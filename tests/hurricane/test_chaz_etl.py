@@ -10,9 +10,11 @@ import xarray as xr
 from typer.testing import CliRunner
 
 from ocr.config import INPUT_PREFIX, StorageConfig
+from ocr.risks.hurricane import config as hconfig
+from ocr.risks.hurricane.config import BAND_ATTRS, METRICS, STORE
 from ocr.risks.hurricane.etl import chaz, fetch as fetch_mod
-from ocr.risks.hurricane.etl.chaz import STORE, era5_key, gcm_key, run
-from ocr.risks.hurricane.etl.fetch import EXPLORE_PREFIX, METRICS, RAW_PREFIX, _clean_rel, copy_raw
+from ocr.risks.hurricane.etl.chaz import era5_key, gcm_key, run
+from ocr.risks.hurricane.etl.fetch import EXPLORE_PREFIX, RAW_PREFIX, _keep, copy_raw
 
 STEP = 1 / 12
 # Coastal points on a 1/12 deg lattice anchored half a cell off the raw minimum (the ERA5 case).
@@ -28,7 +30,7 @@ def _points(seed: int, metric: str = 'return_periods', lat: np.ndarray = LAT) ->
     lat, lon = (a.ravel() for a in np.meshgrid(lat, LON, indexing='ij'))
     keep = np.arange(lat.size) % 3 != 0  # sparse, like coastal centroids
     rng = np.random.default_rng(seed)
-    bands = {b: ('points', rng.random(keep.sum())) for b in chaz.BANDS[metric]}
+    bands = {b: ('points', rng.random(keep.sum())) for b in hconfig.BANDS[metric]}
     return xr.Dataset(bands, coords={'lat': ('points', lat[keep]), 'lon': ('points', lon[keep])})
 
 
@@ -36,7 +38,7 @@ def _raster(seed: int, metric: str = 'return_periods') -> xr.Dataset:
     """Grid values on LAT x LON (what the store should hold)."""
     rng = np.random.default_rng(seed)
     shape = (LAT.size, LON.size)
-    bands = {b: (('lat', 'lon'), rng.random(shape)) for b in chaz.BANDS[metric]}
+    bands = {b: (('lat', 'lon'), rng.random(shape)) for b in hconfig.BANDS[metric]}
     return xr.Dataset(bands, coords={'lat': LAT, 'lon': LON})
 
 
@@ -50,9 +52,9 @@ def _raw_raster(ds: xr.Dataset) -> xr.Dataset:
 def _era5_raster(metric: str) -> xr.Dataset:
     """Raw ERA5 raster layout: bands prefixed thr_thr_* / rp_rp_*, plus per-cell point bookkeeping."""
     ds = _raw_raster(_raster(9, metric)).assign_coords(lat=lambda d: d.lat - 1)
-    first = chaz.BANDS[metric][0]
+    first = hconfig.BANDS[metric][0]
     pre = first.split('_')[0]
-    ds = ds.rename({b: f'{pre}_{b}' for b in chaz.BANDS[metric]})
+    ds = ds.rename({b: f'{pre}_{b}' for b in hconfig.BANDS[metric]})
     zero = ds[f'{pre}_{first}'] * 0
     return ds.assign({f'{pre}_points': zero, f'{pre}_lat': zero})
 
@@ -96,9 +98,11 @@ def _messages(cfg: StorageConfig) -> list[str]:
 @pytest.mark.parametrize('rep', ['points', 'raster'])
 def test_roundtrip(cfg: StorageConfig, rep: str) -> None:
     run('return_periods', rep)
-    ds = _open(cfg, chaz.group_name('return_periods', rep))
-    assert ds['thr_33'].dims == chaz.DIMS and ds['thr_33'].dtype == np.float32
-    assert list(ds['gcm'].values) == chaz.GCMS and list(ds['scenario'].values) == chaz.SCENARIOS
+    ds = _open(cfg, hconfig.group_name('return_periods', rep))
+    assert ds['thr_33'].dims == hconfig.DIMS and ds['thr_33'].dtype == np.float32
+    assert (
+        list(ds['gcm'].values) == hconfig.GCMS and list(ds['scenario'].values) == hconfig.SCENARIOS
+    )
     np.testing.assert_allclose(ds['lat'], LAT)
     np.testing.assert_allclose(ds['lon'], LON)
     for seed, (gcm, period, variant) in enumerate(PRESENT):
@@ -119,7 +123,7 @@ def test_roundtrip(cfg: StorageConfig, rep: str) -> None:
     assert ds['thr_50'].attrs['units'] == 'years' and '50 m/s' in ds['thr_50'].attrs['long_name']
     assert 'EPSG:4326' in str(ds.attrs.get('proj:code'))
     assert ds.odc.crs.epsg == 4326  # crs_wkt on spatial_ref survives the reopen
-    assert _messages(cfg)[0] == chaz.group_name('return_periods', rep)
+    assert _messages(cfg)[0] == hconfig.group_name('return_periods', rep)
 
 
 def test_snap_and_duplicates(cfg: StorageConfig, tmp_path: Path) -> None:
@@ -161,11 +165,11 @@ def test_overwrite_only_rebuilds_group(cfg: StorageConfig) -> None:
 def test_era5_roundtrip(cfg: StorageConfig, rep: str, metric: str) -> None:
     run(metric, rep)
     run(metric, rep, source='era5')
-    ds = _open(cfg, chaz.group_name(metric, rep, era5=True))
-    band = chaz.BANDS[metric][0]
+    ds = _open(cfg, hconfig.group_name(metric, rep, era5=True))
+    band = hconfig.BANDS[metric][0]
     assert ds[band].dims == ('lat', 'lon') and ds[band].dtype == np.float32
-    assert set(ds.data_vars) == set(chaz.BANDS[metric]) and ds.attrs['forcing'] == 'ERA5'
-    assert ds[band].attrs == chaz.band_attrs(metric, band)
+    assert set(ds.data_vars) == set(hconfig.BANDS[metric]) and ds.attrs['forcing'] == 'ERA5'
+    assert ds[band].attrs == BAND_ATTRS[metric][band]
     np.testing.assert_allclose(ds['lat'], LAT - 1)  # own grid, not the GCM one
     if rep == 'raster':
         np.testing.assert_allclose(ds[band], _raster(9, metric)[band].values.astype('float32'))
@@ -175,9 +179,9 @@ def test_era5_roundtrip(cfg: StorageConfig, rep: str, metric: str) -> None:
         np.testing.assert_allclose(
             np.sort(got[np.isfinite(got)]), np.sort(src[band].values), rtol=1e-6
         )
-    gcm = _open(cfg, chaz.group_name(metric, rep))
+    gcm = _open(cfg, hconfig.group_name(metric, rep))
     np.testing.assert_allclose(gcm['lat'], LAT)
-    assert _messages(cfg)[0] == chaz.group_name(metric, rep, era5=True)
+    assert _messages(cfg)[0] == hconfig.group_name(metric, rep, era5=True)
 
 
 def test_era5_missing(cfg: StorageConfig, tmp_path: Path) -> None:
@@ -209,11 +213,12 @@ def test_cli_era5(cfg: StorageConfig) -> None:
     assert CliRunner().invoke(app, ['--metric', 'nope']).exit_code != 0
 
 
-def test_clean_rel() -> None:
-    assert _clean_rel('return_periods/nc/ERA5/a.nc', 'return_periods') == 'nc/ERA5/a.nc'
-    assert _clean_rel('/nc/a.nc', 'return_periods') == 'nc/a.nc'
-    assert _clean_rel('__MACOSX/nc/._a.nc', 'return_periods') is None
-    assert _clean_rel('return_periods/nc/.DS_Store', 'return_periods') is None
+def test_keep() -> None:
+    assert _keep('return_periods/nc/ERA5/a.nc')
+    assert _keep('/nc/a.nc')
+    assert not _keep('__MACOSX/nc/._a.nc')
+    assert not _keep('return_periods/nc/.DS_Store')
+    assert not _keep('return_periods/csv/b.nc')
 
 
 def test_copy_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

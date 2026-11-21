@@ -9,7 +9,7 @@ exceedance_intensity raster: 3/108 per-GCM files).
 fetch: stream members of a Dryad zip into RAW_PREFIX. Dryad's download endpoint 302s to a presigned,
 range-readable S3 URL (valid 24 h), so the multi-GB zip is read with range requests, never downloaded.
 A fresh URL is resolved per member. Members already present at the same size are skipped (resumable).
-    export DRYAD_TOKEN=<10 h token from your Dryad account page>
+    export DRYAD_TOKEN=<token>  # Dryad "My account" > API account; copy a token there (valid 10 h)
     pixi run hurricane-fetch fetch exceedance_intensity --only '*raster.nc*' --dry-run
 On Coiled: coiled batch run --vm-type m8g.large --arm --tag Project=OCR --secret-env DRYAD_TOKEN=$DRYAD_TOKEN -- python -m ocr.risks.hurricane.etl.fetch fetch exceedance_intensity --only '*raster.nc*'
 """
@@ -17,8 +17,7 @@ On Coiled: coiled batch run --vm-type m8g.large --arm --tag Project=OCR --secret
 import os
 import zipfile
 from fnmatch import fnmatch
-from pathlib import PurePosixPath
-from typing import Annotated, Literal, get_args
+from typing import Annotated
 
 import obstore
 import requests
@@ -27,11 +26,10 @@ from obspec_utils.readers import BufferedStoreReader
 from obstore.store import HTTPStore
 
 from ocr.config import INPUT_PREFIX, StorageConfig
+from ocr.risks.hurricane.config import METRICS, Metric
 
 RAW_PREFIX = f'{INPUT_PREFIX}/hurricane/raw/chaz'
 EXPLORE_PREFIX = 'ocr-explore/CHAZ'
-Metric = Literal['return_periods', 'exceedance_intensity']
-METRICS: tuple[Metric, ...] = get_args(Metric)
 
 # Dryad file ids for dataset version 408938 (doi:10.5061/dryad.qfttdz0vz).
 FILES: dict[Metric, int] = {
@@ -43,33 +41,38 @@ DOWNLOAD = 'https://datadryad.org/api/v2/files/{id}/download'
 app = typer.Typer(no_args_is_help=True)
 
 
-def _size(store, key: str) -> int | None:
-    try:
-        return obstore.head(store, key)['size']
-    except FileNotFoundError:
-        return None
+def _sizes(store, prefix: str) -> dict[str, int]:
+    return {m['path']: m['size'] for m in obstore.list(store, prefix).collect()}
+
+
+def _keep(path: str) -> bool:
+    """netCDFs only: skips csv/ and macOS zip cruft (__MACOSX/._*)."""
+    return path.endswith('.nc') and not {'csv', '__MACOSX'} & set(path.split('/'))
+
+
+def _raw(explore_key: str) -> str:
+    return f'{RAW_PREFIX}/{explore_key.removeprefix(f"{EXPLORE_PREFIX}/")}'
 
 
 @app.command()
 def copy_raw(dry_run: bool = False) -> None:
     """Copy ocr-explore/CHAZ/{metric}/{nc,raster.nc}/**.nc to RAW_PREFIX (csv/ skipped)."""
     store = StorageConfig().object_store()
-    copied = skipped = 0
-    for metric in METRICS:
-        for batch in obstore.list(store, f'{EXPLORE_PREFIX}/{metric}/'):
-            for meta in batch:
-                src = meta['path']
-                if not src.endswith('.nc') or '/csv/' in src:
-                    continue
-                dst = f'{RAW_PREFIX}/{src.removeprefix(f"{EXPLORE_PREFIX}/")}'
-                if _size(store, dst) == meta['size']:
-                    skipped += 1
-                    continue
-                print(f'  {meta["size"] / 1e6:8.1f} MB  {dst}')
-                if not dry_run:
-                    obstore.copy(store, src, dst)
-                copied += 1
-    print(f'{"would copy" if dry_run else "copied"}={copied} skipped={skipped}')
+    existing = _sizes(store, f'{RAW_PREFIX}/')
+    src = {
+        k: n
+        for m in METRICS
+        for k, n in _sizes(store, f'{EXPLORE_PREFIX}/{m}/').items()
+        if _keep(k)
+    }
+    todo = {k: n for k, n in src.items() if existing.get(_raw(k)) != n}
+    for k, n in todo.items():
+        print(f'  {n / 1e6:8.1f} MB  {_raw(k)}')
+    print(f'{"would copy" if dry_run else "copying"}={len(todo)} skipped={len(src) - len(todo)}')
+    if dry_run:
+        return
+    for k in todo:
+        obstore.copy(store, k, _raw(k))
 
 
 def _presigned_url(file_id: int) -> str:
@@ -110,14 +113,6 @@ def _open_zip(file_id: int) -> zipfile.ZipFile:
     return zipfile.ZipFile(reader)
 
 
-def _clean_rel(member_path: str, name: str) -> str | None:
-    """Zip member path -> path under RAW_PREFIX/<name>/, or None to skip macOS cruft."""
-    parts = PurePosixPath(member_path.lstrip('/')).parts
-    if '__MACOSX' in parts or parts[-1].startswith('.'):
-        return None
-    return '/'.join(parts[1:] if parts[0] == name else parts)
-
-
 @app.command()
 def fetch(
     name: Metric,
@@ -126,26 +121,31 @@ def fetch(
 ) -> None:
     """Stream members of one Dryad zip into RAW_PREFIX/<name>/."""
     file_id = FILES[name]
-    with _open_zip(file_id) as zf:
-        members = [i for i in zf.infolist() if not i.is_dir() and fnmatch(i.filename, only)]
-    plan = [(m, rel) for m in members if (rel := _clean_rel(m.filename, name))]
     store = StorageConfig().object_store()
-    gb = sum(m.file_size for m, _ in plan) / 1e9
-    print(f'{len(plan)} files, {gb:.2f} GB -> {RAW_PREFIX}/{name}/')
-    copied = skipped = 0
-    for i, (member, rel) in enumerate(plan, 1):
-        dst = f'{RAW_PREFIX}/{name}/{rel}'
-        if _size(store, dst) == member.file_size:
-            skipped += 1
-            continue
-        print(f'  [{i}/{len(plan)}] {rel} ({member.file_size / 1e6:.1f} MB)')
+    existing = _sizes(store, f'{RAW_PREFIX}/{name}/')
+    with _open_zip(file_id) as zf:
+        members = [m for m in zf.infolist() if _keep(m.filename) and fnmatch(m.filename, only)]
+    dst = {
+        m.filename: f'{RAW_PREFIX}/{name}/{m.filename.lstrip("/").removeprefix(f"{name}/")}'
+        for m in members
+    }
+    todo = [m for m in members if existing.get(dst[m.filename]) != m.file_size]
+    gb = sum(m.file_size for m in todo) / 1e9
+    print(
+        f'{len(todo)} files, {gb:.2f} GB -> {RAW_PREFIX}/{name}/ (skipped={len(members) - len(todo)})'
+    )
+    for i, m in enumerate(todo, 1):
+        print(f'  [{i}/{len(todo)}] {dst[m.filename]} ({m.file_size / 1e6:.1f} MB)')
         if dry_run:
             continue
         # Fresh presigned URL per member: one URL can expire during a multi-GB stream.
-        with _open_zip(file_id) as zf, zf.open(member) as src:
-            obstore.put(store, dst, src, chunk_size=32 << 20)
-        copied += 1
-    print(f'done: copied={copied} skipped={skipped}' + (' (dry run)' if dry_run else ''))
+        with _open_zip(file_id) as zf, zf.open(m) as src:
+            obstore.put(store, dst[m.filename], src, chunk_size=32 << 20)
+    copied = 0 if dry_run else len(todo)
+    print(
+        f'done: copied={copied} skipped={len(members) - len(todo)}'
+        + (' (dry run)' if dry_run else '')
+    )
 
 
 if __name__ == '__main__':

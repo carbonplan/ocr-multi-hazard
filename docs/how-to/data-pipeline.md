@@ -4,14 +4,15 @@ Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `r
 
 Fire runs `score`, `pyramid`, `buildings` and `regions` (`pixi run fire-all`).
 
-Hurricane has an input ETL only (no stages yet). It reads the raw CHAZ netCDFs and writes `input/hurricane/chaz.icechunk`, one group per metric and representation. Run the jobs one at a time, since they all commit to one repo:
+Hurricane has an input ETL only (no stages yet). It reads the raw CHAZ netCDFs and writes `input/hurricane/chaz.icechunk`, one group per metric and representation. The groups all commit to one repo, so they run one after another:
 
 ```bash
-pixi run hurricane-fetch copy-raw                     # once: copy raw netCDFs from ocr-explore/CHAZ/ to input/hurricane/raw/chaz/
-pixi run hurricane-etl --metric return_periods        # --representation raster for the 0.05 deg grid; --prefix scratch/<you> for a test store
-pixi run hurricane-etl --metric exceedance_intensity  # an existing group raises; --overwrite replaces it
-pixi run hurricane-etl --metric return_periods --source era5  # ERA5-forced baseline: <group>_era5, dims (lat, lon) on its own grid
+pixi run hurricane-all                                  # copy raw netCDFs, then build all 7 groups into input/
+pixi run hurricane-all scratch/<you>                    # same, into a scratch store
+pixi run hurricane-etl --metric return_periods --overwrite  # rebuild one group (an existing group raises without --overwrite)
 ```
+
+Raw files already copied from `ocr-explore/CHAZ/` cover everything except the exceedance-intensity raster. To pull missing files from Dryad (`pixi run hurricane-fetch fetch <metric>`), set `DRYAD_TOKEN`. Get one from your Dryad "My account" page: create an API account, then copy a token from that page (valid 10 h).
 
 ## Run a deployment
 
