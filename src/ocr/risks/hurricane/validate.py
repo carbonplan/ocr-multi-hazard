@@ -138,10 +138,20 @@ def in_region(lat, lon, box) -> np.ndarray:
     return (lat >= la0) & (lat < la1) & (lon360 >= lo0) & (lon360 < lo1)
 
 
-def counts(lat, lon, wind, grid: np.ndarray, land) -> dict:
+def _total(per: np.ndarray, weight: np.ndarray | None):
+    """Sum of a (member, storm) array of counts, each weighted by `weight` if given."""
+    if weight is None:
+        return int(per.sum())
+    t = np.tensordot(weight, per, axes=2)
+    return float(t) if t.ndim == 0 else t
+
+
+def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = None) -> dict:
     """Counts over all members of one set of storms: lat, lon (node, storm) 6-hourly, wind
-    (member, node, storm) in kt; `land` is a landfall.USLand."""
-    n_m = wind.shape[0]
+    (member, node, storm) in kt; `land` is a landfall.USLand. With `weight` (member, storm),
+    each count is the sum of the weights of what it counts; with (group, member, storm), each
+    count is an array of one such sum per group."""
+    n_m, n_s = wind.shape[0], wind.shape[2]
     out = {'members': n_m}
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = lookup(grid, lat_h, lon_h)
@@ -151,39 +161,49 @@ def counts(lat, lon, wind, grid: np.ndarray, land) -> dict:
     for c, a3 in enumerate(COUNTRIES, start=2):
         e = entry & (code == c)
         s = np.nonzero(e.any(axis=0))[0]
-        w = w_h[np.argmax(e, axis=0)[s], :, s] if s.size else np.empty((0, n_m))
+        w = np.full((n_m, n_s), np.nan)
+        if s.size:
+            w[:, s] = w_h[np.argmax(e, axis=0)[s], :, s].T
         for t in THRESHOLDS:
             with np.errstate(invalid='ignore'):
-                out[f'landfall {a3} >= {t}'] = int((w >= t).sum())
+                out[f'landfall {a3} >= {t}'] = _total(w >= t, weight)
     sea = lookup(grid, lat, lon) == 0
     for name, box in REGIONS.items():
         here = in_region(lat, lon, box) & sea
         for t in (64, 96):
             with np.errstate(invalid='ignore'):
-                out[f'time {name} >= {t}'] = int(((wind >= t) & here[None]).sum())
+                out[f'time {name} >= {t}'] = _total(((wind >= t) & here[None]).sum(axis=1), weight)
     with np.errstate(invalid='ignore'):
         ts = wind >= 34
-    m, s = np.nonzero(ts.any(axis=1))
-    node = np.argmax(ts, axis=1)[m, s]
-    first_lat, first_lon = lat[node, s], lon[node, s]
-    out['TS formed global'] = int(m.size)
+    formed = ts.any(axis=1)
+    node = np.argmax(ts, axis=1)
+    first_lat, first_lon = lat[node, np.arange(n_s)], lon[node, np.arange(n_s)]
+    out['TS formed global'] = _total(formed, weight)
     for name, box in REGIONS.items():
-        out[f'TS formed {name}'] = int(in_region(first_lat, first_lon, box).sum())
+        out[f'TS formed {name}'] = _total(formed & in_region(first_lat, first_lon, box), weight)
 
-    rows = landfall.storm_rows(lat, lon, wind, np.zeros(lat.shape[1], int), land, 'v', 'u')
+    rows = landfall.storm_rows(lat, lon, wind, np.zeros(n_s, int), land, 'v', 'u')
     pacific = rows['crosses'] & (
         landfall.region(rows['lf_lat'].values, rows['lf_lon'].values) == 'Pacific'
     )
     us = rows['lf_region'].notna() & ~pacific
     w = rows['lf_wind']
-    out['NA TS'] = int(rows['na_ts'].sum())
+
+    def per_row(flag: pd.Series) -> np.ndarray:
+        per = np.zeros((n_m, n_s))
+        per[rows['member'].values, rows['storm'].values] = flag.values
+        return per
+
+    out['NA TS'] = _total(per_row(rows['na_ts']), weight)
     for t in (64, 96):
-        out[f'NA peak >= {t}'] = int((rows['na_ts'] & (rows['peak'] >= t)).sum())
+        out[f'NA peak >= {t}'] = _total(per_row(rows['na_ts'] & (rows['peak'] >= t)), weight)
     for t in THRESHOLDS:
-        out[f'Atl+Gulf landfalls >= {t} kt'] = int((us & (w >= t)).sum())
+        out[f'Atl+Gulf landfalls >= {t} kt'] = _total(per_row(us & (w >= t)), weight)
     for r in landfall.ATLANTIC:
-        out[f'{r} landfalls >= 64 kt'] = int((us & (rows['lf_region'] == r) & (w >= 64)).sum())
-    out['Pacific coast landfalls >= 34 kt'] = int((pacific & (w >= 34)).sum())
+        out[f'{r} landfalls >= 64 kt'] = _total(
+            per_row(us & (rows['lf_region'] == r) & (w >= 64)), weight
+        )
+    out['Pacific coast landfalls >= 34 kt'] = _total(per_row(pacific & (w >= 34)), weight)
 
     na_ts = (ts & landfall.in_north_atlantic(lat, lon)[None] & np.isfinite(lat)[None]).any(axis=1)
     reg = na_region(lat, lon)
@@ -191,7 +211,7 @@ def counts(lat, lon, wind, grid: np.ndarray, land) -> dict:
         with np.errstate(invalid='ignore'):
             hit = (wind >= t) & na_ts[:, None, :] & sea[None]
         for r in NA_REGIONS:
-            out[f'NA time >= {t}: {r}'] = int((hit & (reg == r)[None]).sum())
+            out[f'NA time >= {t}: {r}'] = _total((hit & (reg == r)[None]).sum(axis=1), weight)
     return out
 
 
