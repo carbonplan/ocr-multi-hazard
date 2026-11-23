@@ -54,3 +54,9 @@ _Shapefiles and identifiers for US census blocks, census tracts, counties, state
 - U.S. Census Bureau, “Counties (and equivalent)”, TIGER/Line Shapefiles, 2023, https://www2.census.gov/geo/tiger/TIGER2023/COUNTY/tl\_2023\_us\_county.zip
 - U.S. Census Bureau, “cb_2023_us_state_500k”, TIGER/Line Shapefiles, 2023, https://www2.census.gov/geo/tiger/GENZ2023/shp/cb\_2023\_us\_state\_500k.zip
 - U.S. Census Bureau, “cb_2023_us_nation_5m”, TIGER/Line Shapefiles, 2023, https://www2.census.gov/geo/tiger/GENZ2023/shp/cb\_2023\_us\_nation\_5m.zip
+
+## [Meiler et al. 2026](https://doi.org/10.1038/s41597-025-06452-0)
+
+_Global coastal tropical-cyclone wind hazard maps from the CHAZ model: return periods (33 and 50 m/s) and exceedance intensities (10 to 1000-year return periods), downscaled from ERA5 reanalysis (1981-2019) and six CMIP6 GCMs (1995-2014, 2041-2060, 2081-2100; SSP2-4.5, SSP3-7.0, SSP5-8.5)._
+
+- Meiler, S., Lee, C.-Y., Camargo, S. J., & Sobel, A. H. Global coastal wind hazard maps from the CHAZ tropical cyclone model. _Scientific Data_ 13, 136 (2026). Data: [doi:10.5061/dryad.qfttdz0vz](https://doi.org/10.5061/dryad.qfttdz0vz). Available under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).

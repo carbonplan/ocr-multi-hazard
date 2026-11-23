@@ -4,6 +4,16 @@ Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `r
 
 Fire runs `score`, `pyramid`, `buildings` and `regions` (`pixi run fire-all`).
 
+Hurricane has an input ETL only (no stages yet). It reads the raw CHAZ netCDFs and writes `input/hurricane/chaz.icechunk`, one group per metric and representation. The groups all commit to one repo, so they run one after another:
+
+```bash
+pixi run hurricane-all                                  # copy raw netCDFs, then build all 7 groups into input/
+pixi run hurricane-all scratch/<you>                    # same, into a scratch store
+pixi run hurricane-etl --metric return_periods --overwrite  # rebuild one group (an existing group raises without --overwrite)
+```
+
+Raw files already copied from `ocr-explore/CHAZ/` cover everything except the exceedance-intensity raster. To pull missing files from Dryad (`pixi run hurricane-fetch fetch <metric>`), set `DRYAD_TOKEN`. Get one from your Dryad "My account" page: create an API account, then copy a token from that page (valid 10 h).
+
 ## Run a deployment
 
 A deployment is one committed TOML file under `runs/<risk>/`:
@@ -128,5 +138,5 @@ New stage: a function `(spec, out, overwrite, **kw)` in `STAGES` at its place in
 `test_run_files_dry_run` dry-runs every `runs/**/*.toml`. After a change, run:
 
 ```bash
-pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_refit.py
+pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_refit.py tests/hurricane/test_chaz_etl.py
 ```

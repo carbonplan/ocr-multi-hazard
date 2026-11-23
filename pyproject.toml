@@ -47,6 +47,14 @@
         "xclim>=0.62.0,<0.63",
     ]
     flood         = ["dask>=2026.8.0", "rasterio>=1.5.2,<2", "rioxarray>=0.23.0,<0.24", "typer>=0.27.3,<0.28"]
+    hurricane = [
+        "dask>=2026.8.0",
+        "h5netcdf>=1.8.3,<2",
+        "h5py>=3.16.0,<4",
+        "obspec-utils>=0.9.0,<0.10",
+        "requests>=2.34.2,<3",
+        "typer>=0.27.3,<0.28",
+    ]
     coiled-deploy = ["coiled>=1.135.6,<2", "jupyter-server-proxy>=4.6.0,<5", "jupyterlab>=4.6.4,<5"]
     data-mgmt = [
         "boto3>=1.40.0,<2", # aiobotocore (via s3fs) pins botocore
@@ -141,9 +149,9 @@
 
 [tool.pixi.environments]
     # Map environments to features
-    all-deps = ["coiled-deploy", "data-mgmt", "dev", "docs", "fire", "flood"]
-    default  = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
-    dev      = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
+    all-deps = ["coiled-deploy", "data-mgmt", "dev", "docs", "fire", "flood", "hurricane"]
+    default  = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood", "hurricane"]
+    dev      = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood", "hurricane"]
     docs     = ["coiled-deploy", "docs", "fire"]
     flood    = ["coiled-deploy", "data-mgmt", "dev", "fire", "flood"]
     # Standalone: Coiled package sync replicates the whole environment, and the
@@ -164,6 +172,12 @@
 [tool.pixi.feature.flood.tasks]
     flood-all   = { cmd = "ocr run runs/flood/v2.0.0.toml" }
     flood-local = { cmd = "ocr run runs/flood/local.toml" }
+
+[tool.pixi.feature.hurricane.tasks]
+    hurricane-fetch = { cmd = "python -m ocr.risks.hurricane.etl.fetch" }  # pixi run hurricane-fetch copy-raw [--dry-run]
+    hurricane-etl   = { cmd = "python -m ocr.risks.hurricane.etl.chaz" }   # pixi run hurricane-etl --metric return_periods
+    # All 7 groups in sequence (one repo); exceedance raster GCM cube skipped (3/108 raw files). pixi run hurricane-all [prefix]
+    hurricane-all = { cmd = "python -m ocr.risks.hurricane.etl.fetch copy-raw && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric return_periods && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric exceedance_intensity && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric return_periods --representation raster && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric return_periods --source era5 && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric exceedance_intensity --source era5 && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric return_periods --representation raster --source era5 && python -m ocr.risks.hurricane.etl.chaz --prefix {{ prefix }} --metric exceedance_intensity --representation raster --source era5", args = [{ arg = "prefix", default = "input" }] }
 
 [tool.pixi.feature.fire.tasks]
     fire-all   = { cmd = "ocr run runs/fire/v2.0.0.toml" }
