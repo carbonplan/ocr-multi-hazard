@@ -1,7 +1,7 @@
 """CHAZ intensity members weighted by their first landfall, to match observed landfall rates.
 
 A member's first landfall is the first hour its track enters land from sea on validate's country
-raster with the member at 34 kt or more. It has:
+raster with the member's approach wind (landfall.approach) at 34 kt or more. It has:
 
   - a zone: the country (validate.COUNTRIES, the US split by landfall.region into its Atlantic
     coastal regions, the Pacific coast and 'other'), or 'other land' for any other country
@@ -84,15 +84,18 @@ def first_landfall(lat, lon, wind, grid: np.ndarray) -> pd.DataFrame:
     position, zone, basin and class. lat, lon (node, storm) 6-hourly; wind (member, node, storm)."""
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = validate.lookup(grid, lat_h, lon_h)
-    w_h = landfall.hourly(np.moveaxis(wind, 0, 1))  # hour, member, storm
     prev = np.vstack([np.full((1, code.shape[1]), -1), code[:-1]])
-    entry = (prev == 0) & (code >= 1)
+    h_e, s_e, a_e = landfall.approach(wind, (prev == 0) & (code >= 1), code == 0)
     with np.errstate(invalid='ignore'):
-        hit = entry[:, None, :] & (w_h >= CLASSES[0][0])
-    m, s = np.nonzero(hit.any(axis=0))
-    h = np.argmax(hit, axis=0)[m, s]
+        hit = a_e >= CLASSES[0][0]
+    first = np.full((wind.shape[0], wind.shape[2]), -1)
+    for k in np.argsort(-h_e, kind='stable'):
+        first[hit[:, k], s_e[k]] = k
+    m, s = np.nonzero(first >= 0)
+    e = first[m, s]
+    h = h_e[e]
     la, lo = lat_h[h, s], lon_h[h, s]
-    w = w_h[h, m, s]
+    w = a_e[m, e]
     return pd.DataFrame(
         {
             'member': m,

@@ -57,11 +57,22 @@ def test_members_count_only_when_they_reach_34_kt_inside_the_north_atlantic():
 
 def test_observed_tracks_sit_on_a_regular_6_hourly_grid():
     rows = [
-        ('SID', 'SEASON', 'ISO_TIME', 'LAT', 'LON', 'USA_WIND'),
-        ('', 'Year', '', 'deg', 'deg', 'kts'),
-        ('A', '2000', '2000-08-01 00:00:00', '20', '-60', '40'),
-        ('A', '2000', '2000-08-01 12:00:00', '21', '-61', '50'),
-        ('A', '2000', '2000-08-01 18:00:00', '22', '-62', '55'),
+        (
+            'SID',
+            'SEASON',
+            'NAME',
+            'ISO_TIME',
+            'LAT',
+            'LON',
+            'USA_WIND',
+            'WMO_WIND',
+            'WMO_AGENCY',
+            'TRACK_TYPE',
+        ),
+        ('', 'Year', '', '', 'deg', 'deg', 'kts', 'kts', '', ''),
+        ('A', '2000', 'X', '2000-08-01 00:00:00', '20', '-60', '40', '', '', 'main'),
+        ('A', '2000', 'X', '2000-08-01 12:00:00', '21', '-61', '50', '', '', 'main'),
+        ('A', '2000', 'X', '2000-08-01 18:00:00', '22', '-62', '55', '', '', 'main'),
     ]
     csv = '\n'.join(','.join(r) for r in rows).encode()
     lat, lon, wind, season = landfall.observed_arrays(csv)

@@ -21,6 +21,12 @@ class Land:
     def inside(self, lat, lon):
         return np.isfinite(lat)
 
+    def atlantic_km(self, lat, lon):
+        return np.where(np.isfinite(lat), np.where(self(lat, lon), 0.0, 1000.0), np.nan)
+
+    def lee(self, lat, lon):
+        return self.anywhere(lat, lon), self(lat, lon)
+
 
 def test_unwrap_crosses_the_date_line():
     lon = np.array([[178.0], [-179.0], [-176.0], [np.nan]])
@@ -100,7 +106,6 @@ def test_pacific_landfalls_are_counted_apart_from_us_landfalls():
     assert rows['lf_region'].tolist() == ['FL', 'Pacific']
     s = landfall.summarize(rows, member_years=1, scale=1.0)
     assert s['US landfalls/yr (>= 34 kt)'] == pytest.approx(1)
-    assert s['US landfalls/yr >= 64 kt at the strongest crossing'] == pytest.approx(1)
     assert s['US Pacific landfalls/yr (>= 34 kt)'] == pytest.approx(1)
     assert s['US Pacific landfalls/yr >= 64 kt'] == pytest.approx(1)
 
@@ -151,3 +156,108 @@ def test_wind_around_landfall_and_end_after_landfall():
     assert a['lf_w+12'] == pytest.approx(70) and np.isnan(a['lf_w+48'])
     assert b['end_h_after_lf'] == pytest.approx(2)  # last wind at 18 h, landfall at 16 h
     assert b['end_before_track_h'] == 12 and b['end_on_land'] == 1.0
+
+
+def test_landfall_wind_is_the_last_independent_offshore_wind_before_the_crossing():
+    # the crossing at 16 h lies between nodes 2 (110 kt, offshore) and 3 (90 kt, on land)
+    lat, lon, wind = storm([[50, 60, 110, 90, 40, 30]])
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
+    assert rows.iloc[0]['lf_wind'] == pytest.approx(110)
+
+
+def test_landfall_wind_skips_the_interpolated_odd_node():
+    # nodes 6 h apart along 30N from 66W; the crossing at 22 h follows node 3, which CHAZ
+    # interpolates, so the wind of node 2 counts
+    lon = np.linspace(-66.0, -90.0, 7)[:, None]
+    lat = np.full_like(lon, 30.0)
+    wind = np.array([[50.0, 60.0, 100.0, 80.0, 60.0, 40.0, 30.0]])[:, :, None]
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
+    assert rows.iloc[0]['lf_wind'] == pytest.approx(100)
+
+
+class Coast:
+    """US land west of 80W and north of 25N; other land on an island from 77.5W to 76.5W."""
+
+    def __call__(self, lat, lon):
+        lon = landfall.wrap(lon)
+        return np.isfinite(lat) & (lon < -80) & (lat >= 25)
+
+    def water(self, lat, lon):
+        lon = landfall.wrap(lon)
+        return np.isfinite(lat) & ~self(lat, lon) & ~((lon > -77.5) & (lon < -76.5))
+
+    def anywhere(self, lat, lon):
+        return ~self.water(lat, lon) & np.isfinite(lat)
+
+    def inside(self, lat, lon):
+        return np.isfinite(lat)
+
+    def atlantic_km(self, lat, lon):
+        return np.where(np.isfinite(lat), np.where(self(lat, lon), 0.0, 1000.0), np.nan)
+
+    def lee(self, lat, lon):
+        return self.anywhere(lat, lon), self(lat, lon)
+
+
+def test_a_storm_counts_once_at_its_strongest_us_landfall():
+    # ashore at 9 h (approach wind 60 kt at node 0), back over water south of 25N, ashore again
+    # at 29 h (110 kt at node 4)
+    lat = np.array([26.0, 26.0, 26.0, 20.0, 20.0, 26.0, 30.0])[:, None]
+    lon = np.array([-76.0, -79.0, -82.0, -85.0, -88.0, -90.0, -90.0])[:, None]
+    wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
+    r = rows.iloc[0]
+    assert r['lf_wind'] == pytest.approx(110) and r['lf_region'] == 'TX-AL'
+    assert r['lf_crossings'] == 2
+
+
+def test_no_landfall_wind_when_the_approach_crosses_other_land():
+    # node 0 sits on the island, so no offshore node lies within 12 h of the crossing at 10 h
+    lat = np.full((3, 1), 30.0)
+    lon = np.array([-77.0, -79.0, -83.0])[:, None]
+    wind = np.array([[100.0, 100.0, 100.0]])[:, :, None]
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
+    assert rows.iloc[0]['crosses'] and np.isnan(rows.iloc[0]['lf_wind'])
+
+
+def test_landfall_rows_keep_the_crossing_hour_wind_and_the_first_crossing():
+    lat = np.array([26.0, 26.0, 26.0, 20.0, 20.0, 26.0, 30.0])[:, None]
+    lon = np.array([-76.0, -79.0, -82.0, -85.0, -88.0, -90.0, -90.0])[:, None]
+    wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
+    r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0').iloc[0]
+    assert r['lf_first_wind'] == pytest.approx(60 - 10 * 3 / 6)  # 9 h, between nodes 1 and 2
+    assert r['lf_w+0'] == pytest.approx(110 - 20 * 5 / 6)  # 29 h, between nodes 4 and 5
+
+
+def test_near_coast_peak_reads_even_nodes_near_us_land():
+    lat, lon, wind = storm([[50, 60, 110, 120, 100, 30]])
+    r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0').iloc[0]
+    assert r['near_peak'] == pytest.approx(100)  # nodes 3-5 are on land; node 3 is odd
+
+
+def test_lee_landfalls_interpolate_to_15_minutes():
+    # the centre is on land from 15 h 15 min, 13/24 of the way from node 2 to node 3
+    lat, lon, wind = storm([[50, 60, 110, 90, 40, 30], [50, 60, 70, 60, 40, 30]])
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
+    assert rows['lee_96'].tolist() == [1, 0] and rows['lee_64'].tolist() == [1, 1]
+
+
+HEADER = (
+    'SID,SEASON,NAME,ISO_TIME,LAT,LON,USA_WIND,WMO_WIND,WMO_AGENCY,TRACK_TYPE\n'
+    ',Year,,,deg,deg,kts,kts,,\n'
+)
+
+
+def test_observed_records_fill_missing_usa_wind_from_the_agency_as_climada_does():
+    csv = (
+        HEADER
+        + 'A,2000,X,2000-01-01 00:00:00,-35,170,70, ,wellington,main\n'
+        + 'A,2000,X,2000-01-01 06:00:00,-36,171, ,88,wellington,main\n'
+        + 'A,2000,X,2000-01-01 07:30:00,-36,171, ,88,wellington,main\n'
+        + 'B,2000,Y,2000-01-01 00:00:00,30,140, ,83.3,tokyo,main\n'
+        + 'C,2000,Z,2000-01-01 00:00:00,30,140,50, ,,spur-other\n'
+    ).encode()
+    r = landfall.observed_records(csv, (2000, 2000))
+    assert r['SID'].tolist() == ['A', 'A', 'B']
+    assert r['wind'].tolist() == pytest.approx([70, 100, 100])
+    assert r['wind_source'].tolist() == ['usa', 'wellington', 'tokyo']

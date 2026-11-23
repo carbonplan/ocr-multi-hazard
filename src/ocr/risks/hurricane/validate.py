@@ -2,9 +2,10 @@
 
 For each source, one row per year (1981-2019) of counts, summed over the source's members:
 
-  - landfalls by country: the first hour on a country's land right after an hour over sea, on
-    the Natural Earth 1:10m country raster at 1/12 degree, counted at the member's wind in that
-    hour, at 34, 64 and 96 kt
+  - landfalls by country: an hour on a country's land right after an hour over sea, on the
+    Natural Earth 1:10m country raster at 1/12 degree, at the member's approach wind there
+    (landfall.approach); each (storm, member) counts once per country, at its strongest
+    landfall there, at 34, 64 and 96 kt
   - 6-hourly nodes over sea at 64 and 96 kt, in REGIONS and, for North Atlantic storms, in the
     North Atlantic's NA_REGIONS
   - storms first reaching 34 kt, by where they reach it
@@ -28,7 +29,6 @@ IBTrACS)| over SCORED; `bootstrap` resamples whole years, the same years for eve
 from __future__ import annotations
 
 import argparse
-import io
 import os
 from concurrent.futures import ProcessPoolExecutor
 
@@ -155,15 +155,15 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
     out = {'members': n_m}
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = lookup(grid, lat_h, lon_h)
-    w_h = landfall.hourly(np.moveaxis(wind, 0, 1))  # hour, member, storm
     prev = np.vstack([np.full((1, code.shape[1]), -1), code[:-1]])
-    entry = (prev == 0) & (code >= 2)
+    h_e, s_e, a_e = landfall.approach(wind, (prev == 0) & (code >= 2), code == 0)
+    c_e = code[h_e, s_e]
+    members = np.arange(n_m)[:, None]
     for c, a3 in enumerate(COUNTRIES, start=2):
-        e = entry & (code == c)
-        s = np.nonzero(e.any(axis=0))[0]
+        pick = landfall.strongest(s_e, a_e, c_e == c, n_s)
         w = np.full((n_m, n_s), np.nan)
-        if s.size:
-            w[:, s] = w_h[np.argmax(e, axis=0)[s], :, s].T
+        if a_e.shape[1]:
+            w = np.where(pick >= 0, a_e[members, np.maximum(pick, 0)], np.nan)
         for t in THRESHOLDS:
             with np.errstate(invalid='ignore'):
                 out[f'landfall {a3} >= {t}'] = _total(w >= t, weight)
@@ -260,12 +260,8 @@ def _natural_earth() -> None:
 def first_record_year(csv: bytes, seasons: tuple[int, int]) -> np.ndarray:
     """Calendar year of each track's first synoptic record, in the order of
     landfall.observed_arrays(csv, seasons)."""
-    bt = pd.read_csv(
-        io.BytesIO(csv), skiprows=[1], low_memory=False, usecols=['SID', 'SEASON', 'ISO_TIME']
-    )
-    t = pd.to_datetime(bt['ISO_TIME'])
-    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*seasons)]
-    return pd.to_datetime(bt.groupby('SID', sort=True)['ISO_TIME'].min()).dt.year.values
+    bt = landfall.observed_records(csv, seasons)
+    return bt.groupby('SID', sort=True)['time'].min().dt.year.values
 
 
 def annual(source: str, workers: int | None = None) -> pd.DataFrame:

@@ -30,6 +30,12 @@ class Land:
     def inside(self, lat, lon):
         return np.isfinite(lat)
 
+    def atlantic_km(self, lat, lon):
+        return np.where(np.isfinite(lat), np.where(self(lat, lon), 0.0, 1000.0), np.nan)
+
+    def lee(self, lat, lon):
+        return self.anywhere(lat, lon), self(lat, lon)
+
 
 def test_lookup_reads_the_raster_cell_and_marks_missing_points():
     got = validate.lookup(grid(), np.array([30.5, 30.5, np.nan]), np.array([-90.5, -70.5, 0.0]))
@@ -117,3 +123,20 @@ def test_bootstrap_survives_resamples_without_a_rare_event(monkeypatch):
     obs.loc[2000, 'Atl+Gulf landfalls >= 64 kt'] = 0
     with pytest.raises(ValueError, match='no observed events'):
         validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=5)
+
+
+def test_country_landfalls_count_the_last_independent_offshore_wind():
+    lon = np.linspace(-70.0, -90.0, 6)[:, None]
+    lat = np.full_like(lon, 30.0)
+    # interpolated to the crossing hour (16 h) the wind would be 90 kt
+    wind = np.array([[50.0, 60.0, 110.0, 80.0, 40.0, 30.0]])[:, :, None]
+    c = validate.counts(lat, lon, wind, grid(), Land())
+    assert c['landfall USA >= 96'] == 1 and c['Atl+Gulf landfalls >= 96 kt'] == 1
+
+
+def test_counts_with_no_country_landfall():
+    lat = np.full((4, 1), -40.0)
+    lon = np.linspace(0.0, 6.0, 4)[:, None]
+    wind = np.full((2, 4, 1), 70.0)
+    c = validate.counts(lat, lon, wind, grid(), Land())
+    assert c['landfall USA >= 34'] == 0 and c['TS formed global'] == 2

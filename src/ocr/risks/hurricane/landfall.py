@@ -3,14 +3,24 @@
 The rules of chaz_trackdiag.py (Shane98c/chaz-local), so its published-track numbers can be
 reproduced and our runs compared on the same footing:
 
-  - CHAZ and IBTrACS (USA_WIND, synoptic 6-hourly records, season 1981-2019) nodes are
-    interpolated to hourly, longitudes unwrapped across the date line
-  - one US land mask: Natural Earth 1:10m, rasterized at 1/24 degree
-  - US landfall: the first hour on US land right after an hour over water; each storm counts
-    once, at its wind in that hour (and, in one row, at its strongest crossing). The US rows
-    count the Atlantic and Gulf coasts; landfalls on the Pacific coast, which IBTrACS has none
-    of over these years, have rows of their own
+  - IBTrACS: main tracks, synoptic 6-hourly records, seasons 1981-2019, at the 1-minute wind of
+    `observed_records` (USA_WIND, or the WMO agency's wind where USA_WIND is missing). CHAZ and
+    IBTrACS tracks are interpolated to hourly, longitudes unwrapped across the date line
+  - one US land mask: Natural Earth 1:10m at 1/24 degree, a cell US land wherever the US
+    touches it, so narrow land such as the Florida Keys counts
+  - a crossing: an hour on US land right after an hour over water. Its wind is the approach
+    wind (`approach`): the member's wind at the last even node before the crossing hour, at most
+    12 h earlier, with every hour from that node to the crossing over water and the member still
+    carrying wind at the crossing. CHAZ predicts intensity 12-hourly at even nodes and fills odd
+    nodes with the mean of their neighbours; IBTrACS is read the same way, at every other
+    synoptic record from a track's first
+  - US landfall: each (storm, member) counts once, at its strongest crossing (the first of
+    equals). The US rows count the Atlantic and Gulf coasts; landfalls on the Pacific coast,
+    which IBTrACS has none of over these years, have rows of their own
   - a (storm, member) counts only where it carries wind, a landfall only at 34 kt or more
+  - two other measures sit beside it: `near_coast_peak`, the strongest wind within NEAR_KM of
+    US Atlantic and Gulf land (Meiler et al. 2022's land-influencing storms), and `lee_landfalls`,
+    every independent US landfall by the rule of Lee et al. (2018, section 2.2)
   - CHAZ rates are also given scaled so its North Atlantic tropical-storm count matches the
     observed one, which leaves where storms go and how strong they are
   - the landfall share of North Atlantic storms splits exactly into the share whose track crosses
@@ -30,6 +40,7 @@ import io
 import numpy as np
 import pandas as pd
 import xarray as xr
+from scipy.spatial import cKDTree
 
 from ocr.risks.hurricane import store
 
@@ -42,8 +53,25 @@ REGIONS = (*ATLANTIC, 'Pacific', 'other')
 TIME_FILL = -54786.0  # 1800-01-01 in days since 1950: CHAZ's marker for no data
 PUBLISHED = store.PUBLISHED_TRACKS
 OUT = 'validation/chaz/landfall'
-AROUND = (-24, -12, -6, 6, 12, 24, 36, 48)  # hours from US landfall with a wind column each
+APPROACH_H = 12  # hours between even nodes, and the most an approach wind may precede a crossing
+AROUND = (-24, -12, -6, 0, 6, 12, 24, 36, 48)  # hours from US landfall with a wind column each
 END_RULES = ('track end', 'fell to 35 kt', 'other', 'observed')
+NEAR_KM = 300.0
+LEE_RES = 0.5  # degrees: the land mask of Lee et al. (2018)
+LEE_STEPS = 24  # 15-minute steps per 6-hourly node
+LEE_KM, LEE_H = 100.0, 6.0  # landfalls closer in both are one landfall
+EARTH_KM = 6371.0
+# CLIMADA's IBTRACS_AGENCY_1MIN_WIND_FACTOR: an agency's wind is scale * 1-minute wind + shift
+ONE_MINUTE = {
+    'tokyo': (0.60, 23.3),
+    'newdelhi': (1.0, 0.0),
+    'reunion': (0.88, 0.0),
+    'bom': (0.88, 0.0),
+    'nadi': (0.88, 0.0),
+    'wellington': (0.88, 0.0),
+    'cma': (0.871, 0.0),
+    'hko': (0.9, 0.0),
+}
 
 
 def wrap(lon):
@@ -56,6 +84,8 @@ class USLand:
     def __init__(self):
         import cartopy.io.shapereader as shpreader
         import shapely
+        from rasterio import features
+        from rasterio.transform import from_origin
 
         lon0, lat0, lon1, lat1 = BOX
         self.lons = np.arange(lon0, lon1, RES) + RES / 2
@@ -69,10 +99,24 @@ class USLand:
             list(shpreader.Reader(shpreader.natural_earth('10m', 'physical', 'land')).geometries())
         )
         land = shapely.clip_by_rect(land, lon0, lat0, lon1, lat1)
-        shapely.prepare(us)
         shapely.prepare(land)
-        self.mask = shapely.contains_xy(us, gx, gy)
+        self.mask = features.rasterize(
+            [(us, 1)],
+            out_shape=(self.lats.size, self.lons.size),
+            transform=from_origin(lon0, lat0 + self.lats.size * RES, RES, RES),
+            fill=0,
+            all_touched=True,
+            dtype='uint8',
+        )[::-1].astype(bool)
         self.land = self.mask | shapely.contains_xy(land, gx, gy)
+        i, j = np.nonzero(self.mask & (gx >= -105))
+        self._atlantic = cKDTree(xyz(self.lats[i], self.lons[j]))
+        lee_lon = np.arange(lon0, lon1, LEE_RES) + LEE_RES / 2
+        lee_lat = np.arange(lat0, lat1, LEE_RES) + LEE_RES / 2
+        lx, ly = np.meshgrid(lee_lon, lee_lat)
+        shapely.prepare(us)
+        self.lee_us = shapely.contains_xy(us, lx, ly)
+        self.lee_land = self.lee_us | shapely.contains_xy(land, lx, ly)
 
     def water(self, lat, lon):
         return self._lookup(~self.land, lat, lon, outside=True)
@@ -92,15 +136,37 @@ class USLand:
     def __call__(self, lat, lon):
         return self._lookup(self.mask, lat, lon, outside=False)
 
-    def _lookup(self, grid, lat, lon, outside: bool):
+    def atlantic_km(self, lat, lon):
+        """Great-circle distance (km) to the nearest US land cell east of 105W; NaN where
+        missing."""
+        ok = np.isfinite(lat) & np.isfinite(lon)
+        out = np.full(np.shape(lat), np.nan)
+        chord, _ = self._atlantic.query(xyz(np.asarray(lat)[ok], np.asarray(lon)[ok]))
+        out[ok] = 2 * EARTH_KM * np.arcsin(np.minimum(chord / 2, 1))
+        return out
+
+    def lee(self, lat, lon):
+        """(any land, US land) on the LEE_RES mask, by the cell's centre."""
+        return (
+            self._lookup(self.lee_land, lat, lon, outside=False, res=LEE_RES),
+            self._lookup(self.lee_us, lat, lon, outside=False, res=LEE_RES),
+        )
+
+    def _lookup(self, grid, lat, lon, outside: bool, res: float = RES):
         lon = wrap(lon)
         ok = np.isfinite(lat) & np.isfinite(lon)
-        i = np.floor((np.where(ok, lat, 0) - BOX[1]) / RES).astype(int)
-        j = np.floor((np.where(ok, lon, 0) - BOX[0]) / RES).astype(int)
-        inside = ok & (i >= 0) & (i < self.lats.size) & (j >= 0) & (j < self.lons.size)
+        i = np.floor((np.where(ok, lat, 0) - BOX[1]) / res).astype(int)
+        j = np.floor((np.where(ok, lon, 0) - BOX[0]) / res).astype(int)
+        inside = ok & (i >= 0) & (i < grid.shape[0]) & (j >= 0) & (j < grid.shape[1])
         out = np.full(np.shape(lat), outside) & ok
         out[inside] = grid[i[inside], j[inside]]
         return out
+
+
+def xyz(lat, lon) -> np.ndarray:
+    """Points on the unit sphere, (n, 3)."""
+    la, lo = np.radians(np.ravel(lat)), np.radians(np.ravel(lon))
+    return np.column_stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)])
 
 
 def in_north_atlantic(lat, lon) -> np.ndarray:
@@ -133,12 +199,13 @@ def unwrap(lon: np.ndarray) -> np.ndarray:
     return np.where(np.isfinite(lon), out, np.nan)
 
 
-def hourly(x: np.ndarray) -> np.ndarray:
-    """6-hourly nodes along axis 0 to hourly, linearly; NaN next to a missing node."""
+def hourly(x: np.ndarray, steps: int = 6) -> np.ndarray:
+    """6-hourly nodes along axis 0 to `steps` steps a node (hourly by default), linearly; NaN
+    next to a missing node."""
     n = x.shape[0]
-    h = np.arange((n - 1) * 6 + 1)
-    i0 = np.minimum(h // 6, n - 2)
-    f = ((h - 6 * i0) / 6.0).reshape((-1,) + (1,) * (x.ndim - 1))
+    h = np.arange((n - 1) * steps + 1)
+    i0 = np.minimum(h // steps, n - 2)
+    f = ((h - steps * i0) / steps).reshape((-1,) + (1,) * (x.ndim - 1))
     out = x[i0] * (1 - f) + x[i0 + 1] * f
     out = np.where(f == 0, x[i0], out)
     return np.where(f == 1, x[i0 + 1], out)
@@ -150,6 +217,84 @@ def crossings(lat_h, lon_h, land: USLand) -> np.ndarray:
     off = land.water(lat_h, lon_h)
     out = np.zeros(on.shape, bool)
     out[1:] = on[1:] & off[:-1]
+    return out
+
+
+def approach(wind: np.ndarray, entries: np.ndarray, offshore: np.ndarray):
+    """Approach wind of every member at each entry onto land: the hours and storms of the
+    entries, and a (member, entry) array of the member's wind at the last even node before the
+    entry hour, NaN where an hour from that node to the entry is not offshore or the member
+    carries no wind at the entry hour. wind (member, node, storm) 6-hourly; entries and offshore
+    (hour, storm) hourly."""
+    h, s = np.nonzero(entries)
+    node = 2 * ((h - 1) // APPROACH_H)
+    hours = 6 * node[:, None] + np.arange(APPROACH_H)
+    between = hours < h[:, None]
+    clear = np.where(between, offshore[np.minimum(hours, offshore.shape[0] - 1), s[:, None]], True)
+    out = wind[:, node, s].astype(float)
+    alive = np.isfinite(wind[:, h // 6, s]) & np.isfinite(wind[:, -(-h // 6), s])
+    out[:, ~clear.all(axis=1)] = np.nan
+    out[~alive] = np.nan
+    return h, s, out
+
+
+def strongest(storm: np.ndarray, wind: np.ndarray, select: np.ndarray, n_s: int) -> np.ndarray:
+    """(member, storm) index of each member's strongest selected entry, the first of equals, or
+    the storm's first selected entry where none has a wind; -1 where a storm has none selected.
+    storm and select (entry,), in time order within a storm; wind (member, entry)."""
+    out = np.full((wind.shape[0], n_s), -1)
+    for st in np.unique(storm[select]):
+        k = np.nonzero(select & (storm == st))[0]
+        v = wind[:, k]
+        best = np.argmax(np.where(np.isfinite(v), v, -np.inf), axis=1)
+        out[:, st] = k[np.where(np.isfinite(v).any(axis=1), best, 0)]
+    return out
+
+
+def near_coast_peak(lat, lon, wind, land: USLand) -> np.ndarray:
+    """(member, storm) strongest wind at even nodes within NEAR_KM of US Atlantic and Gulf land
+    (land.atlantic_km), NaN where none is that close."""
+    near = land.atlantic_km(lat[::2], lon[::2]) <= NEAR_KM
+    w = np.where(near[None], wind[:, ::2], np.nan)
+    with np.errstate(all='ignore'):
+        out = np.nanmax(np.where(np.isfinite(w), w, -np.inf), axis=1)
+    return np.where(np.isfinite(out), out, np.nan)
+
+
+def lee_landfalls(lat, lon, wind, land: USLand) -> np.ndarray:
+    """(threshold, member, storm) counts of independent US Atlantic and Gulf landfalls at TS, HU
+    and MH by the rule of Lee et al. (2018, section 2.2): tracks and winds interpolated to 15
+    minutes, land from a LEE_RES mask (Natural Earth land by the cell's centre, standing in for
+    their 0.5-degree topography), a landfall where the centre moves from ocean to land, landfalls
+    on any land closer than LEE_KM and LEE_H to the last one counted not counted again, and the
+    wind the interpolated wind there."""
+    n_m, _, n_s = wind.shape
+    lat_q, lon_q = hourly(lat, LEE_STEPS), wrap(hourly(unwrap(lon), LEE_STEPS))
+    on, us = land.lee(lat_q, lon_q)
+    ocean = np.isfinite(lat_q) & ~on
+    entry = np.zeros(on.shape, bool)
+    entry[1:] = on[1:] & ocean[:-1]
+    out = np.zeros((3, n_m, n_s))
+    for s in np.nonzero(entry.any(axis=0))[0]:
+        last = None
+        for q in np.nonzero(entry[:, s])[0]:
+            p = xyz(lat_q[q, s], lon_q[q, s])[0]
+            if last is not None:
+                km = 2 * EARTH_KM * np.arcsin(min(np.linalg.norm(p - last[1]) / 2, 1))
+                if (q - last[0]) / LEE_STEPS * 6 < LEE_H and km < LEE_KM:
+                    continue
+            last = (q, p)
+            if not us[q, s] or region(lat_q[q, s], lon_q[q, s]) == 'Pacific':
+                continue
+            i0, f = divmod(q, LEE_STEPS)
+            w = (
+                wind[:, i0, s]
+                if f == 0
+                else wind[:, i0, s] + (wind[:, i0 + 1, s] - wind[:, i0, s]) * f / LEE_STEPS
+            )
+            with np.errstate(invalid='ignore'):
+                for k, t in enumerate((TS, HU, MH)):
+                    out[k, :, s] += w >= t
     return out
 
 
@@ -182,9 +327,13 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
         peak = np.nanmax(np.where(np.isfinite(wind), wind, -np.inf), axis=1)
     lat_h, lon_h = hourly(lat), wrap(hourly(unwrap(lon)))
     cross = crossings(lat_h, lon_h, land)
-    lf = np.where(cross.any(axis=0), np.argmax(cross, axis=0), -1)
-    cols = np.nonzero(lf >= 0)[0]
-    w_h = hourly(np.moveaxis(wind[:, :, cols], 0, 1))  # hour, member, storm
+    h_e, s_e, a_e = approach(wind, cross, land.water(lat_h, lon_h))
+    atlantic = region(lat_h[h_e, s_e], lon_h[h_e, s_e]) != 'Pacific'
+    has_atlantic = np.zeros(n_s, bool)
+    has_atlantic[s_e[atlantic]] = True
+    pick = strongest(s_e, a_e, atlantic | ~has_atlantic[s_e], n_s)
+    first = strongest(s_e, np.full_like(a_e, np.nan), atlantic | ~has_atlantic[s_e], n_s)
+    lee = lee_landfalls(lat, lon, wind, land)
     df = pd.DataFrame(
         {
             'source': source,
@@ -203,39 +352,52 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
             'end_on_land': np.where(
                 land.inside(end_lat, end_lon), land.anywhere(end_lat, end_lon), np.nan
             ).ravel(),
-            'end_h_after_lf': np.full(n_m * n_s, np.nan),
+            'lf_crossings': np.tile(np.bincount(s_e, minlength=n_s), n_m),
+            'near_peak': near_coast_peak(lat, lon, wind, land).ravel(),
+            'lee_34': lee[0].ravel(),
+            'lee_64': lee[1].ravel(),
+            'lee_96': lee[2].ravel(),
         }
     )
-    around = [f'lf_w{h:+d}' for h in AROUND]
-    for k in ('lf_wind', 'lf_max_wind', 'lf_pre24', 'lf_post12', 'lf_post24', 'lf_lat', 'lf_lon'):
-        df[k] = np.nan
-    for k in around:
-        df[k] = np.nan
-    df['lf_region'] = None
-    n_h = w_h.shape[0]
-    for c, s in enumerate(cols):
-        h = lf[s]
-        w = w_h[:, :, c]  # hour, member
-        win = w[max(h - 24, 0) : h + 1]
-        with np.errstate(all='ignore'):
-            pre = np.nanmax(np.where(np.isfinite(win), win, -np.inf), axis=0)
-            at_cross = w[cross[:, s]]
-            strongest = np.nanmax(np.where(np.isfinite(at_cross), at_cross, -np.inf), axis=0)
-        idx = np.arange(n_m) * n_s + s
-        df.loc[idx, 'lf_wind'] = w[h]
-        df.loc[idx, 'lf_max_wind'] = strongest
-        df.loc[idx, 'lf_pre24'] = np.where(np.isfinite(pre), pre, np.nan)
-        df.loc[idx, 'lf_post12'] = w[h + 12] if h + 12 < n_h else np.nan
-        df.loc[idx, 'lf_post24'] = w[h + 24] if h + 24 < n_h else np.nan
-        df.loc[idx, 'lf_region'] = region(lat_h[h, s], lon_h[h, s])
-        df.loc[idx, 'lf_lat'] = lat_h[h, s]
-        df.loc[idx, 'lf_lon'] = lon_h[h, s]
-        for k, dh in zip(around, AROUND, strict=True):
-            df.loc[idx, k] = w[h + dh] if 0 <= h + dh < n_h else np.nan
-        df.loc[idx, 'end_h_after_lf'] = np.where(w_end[:, s] >= 0, 6 * w_end[:, s] - h, np.nan)
-    df = df[np.isfinite(df['peak']) & (df['peak'] > 0)]
-    df.loc[~(df['lf_wind'] >= TS), ['lf_region']] = None
-    return df
+    m_i, s_i = np.nonzero(pick >= 0)
+    e = pick[m_i, s_i]
+    h = h_e[e]
+    cols = np.unique(s_i)
+    w_h = hourly(np.moveaxis(wind[:, :, cols], 0, 1))  # hour, member, storm
+    c_i = np.searchsorted(cols, s_i)
+
+    def hours_from_landfall(dh: int, h: np.ndarray = h) -> np.ndarray:
+        t = h + dh
+        ok = (t >= 0) & (t < w_h.shape[0])
+        out = np.full(t.shape, np.nan)
+        out[ok] = w_h[t[ok], m_i[ok], c_i[ok]]
+        return out
+
+    with np.errstate(invalid='ignore'):
+        pre = np.fmax.reduce([hours_from_landfall(dh) for dh in range(-24, 1)], axis=0)
+    lf_lat, lf_lon = lat_h[h, s_i], lon_h[h, s_i]
+    values = {
+        'lf_wind': a_e[m_i, e],
+        'lf_first_wind': hours_from_landfall(0, h_e[first[m_i, s_i]]),
+        'lf_pre24': pre,
+        'lf_post12': hours_from_landfall(12),
+        'lf_post24': hours_from_landfall(24),
+        'lf_lat': lf_lat,
+        'lf_lon': lf_lon,
+        **{f'lf_w{dh:+d}': hours_from_landfall(dh) for dh in AROUND},
+        'end_h_after_lf': np.where(w_end[m_i, s_i] >= 0, 6 * w_end[m_i, s_i] - h, np.nan),
+    }
+    idx = m_i * n_s + s_i
+    for k, v in values.items():
+        col = np.full(n_m * n_s, np.nan)
+        col[idx] = v
+        df[k] = col
+    lf_region = np.full(n_m * n_s, None, dtype=object)
+    with np.errstate(invalid='ignore'):
+        landed = values['lf_wind'] >= TS
+    lf_region[idx[landed]] = region(lf_lat[landed], lf_lon[landed])
+    df['lf_region'] = pd.Series(lf_region, index=df.index, dtype=object)
+    return df[np.isfinite(df['peak']) & (df['peak'] > 0)]
 
 
 def reach(last, n: int):
@@ -290,19 +452,45 @@ def chaz_rows(
     return storm_rows(*chaz_arrays(ds, years), land, source, unit)
 
 
-def observed_arrays(csv: bytes, seasons: tuple[int, int] = YEARS):
-    """chaz_arrays for the IBTrACS since-1980 CSV: every track, synoptic records only, by
-    season, with one 'member' of USA_WIND. Each track is laid on a regular 6-hourly grid from its
-    first record to its last, so a missing record is a NaN node, not a shorter step."""
+def observed_records(csv: bytes, seasons: tuple[int, int] = YEARS) -> pd.DataFrame:
+    """IBTrACS main-track synoptic records of `seasons` with `wind` the 1-minute wind: USA_WIND,
+    or where it is missing the WMO agency's wind converted to 1-minute as CLIMADA does
+    (ONE_MINUTE). USA_WIND stops where JTWC stops, at extratropical transition, while the
+    regional agencies follow the storm on; their records count whatever the storm's nature, as
+    HURDAT's do in the North Atlantic."""
     bt = pd.read_csv(
         io.BytesIO(csv),
         skiprows=[1],
         low_memory=False,
-        usecols=['SID', 'SEASON', 'ISO_TIME', 'LAT', 'LON', 'USA_WIND'],
-    )
+        usecols=[
+            'SID', 'SEASON', 'NAME', 'ISO_TIME', 'LAT', 'LON', 'USA_WIND', 'WMO_WIND',
+            'WMO_AGENCY', 'TRACK_TYPE',
+        ],
+    )  # fmt: skip
     t = pd.to_datetime(bt['ISO_TIME'])
-    bt = bt[(t.dt.minute == 0) & (t.dt.hour % 6 == 0) & bt['SEASON'].between(*seasons)]
-    bt = bt.assign(USA_WIND=pd.to_numeric(bt['USA_WIND'], errors='coerce'), time=t[bt.index])
+    keep = (
+        (t.dt.minute == 0)
+        & (t.dt.hour % 6 == 0)
+        & bt['SEASON'].between(*seasons)
+        & (bt['TRACK_TYPE'] == 'main')
+    )
+    bt = bt[keep].assign(time=t[keep])
+    usa = pd.to_numeric(bt['USA_WIND'], errors='coerce')
+    agency = bt['WMO_AGENCY'].astype(str).str.strip()
+    scale = agency.map({k: v[0] for k, v in ONE_MINUTE.items()})
+    shift = agency.map({k: v[1] for k, v in ONE_MINUTE.items()})
+    converted = (pd.to_numeric(bt['WMO_WIND'], errors='coerce') - shift) / scale
+    return bt.assign(
+        wind=usa.fillna(converted),
+        wind_source=np.where(usa.notna(), 'usa', np.where(converted.notna(), agency, '')),
+    )
+
+
+def observed_arrays(csv: bytes, seasons: tuple[int, int] = YEARS):
+    """chaz_arrays for the IBTrACS since-1980 CSV: the tracks of observed_records, by season,
+    with one 'member' of their wind. Each track is laid on a regular 6-hourly grid from its first
+    record to its last, so a missing record is a NaN node, not a shorter step."""
+    bt = observed_records(csv, seasons)
     groups = []
     for _, g in bt.groupby('SID', sort=True):
         g = g.drop_duplicates('time').set_index('time').sort_index()
@@ -316,9 +504,37 @@ def observed_arrays(csv: bytes, seasons: tuple[int, int] = YEARS):
     wind = np.full((1, life, n), np.nan)
     season = np.zeros(n, int)
     for k, g in enumerate(groups):
-        lat[: len(g), k], lon[: len(g), k], wind[0, : len(g), k] = g['LAT'], g['LON'], g['USA_WIND']
+        lat[: len(g), k], lon[: len(g), k], wind[0, : len(g), k] = g['LAT'], g['LON'], g['wind']
         season[k] = g['SEASON'].iloc[0]
     return lat, lon, wind, season
+
+
+def landfall_records(csv: bytes, land: USLand, seasons: tuple[int, int] = YEARS) -> pd.DataFrame:
+    """HURDAT's landfall records (USA_RECORD 'L') on main tracks within 25 km of US Atlantic and
+    Gulf land, with the index of their storm in observed_arrays: the best-track wind at each
+    landfall, for checking our rule's observed landfalls."""
+    bt = pd.read_csv(
+        io.BytesIO(csv),
+        skiprows=[1],
+        low_memory=False,
+        usecols=['SID', 'SEASON', 'NAME', 'ISO_TIME', 'LAT', 'LON', 'USA_WIND', 'USA_RECORD',
+                 'TRACK_TYPE'],
+    )  # fmt: skip
+    bt = bt[
+        (bt['USA_RECORD'].astype(str).str.strip() == 'L')
+        & (bt['TRACK_TYPE'] == 'main')
+        & bt['SEASON'].between(*seasons)
+    ]
+    lat, lon = bt['LAT'].astype(float).values, bt['LON'].astype(float).values
+    near = (land.atlantic_km(lat, lon) <= 25) & (region(lat, lon) != 'Pacific')
+    bt = bt[near].assign(
+        wind=pd.to_numeric(bt.loc[near, 'USA_WIND'], errors='coerce'),
+        region=region(lat[near], lon[near]),
+    )
+    sids = np.array(sorted(observed_records(csv, seasons)['SID'].unique()))
+    return bt.assign(storm=np.searchsorted(sids, bt['SID'].values))[
+        ['storm', 'SID', 'SEASON', 'NAME', 'ISO_TIME', 'LAT', 'LON', 'wind', 'region']
+    ].reset_index(drop=True)
 
 
 def observed(land: USLand, csv: bytes) -> pd.DataFrame:
@@ -345,7 +561,6 @@ def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
     pacific = df['crosses'] & ~atlantic_crossing(df)
     df = df.assign(crosses=df['crosses'] & ~pacific)
     pac = df[pacific & (df['lf_wind'] >= TS)]
-    df = df.assign(lf_max_wind=df['lf_max_wind'].where(~pacific))
     df.loc[pacific, 'lf_region'] = None
     na = df[df['na_ts']]
     lf = df[df['lf_region'].notna()]
@@ -365,16 +580,13 @@ def summarize(df: pd.DataFrame, member_years: float, scale: float) -> dict:
         'US landfalls/yr (>= 34 kt)': len(lf) / member_years * scale,
         'US landfalls/yr >= 64 kt': len(big) / member_years * scale,
         'US landfalls/yr >= 96 kt': (lf['lf_wind'] >= MH).sum() / member_years * scale,
-        'US landfalls/yr >= 64 kt at the strongest crossing': (df['lf_max_wind'] >= HU).sum()
-        / member_years
-        * scale,
         'landfall share of NA TS storms': len(lf[lf['na_ts']]) / max(len(na), 1),
         'share of landfalls >= 64 kt': (lf['lf_wind'] >= HU).mean(),
         'share of landfalls >= 96 kt': (lf['lf_wind'] >= MH).mean(),
         'landfall wind median (kt)': lf['lf_wind'].median(),
         'peak of landfallers median (kt)': lf['peak'].median(),
         'landfall / 24 h approach peak, median': (lf['lf_wind'] / lf['lf_pre24']).median(),
-        '12 h after / at landfall (>= 64 kt), median': (big['lf_post12'] / big['lf_wind']).median(),
+        '12 h after / at landfall (>= 64 kt), median': (big['lf_post12'] / big['lf_w+0']).median(),
     }
     for r in ATLANTIC:
         sub = lf[lf['lf_region'] == r]
