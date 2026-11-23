@@ -1,6 +1,6 @@
 # Data pipeline
 
-Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. Each risk's ETL runs on its own first (flood: `pixi run -e flood flood-etl`). Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
+Each risk runs as an ordered list of stages: `score`, `pyramid`, `buildings`, `regions`. A risk without a `score` has its store written by its own ETL, run first. Storage is the hand-off: each stage reads what an earlier one wrote. `pyramid` and `buildings` each read only the risk store (`store.icechunk`); `regions` reads the buildings file. A stage runs in process, or as one Coiled batch job with `--coiled`.
 
 Fire runs `score`, `pyramid`, `buildings` and `regions` (`pixi run fire-all`).
 
@@ -19,7 +19,6 @@ Raw files already copied from `ocr-explore/CHAZ/` cover everything except the ex
 A deployment is one committed TOML file under `runs/<risk>/`:
 
 ```bash
-pixi run -e flood flood-etl --version v2.0.0  # once: writes store.icechunk (--overwrite redoes it and drops the pyramid; rerun pyramid/buildings/regions)
 ocr run runs/flood/v2.0.0.toml --dry-run      # print the plan, check inputs, run nothing
 ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```
@@ -27,8 +26,11 @@ ocr run runs/flood/v2.0.0.toml                # or: pixi run flood-all
 ```toml
 risk = "flood"
 version = "v2.0.0"
-stages = ["pyramid", "buildings", "regions"]
+stages = ["score", "pyramid", "buildings", "regions"]
 coiled = true
+
+[kwargs.score]
+run = "noaa-200612-202512"
 
 [kwargs.buildings]          # keyword args of the stage's utils, checked before any job starts
 point_strategy = "ST_Centroid"
@@ -39,10 +41,12 @@ vm_type = ["r7g.8xlarge"]
 
 ## Stage kwargs
 
-`[kwargs.<stage>]` in a run file, or `--kwargs '{"<stage>": {...}}'`, sets keyword args of the stage's utils (`STAGE_KWARGS` in `ocr/stages.py`): pyramid `write_multiscales`, `create_pyramid`; buildings `write_buildings`, `write_buildings_lod`; regions `write_regions`. Names and types are checked before any job starts; a bad name fails and the error lists the valid ones. `--kwargs` on `ocr run` merges key by key over the file's `[kwargs.<stage>]`.
+`[kwargs.<stage>]` in a run file, or `--kwargs '{"<stage>": {...}}'`, sets keyword args of the stage's utils (`STAGE_KWARGS` in `ocr/stages.py`): score the risk's own (`RiskSpec.score`); pyramid `write_multiscales`, `create_pyramid`; buildings `write_buildings`, `write_buildings_lod`; regions `write_regions`. Names and types are checked before any job starts; a bad name fails and the error lists the valid ones. `--kwargs` on `ocr run` merges key by key over the file's `[kwargs.<stage>]`.
 
 | kwarg | default | meaning |
 | --- | --- | --- |
+| `score.run` (flood) | `noaa-200612-202512` | FDP refit model run to mosaic |
+| `score.hucs` (flood) | all 18 | HUC-2 watersheds, e.g. `["03"]` (a subset, see below) |
 | `pyramid.levels` | `"auto"` | number of levels, or `"auto"` |
 | `pyramid.branch` | `"main"` | icechunk branch to write |
 | `buildings.bbox` | CONUS | lon/lat subset (see below) |
@@ -89,10 +93,18 @@ Scratch runs: use a prerelease version (`v2.0.0-scratch`, `v0.0.0-nrh`), or a sc
 
 Local smoke run: `OCR_STORAGE_LOCAL_ROOT=~/ocr-data pixi run flood-local` (`runs/flood/local.toml`).
 
-Subset: `bbox` (lon/lat xmin, ymin, xmax, ymax) on `buildings` keeps only buildings inside it, and `regions` then covers only those, with partial stats for regions cut by the box. So a subset never replaces production outputs, `bbox` needs a scratch `prefix` or a prerelease version (the run fails before it starts otherwise):
+Subset: `hucs` on flood's `score` builds the store from only those watersheds, cropped to them. `bbox` (lon/lat xmin, ymin, xmax, ymax) on `buildings` keeps only buildings inside it, and `regions` then covers only those, with partial stats for regions cut by the box; pair it with `hucs` so buildings outside the watersheds aren't sampled as empty. So a subset never replaces production outputs, `hucs` and `bbox` need a scratch `prefix` or a prerelease version (the run fails before it starts otherwise):
 
 ```bash
 ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -122.3, 37.8]}}' flood buildings
+```
+
+One watershed end to end on Coiled (South Atlantic-Gulf, buildings around Charleston):
+
+```bash
+ocr stage --version v0.0.0-fdp-test --prefix scratch/<you> --coiled \
+  --kwargs '{"score": {"hucs": ["03"]}, "buildings": {"bbox": [-80.2, 32.6, -79.8, 33.0]}}' \
+  flood score pyramid buildings regions
 ```
 
 ## Fire score
@@ -101,7 +113,7 @@ ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -
 
 - After the job, the regions missing from the commit history are resubmitted, up to 3 rounds; a round that writes none of its regions stops the run. If any are still missing, the run fails with their ids and `pyramid` doesn't start.
 - A rerun writes only the missing regions. `--overwrite` deletes the store first and writes every region; with `region_ids` it raises before deleting anything.
-- A run that writes any region first drops the pyramid levels (groups 1..N), so they never go stale over group "0" (as `flood-etl --overwrite`); rerun `pyramid` after. A rerun with nothing missing keeps them.
+- A run that writes any region first drops the pyramid levels (groups 1..N), so they never go stale over group "0"; rerun `pyramid` after. A rerun with nothing missing keeps them.
 - `region_ids` subsets `score` for dev runs (`--kwargs '{"score": {"region_ids": ["y14_x5"]}}'`). `pyramid` still coarsens the full CONUS grid; unwritten regions are NaN.
 
 ## How it works
@@ -110,12 +122,12 @@ ocr stage --version v2.0.0-dev --kwargs '{"buildings": {"bbox": [-122.5, 37.7, -
 
 | stage | util | reads | writes |
 | --- | --- | --- | --- |
-| score (fire only) | `RiskSpec.score`, one call per part from `RiskSpec.score_parts` | ETL output (not checked) | `store.icechunk` group "0" |
+| score | `RiskSpec.score`; fire calls it once per part from `RiskSpec.score_parts` | risk inputs (not checked) | `store.icechunk` group "0" |
 | pyramid | `write_multiscales` | `store.icechunk` | `store.icechunk` groups 1..N |
 | buildings | `write_buildings` | `store.icechunk` | `vector/buildings.geoparquet` |
 | regions | `write_regions` | `vector/buildings.geoparquet` | `vector/regions/` |
 
-The store is written by `score`, or by the risk's own ETL when it has no score (flood). Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so Coiled never boots a VM just to raise.
+The store is written by `score`, or by the risk's own ETL when it has no score. Flood's score (`ocr.risks.flood.refit`) mosaics the per-watershed outputs of the FDP refit (`input-data/tensor/fdp/`) into `fdp`, `fdp_se`, `contribution(driver, y, x)` (int16, packed) and `dominant_driver` (uint8 class codes, the argmax of `contribution`). `dominant_driver` is a derived variable (`RiskSpec.derived`): `pyramid` recomputes it on each level from that level's averaged contributions, and `regions` skips it. `buildings` samples everything, one `contribution_<driver>` column per driver. Score also writes group `point`: the same 13 layers (`fdp`, `fdp_se` and the 11 contributions) at full resolution in one `values(layer, y, x)` array, chunked 13 × 32 × 32 so a map click reads every layer of a cell in one small request. `pyramid --overwrite` drops only the numbered level groups, so `point` survives it. Before anything runs, `preflight()` does the checks listed under [Rerun some stages](#rerun-some-stages), so a bad stage name, kwarg or subset never boots a VM.
 
 Fire `score` is the one map job (`run_score`): `score_parts` plans the regions missing from the store's commit metadata (`region_id`), one task per region (`COILED_BATCH_TASK_INPUT`), all at once. After every task finishes it plans again, up to `SCORE_ROUNDS`, then raises with the missing ids. Only round 1 gets `--overwrite`; tasks never get `--overwrite` or kwargs.
 
@@ -126,5 +138,5 @@ New stage: a function `(spec, out, overwrite, **kw)` in `STAGES` at its place in
 `test_run_files_dry_run` dry-runs every `runs/**/*.toml`. After a change, run:
 
 ```bash
-pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_flood_etl.py tests/hurricane/test_chaz_etl.py
+pixi run -e dev pytest tests/test_cli.py tests/test_stages.py tests/flood/test_refit.py tests/hurricane/test_chaz_etl.py
 ```

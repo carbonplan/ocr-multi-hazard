@@ -165,16 +165,16 @@ def test_preflight_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         (tmp_path / level.key).parent.mkdir(parents=True)
         (tmp_path / level.key).touch()
     problems = stages.preflight(['pyramid', 'buildings'], flood, out)
-    assert len(problems) == 2 and problems[0].endswith('run the flood ETL first')
+    assert len(problems) == 2 and problems[0].endswith('run score first')
+    assert stages.preflight(['score', 'pyramid', 'buildings'], flood, out) == []
     assert stages.preflight(['regions'], flood, out)[0].endswith('run buildings first')
+    # A risk without score has its store written by its ETL.
+    etl = dataclasses.replace(flood, score=None)
+    assert stages.preflight(['buildings'], etl, out)[0].endswith('run the flood ETL first')
     (tmp_path / out.store).mkdir(parents=True)
     (tmp_path / out.store / 'repo').touch()
     assert stages.preflight(['buildings', 'regions'], flood, out) == []
-    # A risk with score writes the store in the run.
-    scored = dataclasses.replace(flood, score=lambda out: None)
-    fresh = OutputPaths(Risk.FLOOD, 'v3.0.0')
-    assert stages.preflight(['buildings'], scored, fresh)[0].endswith('run score first')
-    assert stages.preflight(['score', 'buildings'], scored, fresh) == []
+    assert stages.preflight(['buildings', 'regions'], etl, out) == []
 
 
 def test_preflight_unimplemented(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,6 +227,18 @@ def test_score_overwrite_deletes_store(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [c.args for c in scored.call_args_list] == [(out, 'a'), (out, 'b')] * 2
 
 
+def test_score_without_parts_is_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    deleted, scored, dropped = [], MagicMock(), MagicMock()
+    monkeypatch.setattr(stages, '_delete_prefix', deleted.append)
+    monkeypatch.setattr(stages, '_drop_pyramid', dropped)
+    out = OutputPaths(Risk.FLOOD, 'v2.0.0')
+    spec = dataclasses.replace(RISKS[Risk.FLOOD], score=scored)
+    stages.score(spec, out, overwrite=True, hucs=('03',))
+    assert deleted == [out.store]
+    scored.assert_called_once_with(out, hucs=('03',))
+    dropped.assert_not_called()
+
+
 def test_score_overwrite_with_subset_raises_before_deleting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,6 +284,18 @@ def test_pyramid_kwargs() -> None:
     for bad in ({'bogus': 1}, {'overwrite': True}):  # overwrite is --overwrite, not a kwarg
         with pytest.raises(ValidationError):
             stages.stage_kwargs('pyramid', bad)
+
+
+def test_score_kwargs_come_from_the_risk() -> None:
+    flood = RISKS[Risk.FLOOD]
+    kw = stages.stage_kwargs('score', {'hucs': ['03', '05'], 'run': 'r'}, flood)
+    assert kw.model_dump(exclude_unset=True) == {'hucs': ('03', '05'), 'run': 'r'}
+    for bad in ({'hucs': ['3']}, {'hucs': []}, {'distance': 'metres'}, {'bogus': 1}):
+        with pytest.raises(ValidationError):
+            stages.stage_kwargs('score', bad, flood)
+    # A risk without score takes no score kwargs.
+    with pytest.raises(ValidationError):
+        stages.stage_kwargs('score', {'hucs': ['03']}, RISKS[Risk.HURRICANE])
 
 
 def test_regions_kwargs() -> None:
