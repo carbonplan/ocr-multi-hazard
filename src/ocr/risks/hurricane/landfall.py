@@ -59,7 +59,7 @@ END_RULES = ('track end', 'fell to 35 kt', 'other', 'observed')
 NEAR_KM = 300.0
 LEE_RES = 0.5  # degrees: the land mask of Lee et al. (2018)
 LEE_STEPS = 24  # 15-minute steps per 6-hourly node
-LEE_KM, LEE_H = 100.0, 6.0  # landfalls closer in both are one landfall
+LEE_KM, LEE_H = 100.0, 6.0  # a landfall closer than either to the last one counted is not new
 EARTH_KM = 6371.0
 # CLIMADA's IBTRACS_AGENCY_1MIN_WIND_FACTOR: an agency's wind is scale * 1-minute wind + shift
 ONE_MINUTE = {
@@ -266,7 +266,7 @@ def lee_landfalls(lat, lon, wind, land: USLand) -> np.ndarray:
     and MH by the rule of Lee et al. (2018, section 2.2): tracks and winds interpolated to 15
     minutes, land from a LEE_RES mask (Natural Earth land by the cell's centre, standing in for
     their 0.5-degree topography), a landfall where the centre moves from ocean to land, landfalls
-    on any land closer than LEE_KM and LEE_H to the last one counted not counted again, and the
+    on any land less than LEE_KM or LEE_H from the last one counted not counted again, and the
     wind the interpolated wind there."""
     n_m, _, n_s = wind.shape
     lat_q, lon_q = hourly(lat, LEE_STEPS), wrap(hourly(unwrap(lon), LEE_STEPS))
@@ -281,7 +281,7 @@ def lee_landfalls(lat, lon, wind, land: USLand) -> np.ndarray:
             p = xyz(lat_q[q, s], lon_q[q, s])[0]
             if last is not None:
                 km = 2 * EARTH_KM * np.arcsin(min(np.linalg.norm(p - last[1]) / 2, 1))
-                if (q - last[0]) / LEE_STEPS * 6 < LEE_H and km < LEE_KM:
+                if (q - last[0]) / LEE_STEPS * 6 < LEE_H or km < LEE_KM:
                     continue
             last = (q, p)
             if not us[q, s] or region(lat_q[q, s], lon_q[q, s]) == 'Pacific':
@@ -378,7 +378,9 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     lf_lat, lf_lon = lat_h[h, s_i], lon_h[h, s_i]
     values = {
         'lf_wind': a_e[m_i, e],
-        'lf_first_wind': hours_from_landfall(0, h_e[first[m_i, s_i]]),
+        'lf_first_wind': np.where(
+            has_atlantic[s_i], hours_from_landfall(0, h_e[first[m_i, s_i]]), np.nan
+        ),
         'lf_pre24': pre,
         'lf_post12': hours_from_landfall(12),
         'lf_post24': hours_from_landfall(24),

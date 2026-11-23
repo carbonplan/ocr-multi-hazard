@@ -261,3 +261,21 @@ def test_observed_records_fill_missing_usa_wind_from_the_agency_as_climada_does(
     assert r['SID'].tolist() == ['A', 'A', 'B']
     assert r['wind'].tolist() == pytest.approx([70, 100, 100])
     assert r['wind_source'].tolist() == ['usa', 'wellington', 'tokyo']
+
+
+def test_lee_landfalls_need_both_100_km_and_6_hours_between_them():
+    # ashore at 1 h 45 min, back over water, ashore again at 7 h 15 min: 5.5 h later, 500 km away
+    lat = np.array([30.0, 24.0, 30.0])[:, None]
+    lon = np.array([-79.0, -83.0, -87.0])[:, None]
+    wind = np.full((1, 3, 1), 100.0)
+    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
+    assert rows.iloc[0]['lee_34'] == 1
+
+
+def test_first_crossing_wind_is_missing_for_a_pacific_only_storm():
+    lon = np.linspace(-130.0, -110.0, 6)[:, None]
+    lat = np.full_like(lon, 35.0)
+    rows = landfall.storm_rows(
+        lat, lon, np.full((1, 6, 1), 70.0), np.array([2000]), Land(), 't', 'u'
+    )
+    assert rows.iloc[0]['lf_region'] == 'Pacific' and np.isnan(rows.iloc[0]['lf_first_wind'])
