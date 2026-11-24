@@ -72,3 +72,13 @@ def test_band_bootstrap_ranks_match_lee_on_the_full_sample():
         {'run': realizations, 'same': realizations}, observed, ['a', 'b'], [2000, 2001], n=20
     )
     assert boot.shape == (20, 2) and (boot['run'] == boot['same']).all()
+
+
+def test_lee_compares_the_same_repeated_years():
+    index = pd.MultiIndex.from_product([[2000, 2001], [0, 1]], names=['year', 'realization'])
+    realizations = pd.DataFrame({'a': [10, 10, 20, 20]}, index=index)
+    observed = pd.DataFrame({'a': [10, 20]}, index=[2000, 2001])
+    got = skill.lee(realizations, observed, ['a'], [2000, 2000, 2001]).loc['a']
+    assert got['rank'] == 50 and got['t'] == 0
+    with pytest.raises(KeyError):
+        skill.lee(realizations, observed, ['a'], [2000, 2002])

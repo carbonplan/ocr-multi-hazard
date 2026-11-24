@@ -50,3 +50,27 @@ def test_card_scores_a_copy_of_the_observations_as_perfect():
     syn['members'] = 40
     card = report.card({'IBTrACS': obs, 'run': syn}, [2000])
     assert card['run'].dropna().to_numpy() == pytest.approx(1.0)
+
+
+def test_each_change_histogram_accumulates_towards_its_own_peak():
+    obs = pd.Series({**{f'dv {c}': 0.0 for c in report.DV}, 'dv -5': 10.0, 'dv 0': 30.0})
+    syn = pd.Series({**{f'dv {c}': 0.0 for c in report.DV}, 'dv 0': 10.0, 'dv 5': 30.0})
+    filler = {f'{p} {v}': 1.0 for p in ('lmi >=', 'lf lmi >=', 'lf wind >=') for v in report.LMI}
+    filler |= {f'lf dv {c}': 1.0 for c in report.DV} | {f'month {m}': 1.0 for m in range(1, 13)}
+    filler |= {'na': 1.0, 'us': 1.0}
+    o, s = report.series(
+        pd.concat([obs, pd.Series(filler)]), pd.concat([syn, pd.Series(filler)]), 1
+    )['6 h intensity change']
+    zero = list(report.DV).index(0)
+    assert o[zero - 1 : zero + 2].tolist() == [10, 30, 0]
+    assert s[zero - 1 : zero + 2].tolist() == [0, 10, 30]
+
+
+def test_rk_is_undefined_without_observed_landfalls():
+    base = {f'{p} {v}': 1.0 for p in ('lmi >=', 'lf lmi >=', 'lf wind >=') for v in report.LMI}
+    base |= {f'{p} {c}': 1.0 for p in ('dv', 'lf dv') for c in report.DV}
+    base |= {f'month {m}': 1.0 for m in range(1, 13)}
+    obs = pd.DataFrame([{**base, 'members': 1, 'na': 7, 'us': 0}], index=[1993])
+    syn = pd.DataFrame([{**base, 'members': 40, 'na': 280, 'us': 40}], index=[1993])
+    card = report.card({'IBTrACS': obs, 'run': syn}, [1993])
+    assert np.isnan(card.loc[('coastal crossing-to-basin ratio', "Rk'"), 'run'])

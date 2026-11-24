@@ -16,15 +16,18 @@ For each source, one row per year of counts, summed over the source's members:
 A source is IBTrACS (one member; with `thin`, its winds put in CHAZ's 12-hourly form), the CHAZ
 team's ERA5 set, one of our ERA5 runs, or RAFT (John et al.'s public set, Zenodo 18879988).
 
-`card` scores the sources against IBTrACS over a span of years with skill.emanuel. Where the
-papers leave a choice open, it reads them as follows:
+`card` scores the sources against an observed table over a span of years with skill.emanuel.
+Where the papers leave a choice open, it reads them as follows, with the alternatives as options:
 
-  - intensity histograms: exceedance counts over the period, the synthetic counts scaled to the
-    observed total (John et al., section 2.3); the landfall histogram is of lifetime maxima (their
+  - intensity histograms: exceedance counts over the period. `scale='observed'` scales the
+    synthetic counts to the observed total (John et al., section 2.3), which makes the first bin
+    match; `scale='fixed'` sets the synthetic frequency to 12 storms and 3 landfalls a year
+    (Emanuel's Table 2; John et al., section 3). The landfall histogram is of lifetime maxima (their
     Figure 1 caption), and `lf wind` is the reading by wind at the crossing
-  - 6-hour changes: the double-sided cumulative counts of Emanuel's Figure 6b, accumulated from
-    each end towards the observed peak bin, after scaling the synthetic histogram so its peak bin
-    equals the observed one (Emanuel's Table 2); the tests use the counts, not their logarithm
+  - 6-hour changes: the synthetic histogram scaled so its peak bin equals the observed one
+    (Emanuel's Table 2), then each histogram accumulated from both ends towards its own peak bin
+    (Emanuel's Figure 6b). `log_changes` applies ln(1 + count), the form John et al. (section 2.3)
+    give for this metric
   - annual cycle: monthly counts, the synthetic total scaled to the observed total
   - Rk': US landfalls over North Atlantic storms, unscaled; we count landfalls on US land rather
     than on coastal gates, whose coordinates are not published
@@ -52,6 +55,7 @@ LMI = np.arange(40, 205, 5)
 DV = np.arange(-60, 65, 5)  # bin centres, kt per 6 hours
 RAFT_URL = 'https://zenodo.org/api/records/18879988/files/RAFT_global_v20250604.nc/content'
 RAFT_KEY = f'{OUT}/raft_na.npz'
+FIXED = {'na': 12.0, 'us': 3.0}  # storms a year, scale='fixed'
 EPOCH = np.datetime64('1950-01-01')
 
 
@@ -183,9 +187,10 @@ def observed(seasons: tuple[int, int], thin: bool = False) -> list[dict]:
     ]
 
 
-def raft_extract(path: str) -> None:
-    """The North Atlantic storms of the RAFT file at `path`, saved to RAFT_KEY: lat, lon, vmax
-    (timestep, storm), month of each step and the storm's year."""
+def raft_extract(path: str):
+    """The North Atlantic storms of the RAFT file at `path`, saved locally under RAFT_KEY: lat,
+    lon, vmax (timestep, storm), month of each step and the storm's year. Returns the local
+    path."""
     import netCDF4
 
     with netCDF4.Dataset(path) as d:
@@ -211,10 +216,12 @@ def raft_extract(path: str) -> None:
     local = store.CACHE / RAFT_KEY
     local.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(local, lat=lat.T, lon=lon.T, vmax=vmax.T, month=_month(days).T, year=year)
+    return local
 
 
-def raft(years: tuple[int, int] = (1980, 2018)) -> list[dict]:
-    with np.load(store.path(RAFT_KEY)) as f:
+def raft(years: tuple[int, int] = (1980, 2018), path=None) -> list[dict]:
+    """RAFT's counts from the extraction at `path`, by default the published one."""
+    with np.load(path or store.path(RAFT_KEY)) as f:
         lat, lon, wind, month, year = (f[k] for k in ('lat', 'lon', 'vmax', 'month', 'year'))
     _init()
     return _by_year(lat, lon, wind[None], month, year, range(years[0], years[1] + 1))
@@ -228,15 +235,16 @@ def _init() -> None:
     _land = landfall.USLand()
 
 
-def annual(source: str, workers: int | None = None) -> pd.DataFrame:
+def annual(source: str, workers: int | None = None, raft_path=None) -> pd.DataFrame:
     """Counts by year for `source`: 'ibtracs' or 'ibtracs-thin' (1980-2019), 'raft'
-    (1980-2018), 'chaz-team', or a run name under runs/era5."""
+    (1980-2018, from the extraction at `raft_path` if given), 'chaz-team', or a run name under
+    runs/era5."""
     if source in ('ibtracs', 'ibtracs-thin'):
         _init()
         # one more season, so Southern Hemisphere storms of the last year are in
         rows = observed((1980, landfall.YEARS[1] + 1), thin=source == 'ibtracs-thin')
     elif source == 'raft':
-        rows = raft()
+        rows = raft(path=raft_path)
     else:
         if source == 'chaz-team':
             fn, jobs, workers = _team_file, range(10), workers or 5
@@ -260,15 +268,15 @@ def load(source: str) -> pd.DataFrame:
 
 
 def task(source: str) -> None:
-    keys = []
+    keys, raft_path = [], None
     if source == 'raft':
         import urllib.request
 
         path = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'raft.nc')
         urllib.request.urlretrieve(RAFT_URL, path)
-        raft_extract(path)
+        raft_path = raft_extract(path)
         keys.append(RAFT_KEY)
-    df = annual(source)
+    df = annual(source, raft_path=raft_path)
     local = store.CACHE / key(source)
     local.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(local)
@@ -300,8 +308,14 @@ def double_sided(hist: np.ndarray, peak: int) -> np.ndarray:
     return out
 
 
-def series(obs: pd.Series, syn: pd.Series) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """(observed, synthetic) counts of each metric from summed annual counts."""
+def series(
+    obs: pd.Series,
+    syn: pd.Series,
+    n_years: int,
+    scale: str = 'observed',
+    log_changes: bool = False,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """(observed, synthetic) values of each metric from annual counts summed over `n_years`."""
     out = {}
     for name, prefix, total in (
         ('intensity histogram', 'lmi >=', 'na'),
@@ -309,23 +323,31 @@ def series(obs: pd.Series, syn: pd.Series) -> dict[str, tuple[np.ndarray, np.nda
         ('wind at landfall', 'lf wind >=', 'us'),
     ):
         o, s = _columns(obs, prefix, LMI), _columns(syn, prefix, LMI)
-        out[name] = (o, s * obs[total] / syn[total])
+        target = obs[total] if scale == 'observed' else FIXED[total] * n_years
+        out[name] = (o, s * target / syn[total])
     for name, prefix in (
         ('6 h intensity change', 'dv'),
         ('6 h intensity change (landfall)', 'lf dv'),
     ):
         o, s = _columns(obs, prefix, DV), _columns(syn, prefix, DV)
-        peak = int(np.argmax(o))
-        s = s * o[peak] / s.max()
-        out[name] = (double_sided(o, peak), double_sided(s, peak))
+        s = s * o.max() / s.max()
+        pair = (double_sided(o, int(np.argmax(o))), double_sided(s, int(np.argmax(s))))
+        out[name] = tuple(np.log1p(x) for x in pair) if log_changes else pair
     o, s = _columns(obs, 'month', range(1, 13)), _columns(syn, 'month', range(1, 13))
     out['annual cycle'] = (o, s * o.sum() / s.sum())
     return out
 
 
-def card(tables: dict[str, pd.DataFrame], years, observed_label: str = 'IBTrACS') -> pd.DataFrame:
+def card(
+    tables: dict[str, pd.DataFrame],
+    years,
+    observed_label: str = 'IBTrACS',
+    scale: str = 'observed',
+    log_changes: bool = False,
+) -> pd.DataFrame:
     """D', K', r2 and chi2' of every metric for every source against `observed_label` over
-    `years`, and each source's Rk'. Rows (metric, test), one column per source."""
+    `years`, and each source's Rk'. Rows (metric, test), one column per source; `scale` and
+    `log_changes` as for `series`."""
     years = list(years)
     sums = {label: t.loc[years].sum() for label, t in tables.items()}
     obs = sums[observed_label]
@@ -334,11 +356,13 @@ def card(tables: dict[str, pd.DataFrame], years, observed_label: str = 'IBTrACS'
         if label == observed_label:
             continue
         col = {}
-        for metric, (o, s) in series(obs, syn).items():
+        for metric, (o, s) in series(obs, syn, len(years), scale, log_changes).items():
             for test, value in skill.emanuel(o, s).items():
                 col[(metric, test)] = value
-        col[('coastal crossing-to-basin ratio', "Rk'")] = skill.ratio_skill(
-            syn['us'], syn['na'], obs['us'], obs['na']
+        col[('coastal crossing-to-basin ratio', "Rk'")] = (
+            skill.ratio_skill(syn['us'], syn['na'], obs['us'], obs['na'])
+            if obs['us'] > 0 and obs['na'] > 0 and syn['na'] > 0
+            else np.nan
         )
         out[label] = col
     return pd.DataFrame(out)

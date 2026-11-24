@@ -174,3 +174,9 @@ def test_realization_rows_number_each_member_of_a_track_realization(monkeypatch)
     ]
     assert [r.get('landfall USA >= 64', 0) for r in rows] == [1, 0, 0, 0]
     assert all(r['members'] == 1 for r in rows)
+
+
+def test_counts_by_member_refuse_weights():
+    lat, lon = np.full((2, 1), 30.0), np.array([[-70.0], [-71.0]])
+    with pytest.raises(ValueError):
+        validate.counts(lat, lon, np.full((1, 2, 1), 50.0), grid(), Land(), np.ones((1, 1)), True)

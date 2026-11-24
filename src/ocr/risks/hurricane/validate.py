@@ -172,6 +172,8 @@ def counts(
     each count is the sum of the weights of what it counts; with (group, member, storm), each
     count is an array of one such sum per group. With `by_member`, each count is an array of
     one count per member."""
+    if by_member and weight is not None:
+        raise ValueError('counts by member are unweighted')
     n_m, n_s = wind.shape[0], wind.shape[2]
     out = {'members': np.ones(n_m, int) if by_member else n_m}
 
@@ -348,9 +350,14 @@ def by_realization(source: str, workers: int | None = None) -> pd.DataFrame:
     return df.fillna(0).set_index(['year', 'realization']).sort_index()
 
 
-def annual(realizations: pd.DataFrame) -> pd.DataFrame:
+def by_year(realizations: pd.DataFrame) -> pd.DataFrame:
     """Counts by year, summed over realizations."""
     return realizations.groupby(level='year').sum()
+
+
+def annual(source: str, workers: int | None = None) -> pd.DataFrame:
+    """Counts by year for `source`, as by_realization."""
+    return by_year(by_realization(source, workers))
 
 
 def key(source: str) -> str:
@@ -371,7 +378,7 @@ def load_realizations(source: str) -> pd.DataFrame:
 
 def task(source: str) -> None:
     realizations = by_realization(source)
-    df = annual(realizations)
+    df = by_year(realizations)
     for k, frame in ((key(source), df), (realization_key(source), realizations)):
         local = store.CACHE / k
         local.parent.mkdir(parents=True, exist_ok=True)

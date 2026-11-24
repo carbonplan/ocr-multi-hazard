@@ -51,28 +51,30 @@ def lee(realizations: pd.DataFrame, observed: pd.DataFrame, variables, years) ->
     """Lee et al. (2018)'s measures of each of `variables` over `years`: `realizations` is
     indexed by (year, realization), `observed` by year. Also the observed and simulated means
     per year and the 5th and 95th percentiles of the realizations' means."""
-    years = list(years)
-    sim = realizations.loc[realizations.index.get_level_values('year').isin(years)]
-    obs = observed.loc[years]
-    totals = sim.groupby(level='realization').sum()
+    years, variables = list(years), list(variables)
+    sim, obs = _arrays(realizations, observed, variables, years)
+    totals = sim.sum(axis=1)
     rows = {}
-    for v in variables:
-        per_year = totals[v] / len(years)
+    for k, v in enumerate(variables):
+        per_year = totals[:, k] / len(years)
         rows[v] = {
-            'observed': obs[v].mean(),
-            'simulated': sim[v].mean(),
-            '5%': per_year.quantile(0.05),
-            '95%': per_year.quantile(0.95),
-            't': t_statistic(sim[v], obs[v]),
-            'rank': rank(totals[v], obs[v].sum()),
+            'observed': obs[:, k].mean(),
+            'simulated': sim[:, :, k].mean(),
+            '5%': np.quantile(per_year, 0.05),
+            '95%': np.quantile(per_year, 0.95),
+            't': t_statistic(sim[:, :, k].ravel(), obs[:, k]),
+            'rank': rank(totals[:, k], obs[:, k].sum()),
         }
     return pd.DataFrame(rows).T
 
 
 def _arrays(realizations: pd.DataFrame, observed: pd.DataFrame, variables, years):
-    """(realization, year, variable) and (year, variable) arrays over `years`."""
+    """(realization, year, variable) and (year, variable) arrays over `years`, which may repeat;
+    a year missing from either table is an error."""
     years = list(years)
     sim = realizations[list(variables)].unstack('year')
+    if sim.isna().any().any():
+        raise ValueError('a realization is missing a year')
     sim = np.stack([sim[v][years].to_numpy(float) for v in variables], axis=-1)
     return sim, observed.loc[years, list(variables)].to_numpy(float)
 
