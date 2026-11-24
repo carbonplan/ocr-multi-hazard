@@ -2,9 +2,11 @@
 
 For each source, one row per year (1981-2019) of counts, summed over the source's members:
 
-  - landfalls by country: the first hour on a country's land right after an hour over sea, on
-    the Natural Earth 1:10m country raster at 1/12 degree, counted at the member's wind
-    interpolated to that hour, at 34, 64 and 96 kt (the first-crossing rule of Emanuel 2025)
+  - landfalls by country: the first crossing from sea onto a country's land, on the Natural
+    Earth 1:10m country raster at 1/12 degree, timed to 10 minutes, at the member's wind
+    interpolated to that time, at 34, 64 and 96 kt (the first-crossing rule of Emanuel 2025);
+    and, with ", offshore", each storm at its strongest crossing onto the country at its last
+    offshore wind (landfall.approach)
   - 6-hourly nodes over sea at 64 and 96 kt, in REGIONS and, for North Atlantic storms, in the
     North Atlantic's NA_REGIONS
   - storms first reaching 34 kt, by where they reach it
@@ -19,7 +21,9 @@ rate is a count over members.
 
 `metrics` turns a span of years into rates, scaling the North Atlantic counts so each source's
 North Atlantic tropical-storm count matches the observed one; `score` is the mean |ln(source /
-IBTrACS)| over SCORED; `bootstrap` resamples whole years, the same years for every source.
+IBTrACS)| over SCORED (or SCORED_OFFSHORE, the same with landfalls counted at the strongest
+crossing and last offshore wind), over the metrics `eligible` keeps; `bootstrap` resamples whole
+years, the same years for every source.
 
     python -m ocr.risks.hurricane.validate task --source <run name | ibtracs | chaz-team>
     python -m ocr.risks.hurricane.validate launch --runs <run name>,<run name>,...
@@ -83,7 +87,13 @@ SCORED = (
     ]
     + [f'landfall {c} >= 64' for c in ('PHL', 'CHN', 'TWN', 'JPN', 'VNM', 'MEX', 'AUS', 'IND')]
 )
+# the same metrics with US and country landfalls counted at each storm's strongest crossing and
+# its last offshore wind (landfall.approach), for the sensitivity of the score to the rule
+SCORED_OFFSHORE = [
+    f'{m}, offshore' if m.startswith(('Atl+Gulf ', 'landfall ')) else m for m in SCORED
+]
 FLOOR = 0.05  # the ratio a source scores when it has none of something observed
+MIN_EVENTS = 5  # a count metric scores only where IBTrACS has more than this (Emanuel 2025)
 
 
 def country_raster(res: float = RES) -> np.ndarray:
@@ -154,18 +164,28 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
     out = {'members': n_m}
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = lookup(grid, lat_h, lon_h)
-    w_h = landfall.hourly(np.moveaxis(wind, 0, 1))  # hour, member, storm
     prev = np.vstack([np.full((1, code.shape[1]), -1), code[:-1]])
     entry = (prev == 0) & (code >= 2)
+    h_e, s_e, a_e = landfall.approach(wind, entry, code == 0)
+    c_e = code[h_e, s_e]
+    members = np.arange(n_m)[:, None]
     for c, a3 in enumerate(COUNTRIES, start=2):
         e = entry & (code == c)
         s = np.nonzero(e.any(axis=0))[0]
         w = np.full((n_m, n_s), np.nan)
         if s.size:
-            w[:, s] = w_h[np.argmax(e, axis=0)[s], :, s].T
+            t_cross = landfall.crossing_time(
+                lat_h, lon_h, np.argmax(e, axis=0)[s], s, lambda la, lo: lookup(grid, la, lo) == c
+            )
+            w[:, s] = landfall.wind_at(wind, t_cross, s)
+        w_off = np.full((n_m, n_s), np.nan)
+        if a_e.shape[1]:
+            pick = landfall.strongest(s_e, a_e, c_e == c, n_s)
+            w_off = np.where(pick >= 0, a_e[members, np.maximum(pick, 0)], np.nan)
         for t in THRESHOLDS:
             with np.errstate(invalid='ignore'):
                 out[f'landfall {a3} >= {t}'] = _total(w >= t, weight)
+                out[f'landfall {a3} >= {t}, offshore'] = _total(w_off >= t, weight)
     sea = lookup(grid, lat, lon) == 0
     for name, box in REGIONS.items():
         here = in_region(lat, lon, box) & sea
@@ -196,8 +216,12 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
     out['NA TS'] = _total(per_row(rows['na_ts']), weight)
     for t in (64, 96):
         out[f'NA peak >= {t}'] = _total(per_row(rows['na_ts'] & (rows['peak'] >= t)), weight)
+    us_off = rows['lf_offshore_region'].notna() & (rows['lf_offshore_region'] != 'Pacific')
     for t in THRESHOLDS:
         out[f'Atl+Gulf landfalls >= {t} kt'] = _total(per_row(us & (w >= t)), weight)
+        out[f'Atl+Gulf landfalls >= {t} kt, offshore'] = _total(
+            per_row(us_off & (rows['lf_offshore_wind'] >= t)), weight
+        )
     for r in landfall.ATLANTIC:
         out[f'{r} landfalls >= 64 kt'] = _total(
             per_row(us & (rows['lf_region'] == r) & (w >= 64)), weight
@@ -351,23 +375,38 @@ def metrics(tables: dict[str, pd.DataFrame], years) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def score(table: pd.DataFrame) -> pd.Series:
-    """Mean |ln(source / IBTrACS)| over the SCORED metrics IBTrACS has; a source's zero counts
-    as FLOOR."""
-    obs = table.loc[SCORED, 'IBTrACS']
-    ratio = table.loc[SCORED].drop(columns='IBTrACS').div(obs.where(obs > 0), axis=0)
+def eligible(table: pd.DataFrame, n_years: int, scored: list[str] | None = None) -> list[str]:
+    """The `scored` metrics (SCORED by default) that count: the shares, and the counts of which
+    IBTrACS has more than MIN_EVENTS over `n_years` years (rates in `table` are per year)."""
+    scored = SCORED if scored is None else scored
+    obs = table.loc[scored, 'IBTrACS']
+    return [m for m in scored if m.startswith('NA share') or obs[m] * n_years > MIN_EVENTS]
+
+
+def score(table: pd.DataFrame, metrics_: list[str] | None = None) -> pd.Series:
+    """Mean |ln(source / IBTrACS)| over `metrics_` (SCORED by default) where IBTrACS has some; a
+    source's zero counts as FLOOR. Pass eligible(...) to keep only well-sampled metrics."""
+    metrics_ = SCORED if metrics_ is None else metrics_
+    obs = table.loc[metrics_, 'IBTrACS']
+    ratio = table.loc[metrics_].drop(columns='IBTrACS').div(obs.where(obs > 0), axis=0)
     return np.abs(np.log(ratio.clip(lower=FLOOR))).mean()
 
 
-def bootstrap(tables: dict[str, pd.DataFrame], years, n: int = 2000, seed: int = 0) -> pd.DataFrame:
-    """Scores of `n` resamples of whole years, the same years for every source. Every SCORED
-    metric must be observed over `years`; a resample without it leaves it out."""
+def bootstrap(
+    tables: dict[str, pd.DataFrame],
+    years,
+    n: int = 2000,
+    seed: int = 0,
+    scored: list[str] | None = None,
+) -> pd.DataFrame:
+    """Scores of `n` resamples of whole years, the same years for every source, over the `scored`
+    metrics eligible over `years`; a resample without an event of one leaves it out."""
     years = list(years)
-    obs = metrics(tables, years).loc[SCORED, 'IBTrACS']
-    if (obs <= 0).any():
-        raise ValueError(f'no observed events for {list(obs[obs <= 0].index)}')
+    keep = eligible(metrics(tables, years), len(years), scored)
     rng = np.random.default_rng(seed)
-    return pd.DataFrame([score(metrics(tables, rng.choice(years, len(years)))) for _ in range(n)])
+    return pd.DataFrame(
+        [score(metrics(tables, rng.choice(years, len(years))), keep) for _ in range(n)]
+    )
 
 
 def main() -> None:

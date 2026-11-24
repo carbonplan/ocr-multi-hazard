@@ -159,10 +159,11 @@ def test_wind_around_landfall_and_end_after_landfall():
 
 
 def test_landfall_wind_is_interpolated_to_the_crossing_hour_and_offshore_wind_is_kept():
-    # the crossing at 16 h lies between nodes 2 (110 kt, offshore) and 3 (90 kt, on land)
+    # the track reaches land (west of 80W) at 15 h 10 min, between nodes 2 (12 h, 110 kt,
+    # offshore) and 3 (18 h, 90 kt, on land)
     lat, lon, wind = storm([[50, 60, 110, 90, 40, 30]])
     r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0').iloc[0]
-    assert r['lf_wind'] == pytest.approx(110 - 20 * 4 / 6)
+    assert r['lf_wind'] == pytest.approx(110 - 20 * (15 + 1 / 6 - 12) / 6)
     assert r['lf_offshore_wind'] == pytest.approx(110)
 
 
@@ -208,7 +209,9 @@ def test_first_crossing_counts_and_the_offshore_wind_takes_the_strongest():
     wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
     rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
     r = rows.iloc[0]
-    assert r['lf_wind'] == pytest.approx(60 - 10 * 3 / 6) and r['lf_region'] == 'FL'
+    # first crossing at 8 h 10 min, between nodes 1 (6 h, 60 kt) and 2 (12 h, 50 kt)
+    assert r['lf_wind'] == pytest.approx(60 - 10 * (8 + 1 / 6 - 6) / 6) and r['lf_region'] == 'FL'
+    assert np.isnan(r['lf_first_offshore_wind'])  # the approach to it crosses the island
     assert r['lf_offshore_wind'] == pytest.approx(110) and r['lf_offshore_region'] == 'TX-AL'
     assert r['lf_crossings'] == 2
 
@@ -227,7 +230,7 @@ def test_wind_around_landfall_is_read_from_the_first_crossing_hour():
     lon = np.array([-76.0, -79.0, -82.0, -85.0, -88.0, -90.0, -90.0])[:, None]
     wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
     r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0').iloc[0]
-    assert r['lf_w+0'] == pytest.approx(r['lf_wind'])  # 9 h, between nodes 1 and 2
+    assert r['lf_w+0'] == pytest.approx(60 - 10 * 3 / 6)  # 9 h, the first hour on land
     assert r['lf_w+12'] == pytest.approx(80.0)  # 21 h, halfway from node 3 to node 4
 
 

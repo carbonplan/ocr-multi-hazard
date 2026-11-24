@@ -114,15 +114,19 @@ def test_score_leaves_out_what_was_not_observed(monkeypatch):
 
 def test_bootstrap_survives_resamples_without_a_rare_event(monkeypatch):
     monkeypatch.setattr(validate, 'SCORED', ['Atl+Gulf landfalls >= 64 kt', 'landfall PHL >= 64'])
-    obs = table(10, 2, 1, years=(2000, 2001))
-    obs.loc[2001, ['Atl+Gulf landfalls >= 64 kt', 'landfall PHL >= 64']] = [0, 1]
-    obs.loc[2000, 'landfall PHL >= 64'] = 1
-    run = table(400, 40, 40, years=(2000, 2001))
+    obs = table(10, 6, 1, years=(2000, 2001))
+    obs.loc[2001, 'Atl+Gulf landfalls >= 64 kt'] = 0  # resamples of 2001 alone have none
+    run = table(400, 240, 40, years=(2000, 2001))
     b = validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=50)
     assert b['run'].notna().all()
-    obs.loc[2000, 'Atl+Gulf landfalls >= 64 kt'] = 0
-    with pytest.raises(ValueError, match='no observed events'):
-        validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=5)
+
+
+def test_metrics_with_few_observed_events_are_left_out():
+    obs = table(10, 2, 1, years=(2000, 2001)).loc[[2000]]
+    m = pd.DataFrame({'IBTrACS': obs.iloc[0]})
+    m.loc['landfall PHL >= 64', 'IBTrACS'] = 6
+    keep = validate.eligible(m, 1, ['Atl+Gulf landfalls >= 64 kt', 'landfall PHL >= 64'])
+    assert keep == ['landfall PHL >= 64']  # 2 observed events against 6
 
 
 def test_country_landfalls_count_the_wind_interpolated_to_the_crossing_hour():

@@ -12,6 +12,9 @@ The same rules for every source:
     at its first crossing, at the wind interpolated to that hour. The US rows count the Atlantic
     and Gulf coasts; landfalls on the Pacific coast, which IBTrACS has none of over these years,
     have rows of their own
+  - the crossing time is found to 10 minutes along the line between the two hourly positions, and
+    lf_wind is interpolated to it
+  - lf_first_offshore_wind is the first crossing's approach wind (below)
   - the lf_offshore_ columns count each (storm, member) at its strongest crossing at the approach
     wind (`approach`): the member's wind at the last even node before the crossing hour, at most
     12 h earlier, with every hour from that node to the crossing over water and the member still
@@ -20,7 +23,7 @@ The same rules for every source:
     synoptic record from a track's first
   - a (storm, member) counts only where it carries wind, a landfall only at 34 kt or more
   - two other measures sit beside them: `near_coast_peak`, the strongest wind within NEAR_KM of
-    US land east of 105W, and `lee_landfalls`, every independent US landfall by the rule of Lee et
+    US land east of 105W, and `lee_records`, every independent US landfall by the rule of Lee et
     al. (2018, section 2.2)
   - CHAZ rates are also given scaled so its North Atlantic tropical-storm count matches the
     observed one, which leaves where storms go and how strong they are
@@ -212,6 +215,32 @@ def hourly(x: np.ndarray, steps: int = 6) -> np.ndarray:
     return np.where(f == 1, x[i0 + 1], out)
 
 
+CROSSING_STEPS = 6  # sub-steps an hour when timing a crossing: 10 minutes
+
+
+def crossing_time(lat_h, lon_h, h, s, on_land) -> np.ndarray:
+    """Hours from the first node at which each crossing (an hour h on land after hour h - 1 over
+    water, storm s) reaches land, to 1/CROSSING_STEPS of an hour along the straight line between
+    the two hourly positions. on_land(lat, lon) -> bool."""
+    f = np.arange(1, CROSSING_STEPS + 1) / CROSSING_STEPS
+    lat0, lat1 = lat_h[h - 1, s][:, None], lat_h[h, s][:, None]
+    lon0 = lon_h[h - 1, s][:, None]
+    dlon = (lon_h[h, s][:, None] - lon0 + 180) % 360 - 180
+    land = on_land(lat0 + (lat1 - lat0) * f, wrap(lon0 + dlon * f))
+    land[:, -1] = True
+    return h - 1 + f[np.argmax(land, axis=1)]
+
+
+def wind_at(wind: np.ndarray, t: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """(member, crossing) wind interpolated linearly between 6-hourly nodes to t hours from the
+    first node of storm s; NaN next to a missing node."""
+    i0 = np.floor(t / 6).astype(int)
+    f = t / 6 - i0
+    w0 = wind[:, i0, s]
+    w1 = wind[:, np.minimum(i0 + 1, wind.shape[1] - 1), s]
+    return np.where(f == 0, w0, w0 + (w1 - w0) * f)
+
+
 def crossings(lat_h, lon_h, land: USLand) -> np.ndarray:
     """(hour, storm) flags: an hour on US land right after an hour over water."""
     on = land(lat_h, lon_h)
@@ -262,20 +291,19 @@ def near_coast_peak(lat, lon, wind, land: USLand) -> np.ndarray:
     return np.where(np.isfinite(out), out, np.nan)
 
 
-def lee_landfalls(lat, lon, wind, land: USLand) -> np.ndarray:
-    """(threshold, member, storm) counts of independent US Atlantic and Gulf landfalls at TS, HU
-    and MH by the rule of Lee et al. (2018, section 2.2): tracks and winds interpolated to 15
-    minutes, land from a LEE_RES mask (Natural Earth land by the cell's centre, standing in for
-    their 0.5-degree topography), a landfall where the centre moves from ocean to land, landfalls
-    on any land less than LEE_KM or LEE_H from the last one counted not counted again, and the
-    wind the interpolated wind there."""
-    n_m, _, n_s = wind.shape
+def lee_records(lat, lon, wind, land: USLand) -> pd.DataFrame:
+    """Every independent US Atlantic and Gulf landfall of each member by the rule of Lee et al.
+    (2018, section 2.2): tracks and winds interpolated to 15 minutes, land from a LEE_RES mask
+    (Natural Earth land by the cell's centre, standing in for their 0.5-degree topography), a
+    landfall where the centre moves from ocean to land, landfalls on any land less than LEE_KM or
+    LEE_H from the last one counted not counted again, and the wind the interpolated wind there.
+    One row per (member, landfall) with wind at TS or more."""
     lat_q, lon_q = hourly(lat, LEE_STEPS), wrap(hourly(unwrap(lon), LEE_STEPS))
     on, us = land.lee(lat_q, lon_q)
     ocean = np.isfinite(lat_q) & ~on
     entry = np.zeros(on.shape, bool)
     entry[1:] = on[1:] & ocean[:-1]
-    out = np.zeros((3, n_m, n_s))
+    rows = []
     for s in np.nonzero(entry.any(axis=0))[0]:
         last = None
         for q in np.nonzero(entry[:, s])[0]:
@@ -285,25 +313,28 @@ def lee_landfalls(lat, lon, wind, land: USLand) -> np.ndarray:
                 if (q - last[0]) / LEE_STEPS * 6 < LEE_H or km < LEE_KM:
                     continue
             last = (q, p)
-            if not us[q, s] or region(lat_q[q, s], lon_q[q, s]) == 'Pacific':
+            r = region(lat_q[q, s], lon_q[q, s])
+            if not us[q, s] or r == 'Pacific':
                 continue
-            i0, f = divmod(q, LEE_STEPS)
-            w = (
-                wind[:, i0, s]
-                if f == 0
-                else wind[:, i0, s] + (wind[:, i0 + 1, s] - wind[:, i0, s]) * f / LEE_STEPS
-            )
+            w = wind_at(wind, np.array([q * 6 / LEE_STEPS]), np.array([s]))[:, 0]
             with np.errstate(invalid='ignore'):
-                for k, t in enumerate((TS, HU, MH)):
-                    out[k, :, s] += w >= t
-    return out
+                keep = w >= TS
+            for m in np.nonzero(keep)[0]:
+                rows.append((m, s, q * 6 / LEE_STEPS, w[m], lat_q[q, s], lon_q[q, s], r))
+    columns = ['member', 'storm', 'hour', 'wind', 'lat', 'lon', 'region']
+    return pd.DataFrame(rows, columns=columns).astype(
+        {'member': int, 'storm': int, 'hour': float, 'wind': float, 'lat': float, 'lon': float}
+    )
 
 
-def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd.DataFrame:
+def storm_rows(
+    lat, lon, wind, year, land: USLand, source: str, unit: str, lee_out: list | None = None
+) -> pd.DataFrame:
     """One row per (member, storm): North Atlantic TS flag, lifetime peak, whether the track
     crosses the US coast, how the member's wind ends, and US landfall wind, region, 24 h approach
     peak, decay and wind at AROUND hours from landfall. lat, lon (node, storm); wind (member,
-    node, storm) in kt.
+    node, storm) in kt. With `lee_out`, the lee_records of these storms, with source, unit and
+    year, are appended to it.
 
     How a CHAZ member ends (`end_rule`): its wind reaches the last node the intensity model can
     reach on its track ('track end'); the model stopped it after two 12-hourly steps at or below
@@ -334,7 +365,15 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     has_atlantic[s_e[atlantic]] = True
     pick = strongest(s_e, a_e, atlantic | ~has_atlantic[s_e], n_s)
     first = strongest(s_e, np.full_like(a_e, np.nan), atlantic | ~has_atlantic[s_e], n_s)
-    lee = lee_landfalls(lat, lon, wind, land)
+    lee = lee_records(lat, lon, wind, land)
+    lee_counts = {t: np.zeros((n_m, n_s)) for t in (TS, HU, MH)}
+    for t in lee_counts:
+        hit = lee[lee['wind'] >= t]
+        np.add.at(lee_counts[t], (hit['member'].values, hit['storm'].values), 1)
+    if lee_out is not None:
+        lee_out.append(
+            lee.assign(source=source, unit=unit, year=np.asarray(year)[lee['storm'].values])
+        )
     df = pd.DataFrame(
         {
             'source': source,
@@ -355,13 +394,16 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
             ).ravel(),
             'lf_crossings': np.tile(np.bincount(s_e, minlength=n_s), n_m),
             'near_peak': near_coast_peak(lat, lon, wind, land).ravel(),
-            'lee_34': lee[0].ravel(),
-            'lee_64': lee[1].ravel(),
-            'lee_96': lee[2].ravel(),
+            'lee_34': lee_counts[TS].ravel(),
+            'lee_64': lee_counts[HU].ravel(),
+            'lee_96': lee_counts[MH].ravel(),
         }
     )
     m_i, s_i = np.nonzero(first >= 0)
     h = h_e[first[m_i, s_i]]
+    storms = np.nonzero(first[0] >= 0)[0]
+    t_first = crossing_time(lat_h, lon_h, h_e[first[0, storms]], storms, land)
+    w_first = wind_at(wind, t_first, storms)  # member, storm with a crossing
     e = pick[m_i, s_i]
     h_off = h_e[e]
     cols = np.unique(s_i)
@@ -380,7 +422,7 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     lf_lat, lf_lon = lat_h[h, s_i], lon_h[h, s_i]
     off_lat, off_lon = lat_h[h_off, s_i], lon_h[h_off, s_i]
     values = {
-        'lf_wind': hours_from_landfall(0),
+        'lf_wind': w_first[m_i, np.searchsorted(storms, s_i)],
         'lf_pre24': pre,
         'lf_post12': hours_from_landfall(12),
         'lf_post24': hours_from_landfall(24),
@@ -389,6 +431,7 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
         **{f'lf_w{dh:+d}': hours_from_landfall(dh) for dh in AROUND},
         'end_h_after_lf': np.where(w_end[m_i, s_i] >= 0, 6 * w_end[m_i, s_i] - h, np.nan),
         'lf_offshore_wind': a_e[m_i, e],
+        'lf_first_offshore_wind': a_e[m_i, first[m_i, s_i]],
         'lf_offshore_lat': off_lat,
         'lf_offshore_lon': off_lon,
     }
@@ -397,13 +440,13 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
         col = np.full(n_m * n_s, np.nan)
         col[idx] = v
         df[k] = col
-    for name, wind_at, la, lo in (
+    for name, crossing_wind, la, lo in (
         ('lf_region', values['lf_wind'], lf_lat, lf_lon),
         ('lf_offshore_region', values['lf_offshore_wind'], off_lat, off_lon),
     ):
         col = np.full(n_m * n_s, None, dtype=object)
         with np.errstate(invalid='ignore'):
-            landed = wind_at >= TS
+            landed = crossing_wind >= TS
         col[idx[landed]] = region(la[landed], lo[landed])
         df[name] = pd.Series(col, index=df.index, dtype=object)
     return df[np.isfinite(df['peak']) & (df['peak'] > 0)]
@@ -455,10 +498,15 @@ def chaz_arrays(ds: xr.Dataset, years: tuple[int, int] = YEARS):
 
 
 def chaz_rows(
-    ds: xr.Dataset, land: USLand, source: str, unit: str, years: tuple[int, int] = YEARS
+    ds: xr.Dataset,
+    land: USLand,
+    source: str,
+    unit: str,
+    years: tuple[int, int] = YEARS,
+    lee_out: list | None = None,
 ) -> pd.DataFrame:
     """storm_rows for the storms of a CHAZ track file in `years`."""
-    return storm_rows(*chaz_arrays(ds, years), land, source, unit)
+    return storm_rows(*chaz_arrays(ds, years), land, source, unit, lee_out)
 
 
 def observed_records(csv: bytes, seasons: tuple[int, int] = YEARS) -> pd.DataFrame:
@@ -546,9 +594,9 @@ def landfall_records(csv: bytes, land: USLand, seasons: tuple[int, int] = YEARS)
     ].reset_index(drop=True)
 
 
-def observed(land: USLand, csv: bytes) -> pd.DataFrame:
+def observed(land: USLand, csv: bytes, lee_out: list | None = None) -> pd.DataFrame:
     """storm_rows for IBTrACS (observed_arrays)."""
-    return storm_rows(*observed_arrays(csv), land, 'IBTrACS', 'ibtracs')
+    return storm_rows(*observed_arrays(csv), land, 'IBTrACS', 'ibtracs', lee_out)
 
 
 def ibtracs_csv(fs) -> bytes:
@@ -626,13 +674,14 @@ def compare(obs: pd.DataFrame, runs: dict[str, tuple[pd.DataFrame, int]]) -> pd.
 def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     fs = store.s3()
     land = USLand()
-    obs = observed(land, ibtracs_csv(fs))
+    lee = {'ibtracs': [], 'published': [], f'ours_{run_name}': []}
+    obs = observed(land, ibtracs_csv(fs), lee['ibtracs'])
 
     pub = []
     for i in range(10):
         with fs.open(f'{PUBLISHED}/global_2019_2ens{i:03d}_pre.nc', 'rb') as f:
             ds = xr.open_dataset(f, engine='scipy', decode_times=False).load()
-        pub.append(chaz_rows(ds, land, 'published', f'ens{i:03d}'))
+        pub.append(chaz_rows(ds, land, 'published', f'ens{i:03d}', lee_out=lee['published']))
         print('published file', i, flush=True)
     pub = pd.concat(pub, ignore_index=True)
 
@@ -641,9 +690,11 @@ def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
         for year in range(YEARS[0], YEARS[1] + 1):
             key = f'{store.RUNS}/{run_name}/{year}_r{r:03d}.nc'
             with xr.open_dataset(store.path(key), decode_times=False) as ds:
-                rows = chaz_rows(ds.load(), land, 'ours', f'r{r:03d}')
+                part = []
+                rows = chaz_rows(ds.load(), land, 'ours', f'r{r:03d}', lee_out=part)
             rows['storm'] = rows['storm'] + year * 10_000
             ours.append(rows)
+            lee[f'ours_{run_name}'] += [x.assign(storm=x['storm'] + year * 10_000) for x in part]
         print('our realization', r, flush=True)
     ours = pd.concat(ours, ignore_index=True)
 
@@ -659,6 +710,8 @@ def run(run_name: str = 'TCGI_CRH_PI') -> pd.DataFrame:
     for name, rows in (('ibtracs', obs), ('published', pub), (f'ours_{run_name}', ours)):
         written.append(f'rows_{name}.parquet')
         rows.to_parquet(local / written[-1])
+        written.append(f'lee_{name}.parquet')
+        pd.concat(lee[name], ignore_index=True).to_parquet(local / written[-1])
     store.push(
         fragment=f'landfall-{run_name}', replace=True, keys=[f'{OUT}/{name}' for name in written]
     )
