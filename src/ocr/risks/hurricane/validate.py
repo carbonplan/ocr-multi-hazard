@@ -147,7 +147,7 @@ def in_region(lat, lon, box) -> np.ndarray:
     return (lat >= la0) & (lat < la1) & (lon360 >= lo0) & (lon360 < lo1)
 
 
-def _total(per: np.ndarray, weight: np.ndarray | None):
+def _summed(per: np.ndarray, weight: np.ndarray | None):
     """Sum of a (member, storm) array of counts, each weighted by `weight` if given."""
     if weight is None:
         return int(per.sum())
@@ -155,13 +155,26 @@ def _total(per: np.ndarray, weight: np.ndarray | None):
     return float(t) if t.ndim == 0 else t
 
 
-def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = None) -> dict:
+def counts(
+    lat,
+    lon,
+    wind,
+    grid: np.ndarray,
+    land,
+    weight: np.ndarray | None = None,
+    by_member: bool = False,
+) -> dict:
     """Counts over all members of one set of storms: lat, lon (node, storm) 6-hourly, wind
     (member, node, storm) in kt; `land` is a landfall.USLand. With `weight` (member, storm),
     each count is the sum of the weights of what it counts; with (group, member, storm), each
-    count is an array of one such sum per group."""
+    count is an array of one such sum per group. With `by_member`, each count is an array of
+    one count per member."""
     n_m, n_s = wind.shape[0], wind.shape[2]
-    out = {'members': n_m}
+    out = {'members': np.ones(n_m, int) if by_member else n_m}
+
+    def total(per: np.ndarray):
+        return per.sum(axis=1) if by_member else _summed(per, weight)
+
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = lookup(grid, lat_h, lon_h)
     prev = np.vstack([np.full((1, code.shape[1]), -1), code[:-1]])
@@ -184,22 +197,22 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
             w_off = np.where(pick >= 0, a_e[members, np.maximum(pick, 0)], np.nan)
         for t in THRESHOLDS:
             with np.errstate(invalid='ignore'):
-                out[f'landfall {a3} >= {t}'] = _total(w >= t, weight)
-                out[f'landfall {a3} >= {t}, offshore'] = _total(w_off >= t, weight)
+                out[f'landfall {a3} >= {t}'] = total(w >= t)
+                out[f'landfall {a3} >= {t}, offshore'] = total(w_off >= t)
     sea = lookup(grid, lat, lon) == 0
     for name, box in REGIONS.items():
         here = in_region(lat, lon, box) & sea
         for t in (64, 96):
             with np.errstate(invalid='ignore'):
-                out[f'time {name} >= {t}'] = _total(((wind >= t) & here[None]).sum(axis=1), weight)
+                out[f'time {name} >= {t}'] = total(((wind >= t) & here[None]).sum(axis=1))
     with np.errstate(invalid='ignore'):
         ts = wind >= 34
     formed = ts.any(axis=1)
     node = np.argmax(ts, axis=1)
     first_lat, first_lon = lat[node, np.arange(n_s)], lon[node, np.arange(n_s)]
-    out['TS formed global'] = _total(formed, weight)
+    out['TS formed global'] = total(formed)
     for name, box in REGIONS.items():
-        out[f'TS formed {name}'] = _total(formed & in_region(first_lat, first_lon, box), weight)
+        out[f'TS formed {name}'] = total(formed & in_region(first_lat, first_lon, box))
 
     rows = landfall.storm_rows(lat, lon, wind, np.zeros(n_s, int), land, 'v', 'u')
     pacific = rows['crosses'] & (
@@ -213,20 +226,18 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
         per[rows['member'].values, rows['storm'].values] = flag.values
         return per
 
-    out['NA TS'] = _total(per_row(rows['na_ts']), weight)
+    out['NA TS'] = total(per_row(rows['na_ts']))
     for t in (64, 96):
-        out[f'NA peak >= {t}'] = _total(per_row(rows['na_ts'] & (rows['peak'] >= t)), weight)
+        out[f'NA peak >= {t}'] = total(per_row(rows['na_ts'] & (rows['peak'] >= t)))
     us_off = rows['lf_offshore_region'].notna() & (rows['lf_offshore_region'] != 'Pacific')
     for t in THRESHOLDS:
-        out[f'Atl+Gulf landfalls >= {t} kt'] = _total(per_row(us & (w >= t)), weight)
-        out[f'Atl+Gulf landfalls >= {t} kt, offshore'] = _total(
-            per_row(us_off & (rows['lf_offshore_wind'] >= t)), weight
+        out[f'Atl+Gulf landfalls >= {t} kt'] = total(per_row(us & (w >= t)))
+        out[f'Atl+Gulf landfalls >= {t} kt, offshore'] = total(
+            per_row(us_off & (rows['lf_offshore_wind'] >= t))
         )
     for r in landfall.ATLANTIC:
-        out[f'{r} landfalls >= 64 kt'] = _total(
-            per_row(us & (rows['lf_region'] == r) & (w >= 64)), weight
-        )
-    out['Pacific coast landfalls >= 34 kt'] = _total(per_row(pacific & (w >= 34)), weight)
+        out[f'{r} landfalls >= 64 kt'] = total(per_row(us & (rows['lf_region'] == r) & (w >= 64)))
+    out['Pacific coast landfalls >= 34 kt'] = total(per_row(pacific & (w >= 34)))
 
     na_ts = (ts & landfall.in_north_atlantic(lat, lon)[None] & np.isfinite(lat)[None]).any(axis=1)
     reg = na_region(lat, lon)
@@ -234,7 +245,7 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
         with np.errstate(invalid='ignore'):
             hit = (wind >= t) & na_ts[:, None, :] & sea[None]
         for r in NA_REGIONS:
-            out[f'NA time >= {t}: {r}'] = _total((hit & (reg == r)[None]).sum(axis=1), weight)
+            out[f'NA time >= {t}: {r}'] = total((hit & (reg == r)[None]).sum(axis=1))
     return out
 
 
@@ -246,30 +257,43 @@ def _init() -> None:
     _grid, _land = country_raster(), landfall.USLand()
 
 
-def _by_year(lat, lon, wind, year, years) -> list[dict]:
+def _by_year(lat, lon, wind, year, years, first: int | None = None) -> list[dict]:
     """counts for each of `years`, the years the set covers: a year with no storms counts its
-    members and nothing else."""
+    members and nothing else. With `first`, one row per member, its realization numbered from
+    `first`."""
+    n_m = wind.shape[0]
     rows = []
     for y in years:
         s = year == y
-        if not s.any():
-            rows.append({'year': y, 'members': wind.shape[0]})
+        if first is None:
+            c = counts(lat[:, s], lon[:, s], wind[..., s], _grid, _land) if s.any() else {}
+            rows.append({'year': y, **c, 'members': n_m})
             continue
-        rows.append({'year': y, **counts(lat[:, s], lon[:, s], wind[..., s], _grid, _land)})
+        if not s.any():
+            rows += [{'year': y, 'realization': first + m, 'members': 1} for m in range(n_m)]
+            continue
+        c = counts(lat[:, s], lon[:, s], wind[..., s], _grid, _land, by_member=True)
+        rows += [
+            {'year': y, 'realization': first + m, **{k: v[m] for k, v in c.items()}}
+            for m in range(n_m)
+        ]
     return rows
 
 
-def _run_file(job: tuple[str, int]) -> list[dict]:
-    key, file_year = job
+def _run_file(job: tuple[str, int, int]) -> list[dict]:
+    """Rows of one track realization of one year, one per member: a realization of the period
+    is a (track realization, member) pair."""
+    key, file_year, track = job
     with xr.open_dataset(store.path(key), decode_times=False) as ds:
         lat, lon, wind, year = landfall.chaz_arrays(ds.load())
-    return _by_year(lat, lon, wind, year, [file_year])
+    return _by_year(lat, lon, wind, year, [file_year], track * wind.shape[0])
 
 
 def _team_file(i: int) -> list[dict]:
     with store.s3().open(f'{landfall.PUBLISHED}/global_2019_2ens{i:03d}_pre.nc', 'rb') as f:
         ds = xr.open_dataset(f, engine='scipy', decode_times=False).load()
-    return _by_year(*landfall.chaz_arrays(ds), range(YEARS[0], YEARS[1] + 1))
+    lat, lon, wind, year = landfall.chaz_arrays(ds)
+    return _by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1), i * wind.shape[0])
 
 
 def _natural_earth() -> None:
@@ -287,8 +311,9 @@ def first_record_year(csv: bytes, seasons: tuple[int, int]) -> np.ndarray:
     return bt.groupby('SID', sort=True)['time'].min().dt.year.values
 
 
-def annual(source: str, workers: int | None = None) -> pd.DataFrame:
-    """Counts by year for `source`: 'ibtracs', 'chaz-team', or a run name under runs/era5."""
+def by_realization(source: str, workers: int | None = None) -> pd.DataFrame:
+    """Counts by year and realization for `source`: 'ibtracs' (one realization), 'chaz-team'
+    (file and member), or a run name under runs/era5 (track realization and member)."""
     if source == 'ibtracs':
         _init()
         csv = landfall.ibtracs_csv(store.s3())
@@ -299,7 +324,7 @@ def annual(source: str, workers: int | None = None) -> pd.DataFrame:
         year = first_record_year(csv, seasons)
         if year.size != lat.shape[1]:
             raise ValueError(f'{year.size} first-record years for {lat.shape[1]} tracks')
-        parts = [_by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1))]
+        parts = [_by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1), 0)]
     else:
         _natural_earth()
         if source == 'chaz-team':
@@ -308,32 +333,49 @@ def annual(source: str, workers: int | None = None) -> pd.DataFrame:
         else:
             fn = _run_file
             jobs = [
-                (f'{store.RUNS}/{source}/{y}_r{r:03d}.nc', y)
+                (f'{store.RUNS}/{source}/{y}_r{r:03d}.nc', y, r)
                 for r in range(10)
                 for y in range(YEARS[0], YEARS[1] + 1)
             ]
-            for key, _ in jobs:
+            for key, *_ in jobs:
                 store.path(key)
         with ProcessPoolExecutor(workers or os.cpu_count(), initializer=_init) as pool:
             parts = list(pool.map(fn, jobs))
     df = pd.DataFrame([row for part in parts for row in part])
-    return df.groupby('year').sum().fillna(0)
+    return df.fillna(0).set_index(['year', 'realization']).sort_index()
+
+
+def annual(realizations: pd.DataFrame) -> pd.DataFrame:
+    """Counts by year, summed over realizations."""
+    return realizations.groupby(level='year').sum()
 
 
 def key(source: str) -> str:
     return f'{OUT}/annual_{source}.parquet'
 
 
+def realization_key(source: str) -> str:
+    return f'{OUT}/realizations_{source}.parquet'
+
+
 def load(source: str) -> pd.DataFrame:
     return pd.read_parquet(store.path(key(source)))
 
 
+def load_realizations(source: str) -> pd.DataFrame:
+    return pd.read_parquet(store.path(realization_key(source)))
+
+
 def task(source: str) -> None:
-    df = annual(source)
-    local = store.CACHE / key(source)
-    local.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(local)
-    store.push(keys=[key(source)], fragment=f'validate-{source}', replace=True)
+    realizations = by_realization(source)
+    df = annual(realizations)
+    for k, frame in ((key(source), df), (realization_key(source), realizations)):
+        local = store.CACHE / k
+        local.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(local)
+    store.push(
+        keys=[key(source), realization_key(source)], fragment=f'validate-{source}', replace=True
+    )
     print(source, df[['members', 'NA TS', 'TS formed global']].sum().to_dict(), flush=True)
 
 

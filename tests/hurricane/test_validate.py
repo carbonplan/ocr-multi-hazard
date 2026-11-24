@@ -145,3 +145,32 @@ def test_counts_with_no_country_landfall():
     wind = np.full((2, 4, 1), 70.0)
     c = validate.counts(lat, lon, wind, grid(), Land())
     assert c['landfall USA >= 34'] == 0 and c['TS formed global'] == 2
+
+
+def test_counts_by_member_add_up_to_the_summed_counts():
+    lon = np.linspace(-70.0, -90.0, 6)[:, None]
+    lat = np.full_like(lon, 30.0)
+    wind = np.array([[70.0] * 6, [40.0] * 6, [100.0] * 6])[:, :, None]
+    summed = validate.counts(lat, lon, wind, grid(), Land())
+    each = validate.counts(lat, lon, wind, grid(), Land(), by_member=True)
+    assert each['members'].tolist() == [1, 1, 1]
+    assert each['Atl+Gulf landfalls >= 64 kt'].tolist() == [1, 0, 1]
+    for name, value in summed.items():
+        assert each[name].sum() == value, name
+
+
+def test_realization_rows_number_each_member_of_a_track_realization(monkeypatch):
+    monkeypatch.setattr(validate, '_grid', grid())
+    monkeypatch.setattr(validate, '_land', Land())
+    lon = np.linspace(-70.0, -90.0, 6)[:, None]
+    lat = np.full_like(lon, 30.0)
+    wind = np.array([[70.0] * 6, [40.0] * 6])[:, :, None]
+    rows = validate._by_year(lat, lon, wind, np.array([2000]), [2000, 2001], first=6)
+    assert [(r['year'], r['realization']) for r in rows] == [
+        (2000, 6),
+        (2000, 7),
+        (2001, 6),
+        (2001, 7),
+    ]
+    assert [r.get('landfall USA >= 64', 0) for r in rows] == [1, 0, 0, 0]
+    assert all(r['members'] == 1 for r in rows)
