@@ -1,7 +1,8 @@
 """CHAZ's intensity regressions refit on a forcing's own environment along the observed tracks.
 
-The shipped coefficients (result_w.nc, result_l.nc) and their normalization were fit on the CHAZ
-authors' forcing. This fits the same two regressions as CHAZvBeta/tools/regression4.py
+The coefficients shipped with the public CHAZ code (result_w.nc, result_l.nc) and their
+normalization were fit on the CHAZ team's forcing. This fits the same two regressions as the
+public code's regression script, CHAZvBeta/tools/regression4.py
 (calMultiRegression_coef_mean_water and _land): the same predictors, 12-hour steps of the observed
 tracks of meanstd.YEARS, the predictand the 12-hour change in observed wind, every predictor and
 the predictand standardized by their sample mean and population standard deviation, then
