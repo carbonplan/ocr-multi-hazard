@@ -93,23 +93,64 @@ def in_band(ranks, low: float = 5, high: float = 95) -> float:
     return float(((ranks >= low) & (ranks <= high)).mean())
 
 
-def band_bootstrap(
+def _t_values(sim: np.ndarray, obs: np.ndarray, sample, scale=None) -> np.ndarray:
+    """t_statistic() of each variable over the years in `sample`; with `scale`, the difference of
+    means is divided by it instead of the pooled standard deviation."""
+    s, o = sim[:, sample].reshape(-1, sim.shape[2]), obs[sample]
+    if scale is None:
+        n_o, n_m = o.shape[0], s.shape[0]
+        scale = np.sqrt(
+            ((n_o - 1) * o.var(axis=0, ddof=1) + (n_m - 1) * s.var(axis=0, ddof=1))
+            / (n_o + n_m - 2)
+        )
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.where(scale > 0, (s.mean(axis=0) - o.mean(axis=0)) / scale, np.nan)
+
+
+def mean_abs_t(t) -> float:
+    return float(np.nanmean(np.abs(np.asarray(t, float))))
+
+
+def _summary(statistic: str, sim, obs, sample, scale=None) -> float:
+    if statistic == 'in band':
+        return in_band(_ranks(sim, obs, sample))
+    if statistic == 'mean |t|':
+        return mean_abs_t(_t_values(sim, obs, sample, scale))
+    raise ValueError(f'unknown statistic {statistic!r}')
+
+
+def bootstrap(
     sources: dict[str, pd.DataFrame],
     observed: pd.DataFrame,
     variables,
     years,
     n: int = 2000,
     seed: int = 0,
+    statistic: str = 'in band',
+    scale: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """in_band of each source over `n` resamples of whole years, the same years for every
-    source."""
+    """`statistic` ('in band', or 'mean |t|' over the variables) of each source over `n`
+    resamples of whole years, the same years for every source. With `scale` (realizations of
+    one source), every source's t is divided by that source's simulated standard deviation of each
+    variable over the resampled years, a common denominator."""
     years = list(years)
     arrays = {k: _arrays(r, observed, variables, years) for k, r in sources.items()}
+    common = None if scale is None else _arrays(scale, observed, variables, years)[0]
     rng = np.random.default_rng(seed)
     rows = []
     for _ in range(n):
         sample = rng.integers(0, len(years), len(years))
-        rows.append({k: in_band(_ranks(sim, obs, sample)) for k, (sim, obs) in arrays.items()})
+        denominator = (
+            None
+            if common is None
+            else common[:, sample].reshape(-1, common.shape[2]).std(axis=0, ddof=1)
+        )
+        rows.append(
+            {
+                k: _summary(statistic, sim, obs, sample, denominator)
+                for k, (sim, obs) in arrays.items()
+            }
+        )
     return pd.DataFrame(rows)
 
 

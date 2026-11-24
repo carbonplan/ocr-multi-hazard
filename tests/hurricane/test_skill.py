@@ -58,7 +58,7 @@ def test_ratio_skill_compares_shares_of_basin_storms():
     assert skill.ratio_skill(30, 100, 10, 50) == pytest.approx(1.5)
 
 
-def test_band_bootstrap_ranks_match_lee_on_the_full_sample():
+def test_bootstrap_ranks_match_lee_on_the_full_sample():
     index = pd.MultiIndex.from_product([[2000, 2001], range(20)], names=['year', 'realization'])
     rng = np.random.default_rng(1)
     realizations = pd.DataFrame({'a': rng.poisson(5, 40), 'b': rng.poisson(2, 40)}, index=index)
@@ -68,7 +68,7 @@ def test_band_bootstrap_ranks_match_lee_on_the_full_sample():
     want = skill.lee(realizations, observed, ['a', 'b'], [2000, 2001])['rank'].to_numpy()
     assert ranks == pytest.approx(want)
     assert skill.in_band(ranks) == 0.5  # b lies above every realization
-    boot = skill.band_bootstrap(
+    boot = skill.bootstrap(
         {'run': realizations, 'same': realizations}, observed, ['a', 'b'], [2000, 2001], n=20
     )
     assert boot.shape == (20, 2) and (boot['run'] == boot['same']).all()
@@ -82,3 +82,30 @@ def test_lee_compares_the_same_repeated_years():
     assert got['rank'] == 50 and got['t'] == 0
     with pytest.raises(KeyError):
         skill.lee(realizations, observed, ['a'], [2000, 2002])
+
+
+def test_resampled_mean_abs_t_matches_lee_on_the_full_sample():
+    index = pd.MultiIndex.from_product(
+        [[2000, 2001, 2002], range(10)], names=['year', 'realization']
+    )
+    rng = np.random.default_rng(2)
+    realizations = pd.DataFrame({'a': rng.poisson(5, 30), 'b': rng.poisson(9, 30)}, index=index)
+    observed = pd.DataFrame({'a': [4, 7, 5], 'b': [12, 6, 9]}, index=[2000, 2001, 2002])
+    sim, obs = skill._arrays(realizations, observed, ['a', 'b'], [2000, 2001, 2002])
+    got = skill._t_values(sim, obs, np.arange(3))
+    want = skill.lee(realizations, observed, ['a', 'b'], [2000, 2001, 2002])['t'].to_numpy()
+    assert got == pytest.approx(want)
+    boot = skill.bootstrap(
+        {'run': realizations}, observed, ['a', 'b'], [2000, 2001, 2002], n=5, statistic='mean |t|'
+    )
+    assert boot.shape == (5, 1) and (boot['run'] >= 0).all()
+    common = skill.bootstrap(
+        {'run': realizations},
+        observed,
+        ['a', 'b'],
+        [2000, 2001, 2002],
+        n=5,
+        statistic='mean |t|',
+        scale=realizations,
+    )
+    assert common.notna().all().all()
