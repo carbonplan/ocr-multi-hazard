@@ -158,11 +158,12 @@ def test_wind_around_landfall_and_end_after_landfall():
     assert b['end_before_track_h'] == 12 and b['end_on_land'] == 1.0
 
 
-def test_landfall_wind_is_the_last_independent_offshore_wind_before_the_crossing():
+def test_landfall_wind_is_interpolated_to_the_crossing_hour_and_offshore_wind_is_kept():
     # the crossing at 16 h lies between nodes 2 (110 kt, offshore) and 3 (90 kt, on land)
     lat, lon, wind = storm([[50, 60, 110, 90, 40, 30]])
-    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
-    assert rows.iloc[0]['lf_wind'] == pytest.approx(110)
+    r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0').iloc[0]
+    assert r['lf_wind'] == pytest.approx(110 - 20 * 4 / 6)
+    assert r['lf_offshore_wind'] == pytest.approx(110)
 
 
 def test_landfall_wind_skips_the_interpolated_odd_node():
@@ -172,7 +173,7 @@ def test_landfall_wind_skips_the_interpolated_odd_node():
     lat = np.full_like(lon, 30.0)
     wind = np.array([[50.0, 60.0, 100.0, 80.0, 60.0, 40.0, 30.0]])[:, :, None]
     rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0')
-    assert rows.iloc[0]['lf_wind'] == pytest.approx(100)
+    assert rows.iloc[0]['lf_offshore_wind'] == pytest.approx(100)
 
 
 class Coast:
@@ -199,7 +200,7 @@ class Coast:
         return self.anywhere(lat, lon), self(lat, lon)
 
 
-def test_a_storm_counts_once_at_its_strongest_us_landfall():
+def test_first_crossing_counts_and_the_offshore_wind_takes_the_strongest():
     # ashore at 9 h (approach wind 60 kt at node 0), back over water south of 25N, ashore again
     # at 29 h (110 kt at node 4)
     lat = np.array([26.0, 26.0, 26.0, 20.0, 20.0, 26.0, 30.0])[:, None]
@@ -207,7 +208,8 @@ def test_a_storm_counts_once_at_its_strongest_us_landfall():
     wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
     rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
     r = rows.iloc[0]
-    assert r['lf_wind'] == pytest.approx(110) and r['lf_region'] == 'TX-AL'
+    assert r['lf_wind'] == pytest.approx(60 - 10 * 3 / 6) and r['lf_region'] == 'FL'
+    assert r['lf_offshore_wind'] == pytest.approx(110) and r['lf_offshore_region'] == 'TX-AL'
     assert r['lf_crossings'] == 2
 
 
@@ -216,17 +218,17 @@ def test_no_landfall_wind_when_the_approach_crosses_other_land():
     lat = np.full((3, 1), 30.0)
     lon = np.array([-77.0, -79.0, -83.0])[:, None]
     wind = np.array([[100.0, 100.0, 100.0]])[:, :, None]
-    rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
-    assert rows.iloc[0]['crosses'] and np.isnan(rows.iloc[0]['lf_wind'])
+    r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0').iloc[0]
+    assert r['crosses'] and np.isnan(r['lf_offshore_wind']) and r['lf_wind'] == pytest.approx(100)
 
 
-def test_landfall_rows_keep_the_crossing_hour_wind_and_the_first_crossing():
+def test_wind_around_landfall_is_read_from_the_first_crossing_hour():
     lat = np.array([26.0, 26.0, 26.0, 20.0, 20.0, 26.0, 30.0])[:, None]
     lon = np.array([-76.0, -79.0, -82.0, -85.0, -88.0, -90.0, -90.0])[:, None]
     wind = np.array([[60.0, 60.0, 50.0, 50.0, 110.0, 90.0, 80.0]])[:, :, None]
     r = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0').iloc[0]
-    assert r['lf_first_wind'] == pytest.approx(60 - 10 * 3 / 6)  # 9 h, between nodes 1 and 2
-    assert r['lf_w+0'] == pytest.approx(110 - 20 * 5 / 6)  # 29 h, between nodes 4 and 5
+    assert r['lf_w+0'] == pytest.approx(r['lf_wind'])  # 9 h, between nodes 1 and 2
+    assert r['lf_w+12'] == pytest.approx(80.0)  # 21 h, halfway from node 3 to node 4
 
 
 def test_near_coast_peak_reads_even_nodes_near_us_land():
@@ -270,12 +272,3 @@ def test_lee_landfalls_need_both_100_km_and_6_hours_between_them():
     wind = np.full((1, 3, 1), 100.0)
     rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
     assert rows.iloc[0]['lee_34'] == 1
-
-
-def test_first_crossing_wind_is_missing_for_a_pacific_only_storm():
-    lon = np.linspace(-130.0, -110.0, 6)[:, None]
-    lat = np.full_like(lon, 35.0)
-    rows = landfall.storm_rows(
-        lat, lon, np.full((1, 6, 1), 70.0), np.array([2000]), Land(), 't', 'u'
-    )
-    assert rows.iloc[0]['lf_region'] == 'Pacific' and np.isnan(rows.iloc[0]['lf_first_wind'])

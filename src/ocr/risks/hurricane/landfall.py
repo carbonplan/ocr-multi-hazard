@@ -1,26 +1,27 @@
 """US landfall statistics of CHAZ tracks against IBTrACS, in track space with no wind model.
 
-The rules of chaz_trackdiag.py (Shane98c/chaz-local), so its published-track numbers can be
-reproduced and our runs compared on the same footing:
+The same rules for every source:
 
   - IBTrACS: main tracks, synoptic 6-hourly records, seasons 1981-2019, at the 1-minute wind of
     `observed_records` (USA_WIND, or the WMO agency's wind where USA_WIND is missing). CHAZ and
     IBTrACS tracks are interpolated to hourly, longitudes unwrapped across the date line
   - one US land mask: Natural Earth 1:10m at 1/24 degree, a cell US land wherever the US
     touches it, so narrow land such as the Florida Keys counts
-  - a crossing: an hour on US land right after an hour over water. Its wind is the approach
+  - a crossing: an hour on US land right after an hour over water
+  - US landfall (the lf_ columns), as Emanuel (2025) counts landfalls: each (storm, member) once,
+    at its first crossing, at the wind interpolated to that hour. The US rows count the Atlantic
+    and Gulf coasts; landfalls on the Pacific coast, which IBTrACS has none of over these years,
+    have rows of their own
+  - the lf_offshore_ columns count each (storm, member) at its strongest crossing at the approach
     wind (`approach`): the member's wind at the last even node before the crossing hour, at most
     12 h earlier, with every hour from that node to the crossing over water and the member still
     carrying wind at the crossing. CHAZ predicts intensity 12-hourly at even nodes and fills odd
     nodes with the mean of their neighbours; IBTrACS is read the same way, at every other
     synoptic record from a track's first
-  - US landfall: each (storm, member) counts once, at its strongest crossing (the first of
-    equals). The US rows count the Atlantic and Gulf coasts; landfalls on the Pacific coast,
-    which IBTrACS has none of over these years, have rows of their own
   - a (storm, member) counts only where it carries wind, a landfall only at 34 kt or more
-  - two other measures sit beside it: `near_coast_peak`, the strongest wind within NEAR_KM of
-    US Atlantic and Gulf land (Meiler et al. 2022's land-influencing storms), and `lee_landfalls`,
-    every independent US landfall by the rule of Lee et al. (2018, section 2.2)
+  - two other measures sit beside them: `near_coast_peak`, the strongest wind within NEAR_KM of
+    US land east of 105W, and `lee_landfalls`, every independent US landfall by the rule of Lee et
+    al. (2018, section 2.2)
   - CHAZ rates are also given scaled so its North Atlantic tropical-storm count matches the
     observed one, which leaves where storms go and how strong they are
   - the landfall share of North Atlantic storms splits exactly into the share whose track crosses
@@ -359,14 +360,15 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
             'lee_96': lee[2].ravel(),
         }
     )
-    m_i, s_i = np.nonzero(pick >= 0)
+    m_i, s_i = np.nonzero(first >= 0)
+    h = h_e[first[m_i, s_i]]
     e = pick[m_i, s_i]
-    h = h_e[e]
+    h_off = h_e[e]
     cols = np.unique(s_i)
     w_h = hourly(np.moveaxis(wind[:, :, cols], 0, 1))  # hour, member, storm
     c_i = np.searchsorted(cols, s_i)
 
-    def hours_from_landfall(dh: int, h: np.ndarray = h) -> np.ndarray:
+    def hours_from_landfall(dh: int) -> np.ndarray:
         t = h + dh
         ok = (t >= 0) & (t < w_h.shape[0])
         out = np.full(t.shape, np.nan)
@@ -376,11 +378,9 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
     with np.errstate(invalid='ignore'):
         pre = np.fmax.reduce([hours_from_landfall(dh) for dh in range(-24, 1)], axis=0)
     lf_lat, lf_lon = lat_h[h, s_i], lon_h[h, s_i]
+    off_lat, off_lon = lat_h[h_off, s_i], lon_h[h_off, s_i]
     values = {
-        'lf_wind': a_e[m_i, e],
-        'lf_first_wind': np.where(
-            has_atlantic[s_i], hours_from_landfall(0, h_e[first[m_i, s_i]]), np.nan
-        ),
+        'lf_wind': hours_from_landfall(0),
         'lf_pre24': pre,
         'lf_post12': hours_from_landfall(12),
         'lf_post24': hours_from_landfall(24),
@@ -388,17 +388,24 @@ def storm_rows(lat, lon, wind, year, land: USLand, source: str, unit: str) -> pd
         'lf_lon': lf_lon,
         **{f'lf_w{dh:+d}': hours_from_landfall(dh) for dh in AROUND},
         'end_h_after_lf': np.where(w_end[m_i, s_i] >= 0, 6 * w_end[m_i, s_i] - h, np.nan),
+        'lf_offshore_wind': a_e[m_i, e],
+        'lf_offshore_lat': off_lat,
+        'lf_offshore_lon': off_lon,
     }
     idx = m_i * n_s + s_i
     for k, v in values.items():
         col = np.full(n_m * n_s, np.nan)
         col[idx] = v
         df[k] = col
-    lf_region = np.full(n_m * n_s, None, dtype=object)
-    with np.errstate(invalid='ignore'):
-        landed = values['lf_wind'] >= TS
-    lf_region[idx[landed]] = region(lf_lat[landed], lf_lon[landed])
-    df['lf_region'] = pd.Series(lf_region, index=df.index, dtype=object)
+    for name, wind_at, la, lo in (
+        ('lf_region', values['lf_wind'], lf_lat, lf_lon),
+        ('lf_offshore_region', values['lf_offshore_wind'], off_lat, off_lon),
+    ):
+        col = np.full(n_m * n_s, None, dtype=object)
+        with np.errstate(invalid='ignore'):
+            landed = wind_at >= TS
+        col[idx[landed]] = region(la[landed], lo[landed])
+        df[name] = pd.Series(col, index=df.index, dtype=object)
     return df[np.isfinite(df['peak']) & (df['peak'] > 0)]
 
 
@@ -554,7 +561,8 @@ def ibtracs_csv(fs) -> bytes:
 
 
 def atlantic_crossing(df: pd.DataFrame) -> pd.Series:
-    """Rows whose first US crossing is on the Atlantic or Gulf coast, whatever the wind there."""
+    """Rows whose track crosses the Atlantic or Gulf coast, whatever the wind there; lf_lat and
+    lf_lon are then the first such crossing."""
     pacific = region(df['lf_lat'].values, df['lf_lon'].values) == 'Pacific'
     return df['crosses'] & ~pacific
 

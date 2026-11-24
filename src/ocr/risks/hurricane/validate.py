@@ -2,10 +2,9 @@
 
 For each source, one row per year (1981-2019) of counts, summed over the source's members:
 
-  - landfalls by country: an hour on a country's land right after an hour over sea, on the
-    Natural Earth 1:10m country raster at 1/12 degree, at the member's approach wind there
-    (landfall.approach); each (storm, member) counts once per country, at its strongest
-    landfall there, at 34, 64 and 96 kt
+  - landfalls by country: the first hour on a country's land right after an hour over sea, on
+    the Natural Earth 1:10m country raster at 1/12 degree, counted at the member's wind
+    interpolated to that hour, at 34, 64 and 96 kt (the first-crossing rule of Emanuel 2025)
   - 6-hourly nodes over sea at 64 and 96 kt, in REGIONS and, for North Atlantic storms, in the
     North Atlantic's NA_REGIONS
   - storms first reaching 34 kt, by where they reach it
@@ -155,15 +154,15 @@ def counts(lat, lon, wind, grid: np.ndarray, land, weight: np.ndarray | None = N
     out = {'members': n_m}
     lat_h, lon_h = landfall.hourly(lat), landfall.wrap(landfall.hourly(landfall.unwrap(lon)))
     code = lookup(grid, lat_h, lon_h)
+    w_h = landfall.hourly(np.moveaxis(wind, 0, 1))  # hour, member, storm
     prev = np.vstack([np.full((1, code.shape[1]), -1), code[:-1]])
-    h_e, s_e, a_e = landfall.approach(wind, (prev == 0) & (code >= 2), code == 0)
-    c_e = code[h_e, s_e]
-    members = np.arange(n_m)[:, None]
+    entry = (prev == 0) & (code >= 2)
     for c, a3 in enumerate(COUNTRIES, start=2):
-        pick = landfall.strongest(s_e, a_e, c_e == c, n_s)
+        e = entry & (code == c)
+        s = np.nonzero(e.any(axis=0))[0]
         w = np.full((n_m, n_s), np.nan)
-        if a_e.shape[1]:
-            w = np.where(pick >= 0, a_e[members, np.maximum(pick, 0)], np.nan)
+        if s.size:
+            w[:, s] = w_h[np.argmax(e, axis=0)[s], :, s].T
         for t in THRESHOLDS:
             with np.errstate(invalid='ignore'):
                 out[f'landfall {a3} >= {t}'] = _total(w >= t, weight)

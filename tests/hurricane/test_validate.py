@@ -125,13 +125,14 @@ def test_bootstrap_survives_resamples_without_a_rare_event(monkeypatch):
         validate.bootstrap({'IBTrACS': obs, 'run': run}, [2000, 2001], n=5)
 
 
-def test_country_landfalls_count_the_last_independent_offshore_wind():
+def test_country_landfalls_count_the_wind_interpolated_to_the_crossing_hour():
     lon = np.linspace(-70.0, -90.0, 6)[:, None]
     lat = np.full_like(lon, 30.0)
-    # interpolated to the crossing hour (16 h) the wind would be 90 kt
+    # interpolated to the crossing hour (16 h) the wind is 90 kt
     wind = np.array([[50.0, 60.0, 110.0, 80.0, 40.0, 30.0]])[:, :, None]
     c = validate.counts(lat, lon, wind, grid(), Land())
-    assert c['landfall USA >= 96'] == 1 and c['Atl+Gulf landfalls >= 96 kt'] == 1
+    assert c['landfall USA >= 64'] == 1 and c['landfall USA >= 96'] == 0
+    assert c['Atl+Gulf landfalls >= 64 kt'] == 1 and c['Atl+Gulf landfalls >= 96 kt'] == 0
 
 
 def test_counts_with_no_country_landfall():
