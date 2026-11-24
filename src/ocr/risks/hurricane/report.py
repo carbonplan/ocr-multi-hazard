@@ -246,6 +246,9 @@ def annual(source: str, workers: int | None = None, raft_path=None) -> pd.DataFr
     elif source == 'raft':
         rows = raft(path=raft_path)
     else:
+        from ocr.risks.hurricane import validate
+
+        validate.natural_earth()
         if source == 'chaz-team':
             fn, jobs, workers = _team_file, range(10), workers or 5
         else:

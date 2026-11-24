@@ -301,7 +301,7 @@ def _team_file(i: int) -> list[dict]:
     return _by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1), i * wind.shape[0])
 
 
-def _natural_earth() -> None:
+def natural_earth() -> None:
     """Download the shapefiles once, before workers read them."""
     import cartopy.io.shapereader as shpreader
 
@@ -331,7 +331,7 @@ def by_realization(source: str, workers: int | None = None) -> pd.DataFrame:
             raise ValueError(f'{year.size} first-record years for {lat.shape[1]} tracks')
         parts = [_by_year(lat, lon, wind, year, range(YEARS[0], YEARS[1] + 1), 0)]
     else:
-        _natural_earth()
+        natural_earth()
         if source == 'chaz-team':
             # a file holds every year: fewer at once
             fn, jobs, workers = _team_file, range(10), workers or 5
