@@ -275,3 +275,12 @@ def test_lee_landfalls_need_both_100_km_and_6_hours_between_them():
     wind = np.full((1, 3, 1), 100.0)
     rows = landfall.storm_rows(lat, lon, wind, np.array([2000]), Coast(), 'test', 'u0')
     assert rows.iloc[0]['lee_34'] == 1
+
+
+def test_lee_records_write_to_parquet(tmp_path):
+    lat, lon, wind = storm([[50, 60, 110, 90, 40, 30]])
+    out = []
+    landfall.storm_rows(lat, lon, wind, np.array([2000]), Land(), 'test', 'u0', out)
+    records = out[0]
+    assert records['region'].tolist() == ['FL']
+    records.to_parquet(tmp_path / 'lee.parquet')

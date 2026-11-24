@@ -313,7 +313,7 @@ def lee_records(lat, lon, wind, land: USLand) -> pd.DataFrame:
                 if (q - last[0]) / LEE_STEPS * 6 < LEE_H or km < LEE_KM:
                     continue
             last = (q, p)
-            r = region(lat_q[q, s], lon_q[q, s])
+            r = str(region(lat_q[q, s], lon_q[q, s]))
             if not us[q, s] or r == 'Pacific':
                 continue
             w = wind_at(wind, np.array([q * 6 / LEE_STEPS]), np.array([s]))[:, 0]
