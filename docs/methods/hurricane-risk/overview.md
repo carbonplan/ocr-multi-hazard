@@ -254,12 +254,18 @@ Open:
   regressions.
 - **SSP3-7.0 winds.** Another source for the daily winds (section 4).
 - **Questions for the CHAZ team:**
-  - Which intensity normalization they run. The shipped coefficients come back when the regression
-    is fitted on the tutorial's observed-track file, but there the PI-minus-wind predictor has a
-    mean of 85 kt and a standard deviation of 44 kt, against 30 and 70 in the shipped normalization
-    file.
-  - The intensity settings behind their shared ERA5 set, and how they handle intensity between the
-    12-hourly nodes near landfall when they build wind fields.
+  - What produced the ERA5 set they shared with us: the code version, the intensity coefficients
+    and normalization file, the steering covariance, the land term and the seeding ratio. Their
+    tracks cross the US coast as often as ours, but more of their intensity members have lost
+    their wind before the crossing ([tracks.ipynb](tracks.ipynb)). The normalization file matters
+    in particular: the shipped coefficients come back when the regression is fitted on the
+    tutorial's observed-track file, but there the PI-minus-wind predictor has a mean of 85 kt and
+    a standard deviation of 44 kt, against 30 and 70 in the shipped normalization file.
+  - Whether they draw the intensity model's random error by starting wind only, as Lee et al.
+    (2018) describe, or condition it on anything else. `--intensity refit-pi` and `refit-basin`
+    also condition it on PI and basin.
+  - How they handle intensity between the 12-hourly nodes near landfall when they build wind
+    fields.
   - How each climate model's normalization file is built.
   - Whether the genesis bias correction uses one ensemble member's climatology or the ensemble mean's.
   - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
