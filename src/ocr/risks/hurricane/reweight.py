@@ -213,7 +213,7 @@ def build(source: str, workers: int | None = None) -> tuple[pd.DataFrame, pd.Dat
         year = validate.first_record_year(csv, seasons)
         parts = [_years(lat, lon, wind, year, years, 'ibtracs')]
     else:
-        validate._natural_earth()
+        validate.natural_earth()
         jobs = [
             (f'{store.RUNS}/{source}/{y}_r{r:03d}.nc', y, f'r{r:03d}')
             for r in range(10)
