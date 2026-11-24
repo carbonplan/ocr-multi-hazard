@@ -92,6 +92,9 @@ SCORED = (
 SCORED_OFFSHORE = [
     f'{m}, offshore' if m.startswith(('Atl+Gulf ', 'landfall ')) else m for m in SCORED
 ]
+# the counts among them, for Lee et al. (2018)'s measures over realizations (skill.lee)
+COUNTED = [m for m in SCORED if not m.startswith('NA share')]
+COUNTED_OFFSHORE = [m for m in SCORED_OFFSHORE if not m.startswith('NA share')]
 FLOOR = 0.05  # the ratio a source scores when it has none of something observed
 MIN_EVENTS = 5  # a count metric scores only where IBTrACS has more than this (Emanuel 2025)
 

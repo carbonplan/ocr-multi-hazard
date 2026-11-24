@@ -69,6 +69,48 @@ def lee(realizations: pd.DataFrame, observed: pd.DataFrame, variables, years) ->
     return pd.DataFrame(rows).T
 
 
+def _arrays(realizations: pd.DataFrame, observed: pd.DataFrame, variables, years):
+    """(realization, year, variable) and (year, variable) arrays over `years`."""
+    years = list(years)
+    sim = realizations[list(variables)].unstack('year')
+    sim = np.stack([sim[v][years].to_numpy(float) for v in variables], axis=-1)
+    return sim, observed.loc[years, list(variables)].to_numpy(float)
+
+
+def _ranks(sim: np.ndarray, obs: np.ndarray, sample) -> np.ndarray:
+    """rank() of each variable over the years in `sample` (indices, repeats allowed)."""
+    totals, observed = sim[:, sample].sum(axis=1), obs[sample].sum(axis=0)
+    below = (totals < observed).mean(axis=0) + 0.5 * (totals == observed).mean(axis=0)
+    return 100 * below
+
+
+def in_band(ranks, low: float = 5, high: float = 95) -> float:
+    """Share of variables whose observed total lies within the realizations' `low`-`high`
+    percentile range."""
+    ranks = np.asarray(ranks, float)
+    return float(((ranks >= low) & (ranks <= high)).mean())
+
+
+def band_bootstrap(
+    sources: dict[str, pd.DataFrame],
+    observed: pd.DataFrame,
+    variables,
+    years,
+    n: int = 2000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """in_band of each source over `n` resamples of whole years, the same years for every
+    source."""
+    years = list(years)
+    arrays = {k: _arrays(r, observed, variables, years) for k, r in sources.items()}
+    rng = np.random.default_rng(seed)
+    rows = []
+    for _ in range(n):
+        sample = rng.integers(0, len(years), len(years))
+        rows.append({k: in_band(_ranks(sim, obs, sample)) for k, (sim, obs) in arrays.items()})
+    return pd.DataFrame(rows)
+
+
 def _kept(y_obs, y_syn):
     y_obs, y_syn = np.asarray(y_obs, float), np.asarray(y_syn, float)
     keep = (y_obs > MIN_COUNT) & (y_syn > MIN_COUNT)

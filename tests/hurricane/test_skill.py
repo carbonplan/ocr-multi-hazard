@@ -56,3 +56,19 @@ def test_deviance_skill_normalizes_by_the_mean_synthetic_count():
 
 def test_ratio_skill_compares_shares_of_basin_storms():
     assert skill.ratio_skill(30, 100, 10, 50) == pytest.approx(1.5)
+
+
+def test_band_bootstrap_ranks_match_lee_on_the_full_sample():
+    index = pd.MultiIndex.from_product([[2000, 2001], range(20)], names=['year', 'realization'])
+    rng = np.random.default_rng(1)
+    realizations = pd.DataFrame({'a': rng.poisson(5, 40), 'b': rng.poisson(2, 40)}, index=index)
+    observed = pd.DataFrame({'a': [5, 6], 'b': [9, 9]}, index=[2000, 2001])
+    sim, obs = skill._arrays(realizations, observed, ['a', 'b'], [2000, 2001])
+    ranks = skill._ranks(sim, obs, np.array([0, 1]))
+    want = skill.lee(realizations, observed, ['a', 'b'], [2000, 2001])['rank'].to_numpy()
+    assert ranks == pytest.approx(want)
+    assert skill.in_band(ranks) == 0.5  # b lies above every realization
+    boot = skill.band_bootstrap(
+        {'run': realizations, 'same': realizations}, observed, ['a', 'b'], [2000, 2001], n=20
+    )
+    assert boot.shape == (20, 2) and (boot['run'] == boot['same']).all()
