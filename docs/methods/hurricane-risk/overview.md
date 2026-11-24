@@ -116,7 +116,11 @@ storm's first sea-to-land crossing at the wind interpolated to the crossing time
 notes that interpolating 6-hourly observed winds to the crossing time can affect them differently
 from synthetic winds, and that the effect should be investigated. landfall.ipynb finds that it
 lowers the observed winds: with the first-crossing rule, the observed record has 10 storms at 96 kt
-or more against HURDAT's 17, which is why the notebooks read the last offshore wind instead.
+or more against HURDAT's 17, which is why the notebooks read the last offshore wind instead. Under
+Emanuel's first-crossing rule, the observed counts at 64 and 96 kt lie above the 5th–95th
+percentile band of Poisson noise around our run's expected counts, so our run fails his test. Part
+of the gap comes from the different time spacing of CHAZ's and IBTrACS's winds. With IBTrACS's winds thinned to CHAZ's 12-hour spacing, the observed major counts fall
+inside the band, but the hurricane counts stay above it or at its top.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
@@ -179,10 +183,13 @@ Where the ERA5 run with the chosen configuration stands against IBTrACS
 - On the US Atlantic and Gulf coasts, scaled to the observed North Atlantic storm count, the run
   makes 0.94 of the observed landfalls at 34 kt and above, 0.81 at hurricane strength (64 kt) and
   0.66 at major-hurricane strength (96 kt); without the scaling, the ratios are 0.98, 0.85 and
-  0.70. Over 1981–2019 the hurricane and major counts lie inside the 5th–95th percentile band of
-  Poisson sampling noise that Emanuel (2025) tests against, scaled or not
-  ([landfall.ipynb](landfall.ipynb)), so 39 years of landfalls are too few to tell the run's
-  counts from the observed ones.
+  0.70. Whether that is within sampling noise depends on how landfalls are counted. With our rule
+  (section 3), the hurricane and major counts over 1981–2019 lie inside the 5th–95th percentile
+  band of Poisson sampling noise that Emanuel (2025) tests against, scaled or not. With the
+  first-crossing rule of Emanuel (2025) and John et al. (2026), and with the rule of Lee et al.
+  (2018), the run is significantly low at hurricane and major strength, and with IBTrACS's winds
+  thinned to CHAZ's 12-hour spacing it is still low at hurricane strength
+  ([landfall.ipynb](landfall.ipynb)).
   Split by period, unscaled hurricane landfalls are 0.98 of observed over 2000–2019 and 0.72 over
   1981–1999 ([landfall-weights.ipynb](landfall-weights.ipynb)); the observed 1981–1999 count is at the
   top of its band without scaling and above it with scaling.
@@ -219,10 +226,12 @@ Caveats:
 
 Open:
 
-- **Landfall intensity.** Over 1981–2019 the US landfall counts at hurricane and major strength
-  are within sampling noise of observed (above), so they do not call for a correction. The
-  shortfall that remains sits in 1981–1999, the years when our run also makes fewer storms, so the
-  storm count comes first. Weighting each intensity member by the zone and wind class of its first
+- **Landfall intensity.** With our rule, the US landfall counts at hurricane and major strength
+  over 1981–2019 are within sampling noise of observed. Under the published rules the hurricane
+  count is not, even with IBTrACS's winds thinned to CHAZ's 12-hour spacing (section 3), so the
+  shortfall at hurricane strength stays open. Under our rule, what gap there is sits in 1981–1999,
+  the years when our run also makes fewer storms, so the storm count should be understood before
+  any correction of landfall intensity. Weighting each intensity member by the zone and wind class of its first
   landfall, fitted on one half of 1981–2019, does not improve US hurricane landfalls on the other
   half ([landfall-weights.ipynb](landfall-weights.ipynb)).
 - **Storm counts.** Whether the late-1990s rise in ERA5's PI, which carries the step in TCGI, is a
