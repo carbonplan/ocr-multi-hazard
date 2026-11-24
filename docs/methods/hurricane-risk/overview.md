@@ -105,9 +105,18 @@ main ones:
 The notebooks count each storm's US landfall once, at its strongest crossing of the Atlantic or
 Gulf coast. The wind there is the last one CHAZ's intensity model predicted before the crossing,
 at most 12 hours earlier, while the storm was still over water. IBTrACS is sampled the same way.
-[landfall.ipynb](landfall.ipynb) compares this with three other measures, including the rule of
-Lee et al. (2018), and checks the observed counts against HURDAT's landfall records: it finds 55
-observed storms at 64 kt or more and 16 at 96 kt or more, against HURDAT's 58 and 17.
+[landfall.ipynb](landfall.ipynb) compares this with three other measures and checks the observed
+counts against HURDAT's landfall records: it finds 55 observed storms at 64 kt or more and 16 at
+96 kt or more, against HURDAT's 58 and 17.
+
+The published tests count landfalls another way. [Emanuel (2025)](https://doi.org/10.1088/2752-5295/add9ba)
+and [John et al. (2026)](https://doi.org/10.1088/2752-5295/ae7202), who test CHAZ, count each
+storm's first sea-to-land crossing at the wind interpolated to the crossing time, and Lee et al.
+(2018) count every independent landfall along a track interpolated to 15 minutes. Emanuel (2025)
+notes that interpolating 6-hourly observed winds to the crossing time can affect them differently
+from synthetic winds, and that the effect should be investigated. landfall.ipynb finds that it
+lowers the observed winds: with the first-crossing rule, the observed record has 10 storms at 96 kt
+or more against HURDAT's 17, which is why the notebooks read the last offshore wind instead.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
@@ -149,7 +158,11 @@ from another CMIP6 archive.
 The plan follows [Meiler et al. (2026)](https://doi.org/10.1038/s41597-025-06452-0). CLIMADA's
 parametric wind model ([Aznar-Siguan and Bresch 2019](https://doi.org/10.5194/gmd-12-3085-2019))
 turns each synthetic track into a wind field, a per-basin frequency correction matches observed
-storm counts, and the result is return-period wind maps. Their published maps
+storm counts, and the result is return-period wind maps. [Lee et al. (2023)](https://doi.org/10.1029/2023EF003539)
+adjust frequency differently. Each year's basin count is rescaled using the mean and standard
+deviation of the model's historical run and of the observed record (their equation 1), and the
+same adjustment is applied to the future run. A multiplicative factor at each coastal gate then
+makes the rate of storms above 40 kt crossing it match the observed rate. Their published maps
 ([data](https://doi.org/10.5281/zenodo.16058513)) are the comparison target.
 [Meiler et al. (2025)](https://doi.org/10.1126/sciadv.adn4607) attribute the uncertainty in future
 tropical-cyclone risk estimates to its sources.
@@ -163,12 +176,16 @@ The damage curve is not yet chosen.
 Where the ERA5 run with the chosen configuration stands against IBTrACS
 ([intensity.ipynb](intensity.ipynb)):
 
-- On the US Atlantic and Gulf coasts, storms come ashore about as often as observed and somewhat
-  too weak. Scaled to the observed North Atlantic storm count, the run makes 0.94 of the observed
-  landfalls at 34 kt and above, 0.81 at hurricane strength (64 kt) and 0.66 at major-hurricane
-  strength (96 kt); without the scaling, the ratios are 0.98, 0.85 and 0.70. Split by period,
-  unscaled hurricane landfalls are 0.98 of observed over 2000–2019 and 0.72 over 1981–1999
-  ([landfall-weights.ipynb](landfall-weights.ipynb)).
+- On the US Atlantic and Gulf coasts, scaled to the observed North Atlantic storm count, the run
+  makes 0.94 of the observed landfalls at 34 kt and above, 0.81 at hurricane strength (64 kt) and
+  0.66 at major-hurricane strength (96 kt); without the scaling, the ratios are 0.98, 0.85 and
+  0.70. Over 1981–2019 the hurricane and major counts lie inside the 5th–95th percentile band of
+  Poisson sampling noise that Emanuel (2025) tests against, scaled or not
+  ([landfall.ipynb](landfall.ipynb)), so 39 years of landfalls are too few to tell the run's
+  counts from the observed ones.
+  Split by period, unscaled hurricane landfalls are 0.98 of observed over 2000–2019 and 0.72 over
+  1981–1999 ([landfall-weights.ipynb](landfall-weights.ipynb)); the observed 1981–1999 count is at the
+  top of its band without scaling and above it with scaling.
 - Too many storms reach 34 kt in the South Pacific (1.93 times observed), and they spend 2.3 times
   the observed time at major strength there.
 - Storms stay too strong at high latitudes: 5.3 times the observed hurricane time south of 30°S and
@@ -192,17 +209,22 @@ Caveats:
   file and are scored against IBTrACS (section 3).
 - **The seeding count.** The seeding ratio aims at 98.1 storms a year, which is every storm in the
   tutorial's track file over 1981–2005. Of these, 87.1 a year reach 34 kt; IBTrACS has 89.2 a
-  year reaching 34 kt (section 2).
+  year reaching 34 kt (section 2). Emanuel (2025) calibrates his model to 85 storms a year,
+  counting storms whose peak exceeds 40 kt.
 - **The CHAZ team's set.** It is a comparison we cannot check, since we don't know its settings.
+- **Intensity outside the North Atlantic.** Observed winds outside the North Atlantic and eastern
+  Pacific are satellite estimates, from JTWC or the regional agencies. Emanuel (2025) limits his
+  intensity tests to the North Atlantic for that reason. The score's intensity metrics elsewhere,
+  and the high-latitude ratios above, rest on those estimates.
 
 Open:
 
-- **Landfall intensity.** Weighting each intensity member by the zone and wind class of its first
+- **Landfall intensity.** Over 1981–2019 the US landfall counts at hurricane and major strength
+  are within sampling noise of observed (above), so they do not call for a correction. The
+  shortfall that remains sits in 1981–1999, the years when our run also makes fewer storms, so the
+  storm count comes first. Weighting each intensity member by the zone and wind class of its first
   landfall, fitted on one half of 1981–2019, does not improve US hurricane landfalls on the other
-  half ([landfall-weights.ipynb](landfall-weights.ipynb)). The shortfall sits in 1981–1999, the
-  years when our run also makes fewer storms, so the storm count has to be settled before any
-  correction of landfall intensity. With 27 and 28 observed US hurricane landfalls in the two halves, we would fit
-  at most one factor for the whole US coast.
+  half ([landfall-weights.ipynb](landfall-weights.ipynb)).
 - **Storm counts.** Whether the late-1990s rise in ERA5's PI, which carries the step in TCGI, is a
   change in the tropical oceans or in ERA5, and how much the step moves the tests that fit on one
   half of 1981–2019 and score on the other.
@@ -220,6 +242,9 @@ Open:
   - Whether the genesis bias correction uses one member's climatology or the ensemble mean's.
   - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
   - Whether the seeding ratio should count only the storms in the track file that reach 34 kt.
+  - How the per-track frequency parameter that John et al. (2026) describe is computed, and
+    whether they can share it. It adjusts tracks to observed landfall statistics; the ERA5 files
+    they shared with us do not have it.
 
 ## References
 
@@ -284,6 +309,9 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 
 ### Hazard maps and risk
 
+- Emanuel, K. (2025). A framework for testing tropical cyclone hazard models. _Environmental
+  Research: Climate_, 4, 025011.
+  [doi:10.1088/2752-5295/add9ba](https://doi.org/10.1088/2752-5295/add9ba)
 - Meiler, S., et al. (2026). Global coastal wind hazard maps from the CHAZ tropical cyclone model.
   _Scientific Data_. [doi:10.1038/s41597-025-06452-0](https://doi.org/10.1038/s41597-025-06452-0)
 - Meiler, S., et al. (2025). Navigating and attributing uncertainty in future tropical cyclone risk
