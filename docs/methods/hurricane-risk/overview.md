@@ -242,6 +242,17 @@ Open:
   intensity. Weighting each intensity member by the zone and wind class of its first
   landfall, fitted on one half of 1981–2019, does not improve US hurricane landfalls on the other
   half ([landfall-weights.ipynb](landfall-weights.ipynb)).
+- **Coastal winds in the maps.** CLIMADA builds each wind field from the track's intensity
+  interpolated between records, so near the coast the maps' winds may follow the wind at the
+  crossing hour rather than the last offshore wind. On that measure refit-basin makes 0.66 of the
+  observed US hurricane landfalls and 0.50 of the major ones, without the scaling
+  ([landfall.ipynb](landfall.ipynb)). How closely CLIMADA's coastal winds follow it depends on its
+  time step and on how much the hours before landfall set the peak wind on the coast. At stage 5,
+  compare CLIMADA's coastal winds from our CHAZ run with CLIMADA run the same way on IBTrACS.
+  Matching Meiler et al.'s maps would not test this, since they also come from CHAZ through
+  CLIMADA. A fix, if one is needed, depends on the cause: for the 12-hourly interpolation, the wind
+  could be held at its last offshore value until the crossing; for CHAZ's weakening over land, the
+  land term (`--land separate`, tested in [tracks.ipynb](tracks.ipynb)) is the lever.
 - **Storm counts.** Whether the late-1990s rise in ERA5's PI, which carries the step in TCGI, is a
   change in the tropical oceans or in ERA5, and how much the step moves the tests that fit on one
   half of 1981–2019 and score on the other.
@@ -254,7 +265,8 @@ Open:
     is fitted on the tutorial's observed-track file, but there the PI-minus-wind predictor has a
     mean of 85 kt and a standard deviation of 44 kt, against 30 and 70 in the shipped normalization
     file.
-  - The intensity settings behind their shared ERA5 set.
+  - The intensity settings behind their shared ERA5 set, and how they handle intensity between the
+    12-hourly nodes near landfall when they build wind fields.
   - How each climate model's normalization file is built.
   - Whether the genesis bias correction uses one member's climatology or the ensemble mean's.
   - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
