@@ -110,17 +110,22 @@ counts against HURDAT's landfall records: it finds 55 observed storms at 64 kt o
 96 kt or more, against HURDAT's 58 and 17.
 
 The published tests count landfalls another way. [Emanuel (2025)](https://doi.org/10.1088/2752-5295/add9ba)
-and [John et al. (2026)](https://doi.org/10.1088/2752-5295/ae7202), who test CHAZ, count each
-storm's first sea-to-land crossing at the wind interpolated to the crossing time, and Lee et al.
-(2018) count every independent landfall along a track interpolated to 15 minutes. Emanuel (2025)
-notes that interpolating 6-hourly observed winds to the crossing time can affect them differently
-from synthetic winds, and that the effect should be investigated. landfall.ipynb finds that it
-lowers the observed winds: with the first-crossing rule, the observed record has 10 storms at 96 kt
-or more against HURDAT's 17, which is why the notebooks read the last offshore wind instead. Under
-Emanuel's first-crossing rule, the observed counts at 64 and 96 kt lie above the 5th–95th
-percentile band of Poisson noise around our run's expected counts, so our run fails his test. Part
-of the gap comes from the different time spacing of CHAZ's and IBTrACS's winds. With IBTrACS's winds thinned to CHAZ's 12-hour spacing, the observed major counts fall
-inside the band, but the hurricane counts stay above it or at its top.
+counts each storm's first sea-to-land crossing of a coastal gate, at the wind interpolated to the
+crossing time; [John et al. (2026)](https://doi.org/10.1088/2752-5295/ae7202), who test CHAZ,
+follow him in counting first crossings; Lee et al. (2018) count every independent landfall along
+a track interpolated to 15 minutes. Emanuel (2025) notes that interpolating 6-hourly observed
+winds to the crossing time can affect them differently from synthetic winds, and that the effect
+should be investigated. Counting only the first crossing at the wind of the crossing hour finds 10
+observed storms at 96 kt or more, our rule 16, and HURDAT's landfall records 17, which is why the
+notebooks use our rule.
+
+landfall.ipynb also applies Emanuel's Poisson test to US landfall totals, an adaptation of his
+gate-by-gate test. With his first-crossing rule, the observed totals at 64 and 96 kt lie above the
+5th–95th percentile band around our run's expected counts; with Lee et al.'s rule as well. With
+IBTrACS's winds thinned to CHAZ's 12-hour form, the observed major counts fall inside the band and
+the hurricane counts move closer: under Lee et al.'s rule they stay above it, and under the
+first-crossing rule one of the two thinnings stays above it and the other sits at its top. The
+thinning does not say what causes the rest of the gap.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
@@ -165,9 +170,10 @@ turns each synthetic track into a wind field, a per-basin frequency correction m
 storm counts, and the result is return-period wind maps. [Lee et al. (2023)](https://doi.org/10.1029/2023EF003539)
 adjust frequency differently. Each year's basin count is rescaled using the mean and standard
 deviation of the model's historical run and of the observed record (their equation 1), and the
-same adjustment is applied to the future run. A multiplicative factor at each coastal gate then
-makes the rate of storms above 40 kt crossing it match the observed rate. Their published maps
-([data](https://doi.org/10.5281/zenodo.16058513)) are the comparison target.
+same adjustment is applied to the future run. For regional risk, a multiplicative factor at each
+of their line gates, one of them across the open-ocean main development region, makes the rate of
+storms above 40 kt crossing it match the observed rate. Meiler et al.'s published maps
+([data](https://doi.org/10.5061/dryad.qfttdz0vz)) are the comparison target.
 [Meiler et al. (2025)](https://doi.org/10.1126/sciadv.adn4607) attribute the uncertainty in future
 tropical-cyclone risk estimates to its sources.
 
@@ -187,9 +193,9 @@ Where the ERA5 run with the chosen configuration stands against IBTrACS
   (section 3), the hurricane and major counts over 1981–2019 lie inside the 5th–95th percentile
   band of Poisson sampling noise that Emanuel (2025) tests against, scaled or not. With the
   first-crossing rule of Emanuel (2025) and John et al. (2026), and with the rule of Lee et al.
-  (2018), the run is significantly low at hurricane and major strength, and with IBTrACS's winds
-  thinned to CHAZ's 12-hour spacing it is still low at hurricane strength
-  ([landfall.ipynb](landfall.ipynb)).
+  (2018), the observed totals lie above the band at hurricane and major strength. With IBTrACS's
+  winds thinned to CHAZ's 12-hour form, the major counts fall inside it and the hurricane counts
+  stay above it or at its top ([landfall.ipynb](landfall.ipynb)).
   Split by period, unscaled hurricane landfalls are 0.98 of observed over 2000–2019 and 0.72 over
   1981–1999 ([landfall-weights.ipynb](landfall-weights.ipynb)); the observed 1981–1999 count is at the
   top of its band without scaling and above it with scaling.
@@ -221,17 +227,19 @@ Caveats:
 - **The CHAZ team's set.** It is a comparison we cannot check, since we don't know its settings.
 - **Intensity outside the North Atlantic.** Observed winds outside the North Atlantic and eastern
   Pacific are satellite estimates, from JTWC or the regional agencies. Emanuel (2025) limits his
-  intensity tests to the North Atlantic for that reason. The score's intensity metrics elsewhere,
+  tests of lifetime-maximum intensity and 6-hour intensity change to the North Atlantic for that
+  reason. The score's intensity metrics elsewhere,
   and the high-latitude ratios above, rest on those estimates.
 
 Open:
 
 - **Landfall intensity.** With our rule, the US landfall counts at hurricane and major strength
-  over 1981–2019 are within sampling noise of observed. Under the published rules the hurricane
-  count is not, even with IBTrACS's winds thinned to CHAZ's 12-hour spacing (section 3), so the
-  shortfall at hurricane strength stays open. Under our rule, what gap there is sits in 1981–1999,
-  the years when our run also makes fewer storms, so the storm count should be understood before
-  any correction of landfall intensity. Weighting each intensity member by the zone and wind class of its first
+  over 1981–2019 are within sampling noise of observed. Under Lee et al.'s rule the hurricane count
+  is not, even with IBTrACS's winds thinned to CHAZ's 12-hour form, and under the first-crossing
+  rule it is outside or at the edge (section 3), so the shortfall at hurricane strength stays open.
+  Under our rule, the unscaled hurricane shortfall sits in 1981–1999, the years when our run also
+  makes fewer storms, so the storm count should be understood before any correction of landfall
+  intensity. Weighting each intensity member by the zone and wind class of its first
   landfall, fitted on one half of 1981–2019, does not improve US hurricane landfalls on the other
   half ([landfall-weights.ipynb](landfall-weights.ipynb)).
 - **Storm counts.** Whether the late-1990s rise in ERA5's PI, which carries the step in TCGI, is a
@@ -252,8 +260,8 @@ Open:
   - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
   - Whether the seeding ratio should count only the storms in the track file that reach 34 kt.
   - How the per-track frequency parameter that John et al. (2026) describe is computed, and
-    whether they can share it. It adjusts tracks to observed landfall statistics; the ERA5 files
-    they shared with us do not have it.
+    whether they can share it. It adjusts tracks to observed landfall statistics and is applied to
+    return-period analysis only; the ERA5 files they shared with us do not have it.
 
 ## References
 
@@ -349,7 +357,7 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 | TCGI code | how the saturation column water vapour is computed | [github.com/yixia23/TCGI](https://github.com/yixia23/TCGI) |
 | CHAZ tutorial data | reference forcing and TCGI for 2017, the land masks, the intensity coefficients, and the observed tracks with their environment | [Zenodo 11631930](https://doi.org/10.5281/zenodo.11631930) (CC BY 4.0) |
 | CMIP6 | climate-model forcing: daily 250 and 850 hPa winds, monthly winds, temperature, humidity, column water vapour, sea-level pressure and surface temperature; historical and SSP5-8.5 so far | [CMIP6 on AWS](https://registry.opendata.aws/cmip6/) (`s3://cmip6-pds`) |
-| CHAZ wind hazard maps | comparison target | [Zenodo 16058513](https://doi.org/10.5281/zenodo.16058513), [Dryad](https://doi.org/10.5061/dryad.qfttdz0vz) |
+| CHAZ wind hazard maps | comparison target | [Dryad](https://doi.org/10.5061/dryad.qfttdz0vz); code: [Zenodo 16058513](https://doi.org/10.5281/zenodo.16058513) |
 | Natural Earth 1:10m land and countries | landfall statistics in the checks | [naturalearthdata.com](https://www.naturalearthdata.com/) |
 
 Our inputs and outputs are in `s3://carbonplan-ocr/input/hurricane/chaz/`, which needs AWS
