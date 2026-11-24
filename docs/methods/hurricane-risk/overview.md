@@ -13,7 +13,7 @@ checked.
    CMIP6 climate models.
 2. **Genesis** (ERA5 1981–2019 done). Compute the tropical-cyclone genesis index (TCGI), which sets where
    and how often CHAZ seeds storms.
-3. **Tracks and intensity** (ERA5 1981–2019 runs done, configuration chosen). Run CHAZ.
+3. **Tracks and intensity** (ERA5 1981–2019 runs done, with the public code's settings). Run CHAZ.
 4. **Climate models** (one model so far). Repeat steps 1 to 3 with CMIP6 fields, bias-correcting the
    fields TCGI is computed from toward ERA5.
 5. **Wind fields and hazard maps** (not started). Turn each synthetic track into a wind field with
@@ -76,9 +76,12 @@ members, 40 in our runs. Each member's wind follows an autoregressive linear reg
 storm's own wind and its change over the previous 12 hours, and on the environment along the track:
 PI, shear, humidity, and a land term that weakens storms over land. A random error is added at each
 step ([Lee et al. 2015](https://doi.org/10.1175/MWR-D-14-00171.1),
-[2016](https://doi.org/10.1175/JCLI-D-15-0909.1)). The authors fit the regression on observed best
-tracks. The tutorial data hold their coefficients and the observed tracks of 1981–2012, and the
-random error is drawn from the regression's errors on observed steps that start at a similar wind.
+[2016](https://doi.org/10.1175/JCLI-D-15-0909.1)). Lee et al. (2016) fit the regression on
+ERA-Interim along the observed tracks of 1981–1999, with the land term a 0.5° land mask averaged
+over 300 km, and draw the random error from the regression's errors on observed steps that start at
+a similar wind. The nine ocean coefficients in the tutorial data differ from their Table 2 by at
+most 0.044 ([intensity.ipynb](intensity.ipynb), section 3); the near-land coefficients differ more.
+The tutorial data also hold the observed tracks of 1981–2012.
 
 `ocr.risks.hurricane.chaz` ports the public CHAZ code ([cl3225/CHAZ](https://github.com/cl3225/CHAZ))
 and runs it as batch jobs on [Coiled](https://www.coiled.io/) cloud machines. Its defaults follow the
@@ -109,45 +112,77 @@ storm counts once, at its first crossing from sea onto the Atlantic or Gulf coas
 interpolated to the time of the crossing. Our version is adapted. It counts the first time a
 track's centre is on US land, not crossings of coastal gates, and it puts a Poisson band on coast
 totals, which Emanuel judges instead by the share of basin storms that cross the coast
-([landfall.ipynb](landfall.ipynb) lists the differences). The per-country landfalls in the score
-of section 3 use the same rule.
+([landfall.ipynb](landfall.ipynb) lists the differences). The per-country landfalls in
+intensity.ipynb use the same rule.
 
 landfall.ipynb also tests how much the result depends on how the wind is read near landfall.
 Neither record gives the wind at landfall: IBTrACS's track has a wind every 6 hours, and CHAZ predicts one
 every 12 hours. Interpolated to the crossing time, the wind takes part of the next record's, which
 is often over land, and Emanuel (2025) notes that this can affect observed and synthetic winds
 differently. Read instead at the last wind over water on the track's 12-hourly steps before each storm's strongest crossing,
-refit-basin's counts come closer to observed. On the observed side that reading finds 16 storms
-at 96 kt or more, against 10 by the first-crossing rule and 17 in HURDAT's landfall records, which
-count each storm at its strongest landfall.
+the public-settings run's hurricane counts rise more than the observed ones but stay short of them.
+On the observed
+side that reading finds 16 storms at 96 kt or more, against 10 by the first-crossing rule and 17 in
+HURDAT's landfall records, which count each storm at its strongest landfall.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
 ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
 and `--land separate`. We don't know the settings behind the CHAZ team's set (Questions below), so it
-is a point of comparison we have not checked. [intensity.ipynb](intensity.ipynb) compares the land and intensity options
-with IBTrACS around the globe, scores them, and tests the refit on years it was not fit on.
+is a point of comparison we have not checked. [intensity.ipynb](intensity.ipynb) compares the land
+and intensity options with IBTrACS around the globe and tests the refits on years they were not
+fit on.
 
-The configuration we chose for our ERA5 runs is `--land fine --intensity refit-basin`; with no
-options, `chaz` uses the public code's land and intensity settings. intensity.ipynb scores each set of storms by its mean absolute log ratio to IBTrACS over 41
-metrics, leaving out counts IBTrACS has 5 or fewer of in the period (lower is better). Over
-2000–2019 this configuration scores 0.323, the public code's settings 0.454 and the CHAZ team's
-tracks 0.402. With the regressions fitted on 1981–1999 only, it scores 0.317 on 2013–2019, years
-the fit did not see, against 0.465 for `--land fine` alone. The ranking is the same with
-landfalls read at the strongest crossing and last offshore wind. The held-out
-test splits 1981–2019 by year, and our run makes more storms in 2000–2019 than in 1981–1999 while
-the observed count stays level ([landfall-weights.ipynb](landfall-weights.ipynb), section 4). The
-test does not account for that. The refits also learn from the tutorial's observed-track file and
-are scored against IBTrACS as we read it, and where the two records differ, the difference may
-affect the refits' scores.
+Our ERA5 runs use the public code's settings, which are what `chaz` uses with no options. Their
+intensity model follows Lee et al. (2016), the model Meiler et al. (2026) cite for the hazard maps
+we compare against, and the climate-model runs keep it, as Lee et al. (2020) and Fosu et al. (2024)
+do. intensity.ipynb tests the options against it with two measures of Lee et al. (2018), who built
+CHAZ. The first is where each observed count ranks among a run's 400 realizations of the same years,
+a realization being one track realization with one of its 40 intensity members. The second is
+their t statistic: the simulated mean minus the observed mean, over the pooled year-to-year spread.
+The measures are applied to 39 counts: US landfalls at 34, 64 and 96 kt, time at hurricane and
+major strength in 14 regions, and hurricane landfalls in eight countries.
+
+The test on years the fits did not see uses 2000–2019, with the regressions fit on 1981–1999. Before
+it we set a rule for one choice: refit-basin, whose error sampling is our addition, would replace
+plain refit (`--intensity refit`) only if more of the counts ranked between the 5th and 95th
+percentiles of its realizations and the lead held in 95% of 2,000 resamples of the years.
+Refit-basin has 0.564 of the counts in that range and plain refit 0.359 (0.385 with `--land fine`,
+0.333 with the public settings), but the lead does not hold in 95% of the resamples, so
+refit-basin does not replace plain refit. The share counts a near miss and a large miss alike.
+The mean |t|, which we added after seeing that result, keeps the size of each miss: it is 0.638
+with the public settings, 0.506 with plain refit and 0.364 with refit-basin, and each lead holds
+in nearly all resamples. Plain refit's median |t| is worse than the public settings', though
+(0.517 against 0.419), averaging |t| over our counts is our own summary, and Lee et al. (2016)
+found basin-specific regressions no better than a global one and warned that basin tuning could add
+errors under climate change. We keep the public settings and carry refit-basin as a tested option.
+Reading the shipped coefficients with a normalization built from our ERA5 along the observed tracks
+lowers the high-latitude excess of the public settings but also their US hurricane landfalls
+(intensity.ipynb, section 6).
+
+[north-atlantic.ipynb](north-atlantic.ipynb) applies the skill tests of Emanuel (2025) to the
+North Atlantic metrics that [John et al. (2026)](https://doi.org/10.1088/2752-5295/ae7202) use to
+score CHAZ: intensity histograms of all storms and of US landfalling storms, 6-hour intensity
+changes, the annual cycle, and the share of basin storms that reach the coast. To check our code it
+scores RAFT, the one synthetic set in their Table 1 whose tracks are public. The annual cycle
+matches their scores; the basin intensity histogram matches on D′ and r² but not on K′; the 6-hour
+change and the landfall scores match only in part. Their coastal gates and code are not published,
+so we cannot say which readings differ. On these metrics the public settings and refit-basin score
+alike: close to observed for the basin as a whole, lower at landfall (K′ 0.58 on the wind at
+landfall). The metrics scale the storm count away, so we use them as a check and compare setups in
+intensity.ipynb.
 
 ### 4. Climate models
 
 For a CMIP6 model, the four TCGI input fields (vorticity, shear, PI and the moisture variable) are
 bias-corrected toward ERA5 before computing TCGI: the model's monthly climatology for 1981–2010 is
 replaced by ERA5's. The fields for tracks and intensity, including the PI the intensity model reads,
-are used as the model gives them, with the intensity predictors normalized for the model ([Fosu et al. 2024](https://doi.org/10.63024/dpva-2pa1);
-[Camargo et al. 2025](https://doi.org/10.1175/JCLI-D-24-0629.1)). We build that normalization as the public code's `getMeanStd.py`
-does, from the model's environment at the positions and dates of the observed tracks. `ocr.risks.hurricane.cmip` and
+are used as the model gives them, with the intensity predictors normalized for the model; Fosu et al. (2024) describe this as
+normalizing by each model's tropical mean. Ours maps the shipped normalization to the model: the
+public code's `getMeanStd.py`, ported, evaluates the predictors along the observed tracks in the
+model and in ERA5, and the shipped means and standard deviations are shifted and scaled by the
+difference ([cmip.ipynb](cmip.ipynb)). [Camargo et al. (2025)](https://doi.org/10.1175/JCLI-D-24-0629.1)
+compute a model's monthly climatology from its ensemble mean; our bias correction uses the one
+member we run. `ocr.risks.hurricane.cmip` and
 `ocr.risks.hurricane.meanstd` build the forcing and normalization. So far CHAZ has run on one
 model, UKESM1-0-LL r1i1p1f2, for 1995–2014 (historical) and 2081–2100 (SSP5-8.5), with both TCGI
 versions. [cmip.ipynb](cmip.ipynb) reviews that run. The refit intensity options run on ERA5
@@ -179,35 +214,37 @@ The damage curve is not yet chosen.
 
 ## Status and open questions
 
-Where the ERA5 run with the chosen configuration stands against IBTrACS
-([intensity.ipynb](intensity.ipynb)):
+Where the ERA5 run with the public code's settings stands against IBTrACS
+([intensity.ipynb](intensity.ipynb), [landfall.ipynb](landfall.ipynb)):
 
 - On the US Atlantic and Gulf coasts, by the first-crossing rule and without the scaling to the
-  observed North Atlantic storm count, the run makes 1.00 of the observed landfalls at 34 kt and
-  above, 0.67 at hurricane strength (64 kt) and 0.53 at major-hurricane strength (96 kt); with the
-  scaling, 0.96, 0.64 and 0.50. The hurricane and major totals over 1981–2019 lie above the
-  5th–95th percentile band of Poisson noise around the run's expected counts. Normalized to the
-  observed total, its landfalls over four coastal regions lie within sampling noise of the observed
-  ones (Emanuel's K′ of 1). The size of the shortfall depends on how the wind is read: read at each storm's strongest crossing and last offshore wind, the counts
-  lie within sampling noise, and with IBTrACS's winds thinned to CHAZ's 12-hour form the major
-  counts do too, but the hurricane counts do not. By the test of Lee et al. (2018), storms come
-  ashore too weak on the Gulf coast and too rarely on the Atlantic coast
-  ([landfall.ipynb](landfall.ipynb)). Split by period, unscaled hurricane landfalls are 0.80 of
-  observed over 2000–2019 and 0.54 over 1981–1999
-  ([landfall-weights.ipynb](landfall-weights.ipynb)).
-- Too many storms reach 34 kt in the South Pacific (1.93 times observed), and the time storms spend
-  at major strength there is 2.3 times observed.
-- Storms spend too long at hurricane strength at high latitudes: 5.3 times the observed time south of
-  30°S and 3.4 times north of 35°N in the western Pacific.
-- Our run makes more storms in 2000–2019 than in 1981–1999: 103.89 a year reaching 34 kt worldwide,
-  against 84.81, per intensity member. IBTrACS has 88.60 and 88.58. The count steps up around
-  1998–2000 ([landfall-weights.ipynb](landfall-weights.ipynb), section 4), as our ERA5 TCGI
-  does: its 2000–2019 mean is 1.233 times its 1981–1997 mean. PI carries most of the step, with a
-  smaller part from humidity ([genesis-index.ipynb](genesis-index.ipynb), section 5).
+  observed North Atlantic storm count, the run makes 0.88 of the observed landfalls at 34 kt and
+  above, 0.59 at hurricane strength (64 kt) and 0.66 at major-hurricane strength (96 kt); with the
+  scaling, 0.89, 0.60 and 0.67. Over 1981–2019 the hurricane total lies above the 5th–95th
+  percentile band of Poisson noise around the run's expected count (31.4 against 53 observed); the
+  major total lies inside it. Normalized to the observed total, its landfalls lie within sampling noise of the
+  observed ones in every coastal region with more than 5 observed landfalls (Emanuel's K′ of 1;
+  four regions at 34 kt, three at 64 kt). The hurricane
+  shortfall holds however the wind is read: at each storm's strongest crossing and last offshore
+  wind, and with IBTrACS's winds thinned to CHAZ's 12-hour form, the observed totals stay above the
+  band. By the test of Lee et al. (2018), the run makes too few landfalls on the Atlantic coast, and
+  its strong Gulf landfalls are low but within the spread of its realizations once the rate is
+  matched. The hurricane shortfall is larger in 1981–1999 (13.4 expected against 27 observed) than
+  in 2000–2019 (18.0 against 26).
+- At hurricane and major strength the run spends too little time in the Philippine Sea, the North
+  Atlantic tropics and the Caribbean: at 96 kt, 0.27, 0.56 and 0.35 of the observed time.
+- It spends far too long at hurricane strength at high latitudes: 13.2 times the observed time
+  south of 30°S and 7.4 times north of 35°N in the western Pacific.
+- Our runs make more storms in 2000–2019 than in 1981–1999. Storms reaching 34 kt rise by a factor
+  of 1.145 from 1981–1997 to 2000–2019 with the public settings and 1.245 with refit-basin, while
+  IBTrACS changes by 0.991. Our
+  ERA5 TCGI steps up around 1998–2000: its 2000–2019 mean is 1.233 times its 1981–1997 mean. PI
+  carries most of the step, with a smaller part from humidity
+  ([genesis-index.ipynb](genesis-index.ipynb), section 5).
 
 In UKESM1-0-LL, US Atlantic and Gulf hurricane landfalls in 2081–2100 are 0.64 of those in
-1995–2014 with TCGI-CRH and 0.31 with TCGI-SD ([cmip.ipynb](cmip.ipynb)). The UKESM runs use the public
-code's intensity model, not the configuration of section 3.
+1995–2014 with TCGI-CRH and 0.31 with TCGI-SD ([cmip.ipynb](cmip.ipynb)). The UKESM runs use the
+public code's settings, as the ERA5 runs do.
 
 An ERA5 run of 1981–2019, with 10 sets of tracks and 40 intensity members per track, costs about $0.30–0.40
 on Coiled.
@@ -215,59 +252,74 @@ on Coiled.
 Caveats:
 
 - **The refit's training record.** The refit regressions learn from the tutorial's observed-track
-  file and are scored against IBTrACS (section 3).
+  file and are tested against IBTrACS (section 3).
+- **The counts behind the test.** Lee et al.'s measures are published, but the 39 counts we apply
+  them to are our choice, as Emanuel (2025) says of his own metrics.
 - **The seeding count.** The seeding ratio aims at 98.1 storms a year, which is every storm in the
   tutorial's track file over 1981–2005. Of these, 87.1 a year reach 34 kt; IBTrACS has 89.2 a
   year reaching 34 kt (section 2). Emanuel (2025) calibrates his model to 85 storms a year
   worldwide and compares only storms whose peak exceeds 40 kt.
-- **The CHAZ team's set.** It is a comparison we cannot check, since we don't know its settings.
+- **The CHAZ team's set.** We don't know its settings, so we have not checked it as a comparison.
+  Meiler et al. (2026), who shared it, describe the genesis index fitted to ERA5 and cite Lee et
+  al. (2016) for the intensity model; which coefficient files produced their tracks is not
+  confirmed.
 - **Intensity outside the North Atlantic.** Observed winds outside the North Atlantic and eastern
   Pacific are mostly satellite estimates, from JTWC or the regional agencies. Emanuel (2025) limits his
   tests of lifetime-maximum intensity and 6-hour intensity change to the North Atlantic for that
-  reason. The score's intensity metrics elsewhere,
-  and the high-latitude ratios above, rest on those estimates.
+  reason. The counts of time at strength elsewhere in intensity.ipynb's test, and the high-latitude
+  ratios above, rest on those estimates.
 
 Open:
 
-- **Landfall intensity.** By the first-crossing rule, US hurricane and major landfalls fall short
-  of observed beyond sampling noise. With IBTrACS's winds thinned to CHAZ's 12-hour form the major
-  counts come within it but the hurricane counts do not, and Lee et al.'s test places the Gulf
-  shortfall in intensity and the Atlantic one in frequency ([landfall.ipynb](landfall.ipynb)). The shortfall is larger in
+- **US hurricane landfalls.** By every reading of the wind near landfall, the run's US hurricane
+  landfalls fall short of observed beyond sampling noise; by Lee et al.'s test the Atlantic
+  coast's shortfall is in frequency ([landfall.ipynb](landfall.ipynb)). The shortfall is larger in
   1981–1999, the years when our run also makes fewer storms, so the storm count should be
-  understood before any correction of landfall intensity. Weighting each intensity member by the
-  zone and wind class of its first landfall, fitted on one half of 1981–2019, does not consistently
-  improve US hurricane landfalls on the other half ([landfall-weights.ipynb](landfall-weights.ipynb)).
+  understood before any correction. Weighting refit-basin's intensity members by the zone and wind
+  class of their first landfall, fitted on one half of 1981–2019, does not consistently improve US
+  hurricane landfalls on the other half ([landfall-weights.ipynb](landfall-weights.ipynb)).
+- **Refit-basin.** It has the lowest mean |t| on the held-out years but failed the rule set before
+  that test, and its error sampling is our addition; Lee et al. (2016)'s warning about basin tuning
+  is a reason for caution (section 3). Test it again only with a test declared in advance and run on
+  new evidence, such as the coastal winds of step 5, or once the CHAZ team answers the questions
+  below; on a climate model it would also need its own normalization.
 - **Coastal winds in the maps.** CLIMADA builds each wind field from the track's intensity
   interpolated between records, the same reading as the first-crossing rule, so the maps' coastal
   winds may carry the shortfall above. How closely they do depends on CLIMADA's time step and on
-  how much the hours before landfall set the peak wind on the coast. At stage 5, compare CLIMADA's
+  how much the hours before landfall set the peak wind on the coast. At step 5, compare CLIMADA's
   coastal winds from our CHAZ run with CLIMADA run the same way on IBTrACS. Matching Meiler et
   al.'s maps would not test this, since they also come from CHAZ through CLIMADA. A fix, if one is
   needed, depends on the cause: for the 12-hourly interpolation, the wind could be held at its last
   offshore value until the crossing; for CHAZ's weakening over land, the land term
-  (`--land separate`, tested in [tracks.ipynb](tracks.ipynb)) is the option to change.
+  (`--land separate`, tested in [tracks.ipynb](tracks.ipynb)) is the option to change. It reads
+  the 300 km land mean that Lee et al. (2016) fit the regression on.
 - **Storm counts.** Whether the late-1990s rise in ERA5's PI, which carries the step in TCGI, is a
   change in the tropical oceans or in ERA5, and how much the step moves the tests that fit on one
   half of 1981–2019 and score on the other.
-- **Genesis calibration.** Refit the regional map on the chosen configuration (section 2).
-- **Refit intensity on climate models.** Each model needs its own normalization of the refit
-  regressions.
+- **Genesis calibration.** Refit the regional map on the public settings (section 2).
 - **SSP3-7.0 winds.** Another source for the daily winds (section 4).
 - **Questions for the CHAZ team:**
   - What produced the ERA5 set they shared with us: the code version, the intensity coefficients
-    and normalization file, the steering covariance, the land term and the seeding ratio. Their
+    and normalization file, the land term, the steering covariance and the seeding ratio. Their
     tracks cross the US coast as often as ours, but more of their intensity members have lost
-    their wind before the crossing ([tracks.ipynb](tracks.ipynb)). The normalization file matters
-    in particular: the shipped coefficients come back when the regression is fitted on the
-    tutorial's observed-track file, but there the PI-minus-wind predictor has a mean of 85 kt and
-    a standard deviation of 44 kt, against 30 and 70 in the shipped normalization file.
-  - Whether they draw the intensity model's random error by starting wind only, as Lee et al.
-    (2018) describe, or condition it on anything else. `--intensity refit-pi` and `refit-basin`
-    also condition it on PI and basin.
+    their wind before the crossing ([tracks.ipynb](tracks.ipynb)). Meiler et al. (2026) describe the
+    genesis index fitted to ERA5 and cite Lee et al. (2016) for intensity, so we expect the shipped
+    intensity model.
+  - Whether the shipped coefficient files (`result_w.nc` over water, `result_l.nc` near land) are
+    the fit of Lee et al. (2016), and why they differ from their Table 2: slightly over water (PI
+    terms 0.326, 0.211 and −0.454 against 0.31, 0.18 and −0.41), more near land.
+  - What sample built the shipped `coefficient_meanstd.nc`. Its PI-minus-wind predictor has a mean
+    of 30 kt and a standard deviation of 70 kt; along the tutorial's observed tracks, where a refit
+    gives back the shipped coefficients, it has 85 and 44. Does the file include near-land or
+    weak-PI points, or tropical means, as Fosu et al. (2024) describe for climate models?
+  - Which land term production runs use: Lee et al. (2016) fit on a 0.5° land mask averaged over
+    300 km, while the public code reads the 2° cell the storm is in.
+  - Whether the random error is drawn by starting wind only, as Lee et al. (2016) describe.
+    `--intensity refit-pi` also conditions it on PI, and `refit-basin` on PI and basin.
   - How they handle intensity between the 12-hourly nodes near landfall when they build wind
     fields.
-  - How each climate model's normalization file is built.
-  - Whether the genesis bias correction uses one ensemble member's climatology or the ensemble mean's.
+  - How each climate model's normalization file is built, and whether the genesis bias correction
+    uses the ensemble-mean climatology, as Camargo et al. (2025) define the bias, or one member's.
   - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
   - Whether the seeding ratio should count only the storms in the track file that reach 34 kt.
   - How the per-track frequency parameter that John et al. (2026) describe is computed, and
@@ -368,6 +420,7 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 | TCGI code | how the saturation column water vapour is computed | [github.com/yixia23/TCGI](https://github.com/yixia23/TCGI) |
 | CHAZ tutorial data | reference forcing and TCGI for 2017, the land masks, the intensity coefficients, and the observed tracks with their environment | [Zenodo 11631930](https://doi.org/10.5281/zenodo.11631930) (CC BY 4.0) |
 | CMIP6 | climate-model forcing: daily 250 and 850 hPa winds, monthly winds, temperature, humidity, column water vapour, sea-level pressure and surface temperature; historical and SSP5-8.5 so far | [CMIP6 on AWS](https://registry.opendata.aws/cmip6/) (`s3://cmip6-pds`) |
+| RAFT synthetic tracks | reproducing John et al.'s scores in north-atlantic.ipynb | [Zenodo 18879988](https://doi.org/10.5281/zenodo.18879988) |
 | CHAZ wind hazard maps | comparison target | [Dryad](https://doi.org/10.5061/dryad.qfttdz0vz); code: [Zenodo 16058513](https://doi.org/10.5281/zenodo.16058513) |
 | Natural Earth 1:10m land and countries | landfall statistics in the checks | [naturalearthdata.com](https://www.naturalearthdata.com/) |
 
@@ -385,7 +438,9 @@ credentials for the bucket. `manifest.json` there lists each file's source and c
 | `refit` | intensity regressions refit on the environment of a forcing data set (ERA5 so far) |
 | `cmip`, `meanstd` | CMIP6 forcing, bias correction, intensity normalization |
 | `landfall`, `intensity`, `tracks` | checks against IBTrACS in tracks.ipynb and landfall.ipynb: landfall, intensity changes over water, steering noise |
-| `validate` | each run against IBTrACS around the globe, year by year, and its score (intensity.ipynb) |
+| `validate` | each run against IBTrACS around the globe, by year and realization (intensity.ipynb) |
+| `skill` | the measures of Lee et al. (2018) and the skill tests of Emanuel (2025) |
+| `report` | the North Atlantic metrics John et al. (2026) apply to CHAZ, for IBTrACS, RAFT and the CHAZ runs (north-atlantic.ipynb) |
 | `reweight` | intensity members weighted by their first landfall (landfall-weights.ipynb) |
 | `runaways` | intensity members whose wind grows without bound |
 | `store`, `batch` | S3 cache with its manifest, Coiled jobs |
@@ -396,6 +451,7 @@ credentials for the bucket. `manifest.json` there lists each file's source and c
 | [genesis-index.ipynb](genesis-index.ipynb) | our TCGI against the tutorial's, and the seeding ratio |
 | [tracks.ipynb](tracks.ipynb) | our ERA5 CHAZ run against IBTrACS and the CHAZ team's tracks |
 | [landfall.ipynb](landfall.ipynb) | five ways of counting US landfalls, against HURDAT's landfall records |
-| [intensity.ipynb](intensity.ipynb) | the land and intensity options against IBTrACS around the globe |
+| [intensity.ipynb](intensity.ipynb) | the land and intensity options against IBTrACS around the globe, with the measures of Lee et al. (2018) |
+| [north-atlantic.ipynb](north-atlantic.ipynb) | Emanuel's tests on John et al.'s North Atlantic metrics, and a reproduction of their RAFT scores |
 | [landfall-weights.ipynb](landfall-weights.ipynb) | weighting intensity members by first landfall, tested on held-out years |
 | [cmip.ipynb](cmip.ipynb) | CHAZ on one CMIP6 model, UKESM1-0-LL |
