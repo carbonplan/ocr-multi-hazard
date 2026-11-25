@@ -84,7 +84,7 @@ most 0.044 ([intensity.ipynb](intensity.ipynb), section 3); the near-land coeffi
 The tutorial data also hold the observed tracks of 1981–2012.
 
 `ocr.risks.hurricane.chaz` ports the public CHAZ code ([cl3225/CHAZ](https://github.com/cl3225/CHAZ))
-and runs it as batch jobs on [Coiled](https://www.coiled.io/) cloud machines. Its defaults follow the
+and runs it as batch jobs on Coiled cloud machines. Its defaults follow the
 public code and the tutorial's files. Departures from them are command-line options of `chaz`; the
 main ones:
 
