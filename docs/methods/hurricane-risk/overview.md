@@ -345,7 +345,8 @@ Open:
     tutorial's tracks reproduces `result_l.nc`, which matches the row's first six coefficients but
     not its last four.
   - Which shear level the TCGI coefficients were fit with: Camargo et al. (2025, supplement) give
-    850–250 hPa, and Fosu et al. (2024) print 200–850 hPa for the same coefficients.
+    850–250 hPa, and Fosu et al. (2024) print 200–850 hPa for the same coefficients, as do Dirkes
+    et al. (2023) for their reanalysis fits. The tutorial's 2017 TCGI reproduces only with 250 hPa.
   - Which land term production runs use. Lee et al. (2016) fit on a 0.5° land mask averaged over
     300 km; the public code overwrites that mean with the 2° cell the storm is in.
   - How the per-track frequency parameter of John et al. (2026) is computed, and whether we can
@@ -354,11 +355,11 @@ Open:
   - How each climate model's normalization is built (Fosu et al. describe each model's tropical
     mean; the public code uses the observed tracks), and whether the genesis bias correction uses
     the ensemble-mean climatology, as Camargo et al. (2025) do, or the downscaled member's.
-  - Whether the TCGI coefficients were fit with the 273.3 offset. The tutorial's TCGI uses it, but
-    the ERA5 index predates Xia's code: Fosu et al. (2024) cite Dirkes et al. (2023) for its
-    climatology, and Xia's code began in March 2024. And whether keeping the coefficients after the
-    March 2026 change to 273.15 was intended. The offset moves the global TCGI by about 5%, which
-    the seeding ratio absorbs.
+  - Whether the TCGI coefficients were fit with the 273.3 offset. The tutorial's TCGI uses it. Fosu
+    et al. (2024) cite Dirkes et al. (2023) for the ERA5 index, but Dirkes et al. fit on 1980–2016
+    and the coefficients are for 1981–2010, and neither paper says how the saturated water vapour
+    path was computed. And whether keeping the coefficients after the March 2026 change to 273.15
+    was intended. The offset moves the global TCGI by about 5%, which the seeding ratio absorbs.
   - Whether the 0.78 survival rate is meant to go with counting every storm in the track file, when
     the coefficients were fit to storms reaching tropical-storm strength.
 
