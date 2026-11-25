@@ -23,6 +23,28 @@ checked.
 Each step is a module of `ocr.risks.hurricane`, run as `python -m ocr.risks.hurricane.<module>`;
 `--help` prints the module's description and its commands.
 
+Where things stand:
+
+- **Against observations.** Over 1981–2019, our ERA5 run with the public code's settings brings
+  about as many storms to 34 kt as observed (85.0 a year, against 88.6). It makes too few US
+  hurricane landfalls (0.60 of observed, scaled to the observed North Atlantic storm count), too
+  little time at major strength in the Philippine Sea (0.27 of observed) and far too much hurricane
+  time at high latitudes (13.2 times observed south of 30°S) ([intensity.ipynb](intensity.ipynb)).
+- **Against the CHAZ team's run.** The CHAZ team shared the tracks of their own CHAZ run on ERA5,
+  without its settings. Its tracks agree with ours, but its storms weaken faster, and our run makes
+  1.34 times its US hurricane landfalls. Most of the difference comes from one input: the means and
+  standard deviations the intensity model standardizes its predictors with. The public code reads
+  them from the tutorial's `coefficient_meanstd.nc`. The tutorial also ships `observed_data.nc`,
+  which holds the ones the model's coefficients were fit with. Read with `observed_data.nc`, our run
+  makes as many US hurricane landfalls as the CHAZ team's (0.612 a year, against 0.607), though it
+  still brings more storms to 34 kt and keeps more hurricane time at high latitudes (Status below).
+- **The open decision.** Which normalization our runs should read. Against IBTrACS,
+  `observed_data.nc` improves some measures and worsens others, and it lowers US hurricane
+  landfalls to 0.45 of observed. A third option is the file the public code's `getMeanStd.py` would
+  build for ERA5. Our runs keep the tutorial's file until the CHAZ team answers; it is the first of
+  our questions for them.
+- **Next.** Settle the normalization, then turn the tracks into wind fields (step 5).
+
 ## Approach
 
 ### 1. Forcing
@@ -96,6 +118,10 @@ main ones:
   default (`tutorial`) uses the coefficients shipped with the public code.
 - `--intensity refit-pi` also draws the random error from observed steps with similar PI, and
   `--intensity refit-basin` from steps with similar PI in the same basin.
+- `--normalization training` reads the intensity model's predictor normalization from the
+  tutorial's `observed_data.nc`, which holds the normalization the shipped coefficients were fit
+  with; `port` builds one from our ERA5 as the public code's `getMeanStd.py` does. The default reads
+  the tutorial's `coefficient_meanstd.nc`, as the public code does.
 - With a refit intensity option, `--fit 1981-1999` uses regressions fit on those years only
   (`refit fit --years 1981-1999`), so that the storms of 2000–2019 can test them.
 
@@ -117,8 +143,8 @@ and with IBTrACS's winds thinned to CHAZ's 12-hour form, and compares the counts
 landfall records.
 
 [tracks.ipynb](tracks.ipynb) compares our ERA5 run with the defaults against IBTrACS and against an
-ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`
-and `--land separate`. We don't know the settings behind the CHAZ team's set (Questions below).
+ERA5 track set the CHAZ team shared with us, which is not public, and tests `--steering diagonal`,
+`--land separate` and `--normalization training`. Status below gives what it finds.
 [intensity.ipynb](intensity.ipynb) compares the land and intensity options with IBTrACS around the
 globe.
 
@@ -213,6 +239,40 @@ In UKESM1-0-LL, US Atlantic and Gulf hurricane landfalls in 2081–2100 are 0.64
 1995–2014 with TCGI-CRH and 0.31 with TCGI-SD ([cmip.ipynb](cmip.ipynb)). The UKESM runs use the
 public code's settings, as the ERA5 runs do.
 
+Against the CHAZ team's ERA5 set ([tracks.ipynb](tracks.ipynb)), which we were given without its
+settings:
+
+- **Tracks.** They agree. Of our members that reach 34 kt in the North Atlantic, 38.2% have tracks
+  that cross the US coast, against 37.3% of theirs.
+- **Intensity.** Scaled to the same number of North Atlantic storms, our run makes 1.34
+  times the CHAZ team's US hurricane landfalls. Of the members whose track crosses the US coast, the
+  intensity model has stopped 35% of theirs before the crossing, so they carry no wind there,
+  against 26% of ours. Over open water after their peak, theirs weaken 0.5 to 0.7 kt per 12 hours
+  faster. Neither the diagonal steering noise their tracks are consistent with nor the 300 km land
+  mean explains this (sections 1–3 of the notebook).
+- **The normalization.** It explains most of the difference. CHAZ standardizes each intensity predictor with a
+  mean and standard deviation before applying its coefficients. The public code reads the tutorial's
+  `coefficient_meanstd.nc`. The tutorial also ships `observed_data.nc`, which matches the sample
+  the coefficients were fit on to within 1.4%; the code reads it but does not use it
+  ([intensity.ipynb](intensity.ipynb), section 3). With `observed_data.nc`
+  (`--normalization training`), our run makes 0.612 US hurricane landfalls a year, scaled as
+  above. The CHAZ team's set makes 0.607, and our run with the tutorial's file 0.815. The intensity
+  model has stopped 33% of its crossing members before the crossing, and over open water after the
+  peak it weakens about as fast as theirs (section 5 of the notebook).
+- **What still differs.** Around the globe the training normalization moves our run toward the
+  CHAZ team's set but not all the way: hurricane time south of 30°S is 10.1 times observed, against
+  13.2 with the tutorial's file and 5.9 in their set. It also overshoots the storm count: 95.7
+  storms a year reach 34 kt, against 85.0 with the tutorial's file, 88.6 observed and 88.0 in their
+  set ([intensity.ipynb](intensity.ipynb), sections 1 and 6).
+
+So the CHAZ team's ERA5 run most likely read `observed_data.nc`, or a normalization close to it.
+Against IBTrACS the choice cuts both ways. Lee et al.'s t statistic measures each count's simulated
+minus observed mean in pooled standard deviations, so a lower |t| is better. Over 2000–2019, the
+training normalization lowers the mean |t| over our 39 counts from 0.638 to 0.551 but raises the
+median from 0.419 to 0.514. Over 1981–2019 it lowers the high-latitude excess, and it lowers US
+hurricane landfalls from 0.60 to 0.45 of observed. We keep the tutorial's file until the CHAZ team
+answers.
+
 An ERA5 run of 1981–2019, with 10 sets of tracks and 40 intensity members per track, costs about $0.30–0.40
 on Coiled.
 
@@ -265,16 +325,22 @@ Open:
   choice can move the index; follow the public code.
 - **Questions for the CHAZ team.** The ERA5 tracks they shared are dated June 2024 and differ from
   the run behind Meiler et al.'s published wind fields.
-  - What produced the June 2024 ERA5 set: the code version, the TCGI (coefficients, CRH or SD,
-    shear level), the intensity coefficients and normalization file, the land term, the steering
-    covariance and the seeding ratio. Its tracks cross the US coast as often as ours, but more of
-    its intensity members have lost their wind before the crossing ([tracks.ipynb](tracks.ipynb)).
-  - Which normalization the intensity model should read for ERA5. The code fits on, and ships, a
-    training normalization (`observed_data.nc`, PI-minus-wind mean 85 kt, standard deviation 44 kt,
-    which a 1981–1999 refit on the tutorial's tracks reproduces) but reads it without using it; it
-    applies `coefficient_meanstd.nc` from the forcing's pre-processing folder, as `getMeanStd.py`
-    builds it from the forcing along the observed tracks. The tutorial's copy has 30 and 70; our
-    port of `getMeanStd.py` on ERA5 gives 76 and 44. Which is intended, and what made 30 and 70?
+  - Which normalization file the June 2024 ERA5 set read. Read with `observed_data.nc`, our run
+    comes close to that set in the North Atlantic. Read with the tutorial's
+    `coefficient_meanstd.nc`, as the public code does, it makes 1.34 times that set's US hurricane
+    landfalls. The public code applies
+    `coefficient_meanstd.nc` from the forcing's pre-processing folder, where `getMeanStd.py` builds
+    it from the forcing along the observed tracks. The tutorial's copy looks like that script's
+    output: its translation speed matches the speed the script recomputes. But its PI-minus-wind
+    predictor (mean 30 kt, standard deviation 70 kt) matches neither our ERA5 along the tracks (76
+    and 44 with our port of the script) nor the training sample in `observed_data.nc` (85 and 44).
+    Which forcing was it built from? Should ERA5 runs read `observed_data.nc`, or `getMeanStd.py`'s
+    output for ERA5? The script reads five basin track files; the tutorial has three, without
+    `bt_atl.nc` and `bt_sh.nc`.
+  - What else produced the June 2024 ERA5 set: the code version, the TCGI (coefficients, CRH or SD,
+    shear level), the intensity coefficients, the land term, the steering covariance and the
+    seeding ratio. With `observed_data.nc` our run still brings more storms to 34 kt and keeps
+    more hurricane time at high latitudes than that set.
   - Whether Lee et al. (2016)'s Table 2 near-land row is misprinted. A 1981–1999 refit on the
     tutorial's tracks reproduces `result_l.nc`, which matches the row's first six coefficients but
     not its last four.
@@ -288,8 +354,11 @@ Open:
   - How each climate model's normalization is built (Fosu et al. describe each model's tropical
     mean; the public code uses the observed tracks), and whether the genesis bias correction uses
     the ensemble-mean climatology, as Camargo et al. (2025) do, or the downscaled member's.
-  - Whether the fit used the 273.3 offset, and whether keeping the coefficients after the March 2026
-    change to 273.15 was intended.
+  - Whether the TCGI coefficients were fit with the 273.3 offset. The tutorial's TCGI uses it, but
+    the ERA5 index predates Xia's code: Fosu et al. (2024) cite Dirkes et al. (2023) for its
+    climatology, and Xia's code began in March 2024. And whether keeping the coefficients after the
+    March 2026 change to 273.15 was intended. The offset moves the global TCGI by about 5%, which
+    the seeding ratio absorbs.
   - Whether the 0.78 survival rate is meant to go with counting every storm in the track file, when
     the coefficients were fit to storms reaching tropical-storm strength.
 
@@ -344,6 +413,9 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 - Camargo, S. J., et al. (2025). Tropical cyclones and associated environmental fields in CMIP6
   models. _Journal of Climate_.
   [doi:10.1175/JCLI-D-24-0629.1](https://doi.org/10.1175/JCLI-D-24-0629.1)
+- Dirkes, C. A., Wing, A. A., Camargo, S. J., and Kim, D. (2023). Process-oriented diagnosis of
+  tropical cyclones in reanalyses using a moist static energy variance budget. _Journal of
+  Climate_, 36, 5293–5317. [doi:10.1175/JCLI-D-22-0384.1](https://doi.org/10.1175/JCLI-D-22-0384.1)
 - Xia, Y., et al. (2026). Dependence of global tropical cyclones on the tropical Pacific mean state
   in the HighResMIP models. _Journal of Climate_, 39, 1099–1118.
   [doi:10.1175/JCLI-D-25-0317.1](https://doi.org/10.1175/JCLI-D-25-0317.1)
