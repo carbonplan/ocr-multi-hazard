@@ -179,7 +179,9 @@ replaced by ERA5's. The fields for tracks and intensity, including the PI the in
 are used as the model gives them, with the intensity predictors normalized for the model (Fosu et
 al. 2024 describe normalizing by each model's tropical mean). Ours shifts and scales the shipped
 normalization by how the predictors differ between the model and ERA5 along the observed tracks
-([cmip.ipynb](cmip.ipynb)). [Camargo et al. (2025)](https://doi.org/10.1175/JCLI-D-24-0629.1)
+([cmip.ipynb](cmip.ipynb)). The shipped normalization here is the tutorial's
+`coefficient_meanstd.nc`; if the CHAZ team's answer moves ERA5 runs to `observed_data.nc` (Status
+below), the climate-model normalization and its runs need redoing on that base. [Camargo et al. (2025)](https://doi.org/10.1175/JCLI-D-24-0629.1)
 compute a model's monthly climatology from its ensemble mean; our bias correction uses the one
 member we run. `ocr.risks.hurricane.cmip` and
 `ocr.risks.hurricane.meanstd` build the forcing and normalization. So far CHAZ has run on one
