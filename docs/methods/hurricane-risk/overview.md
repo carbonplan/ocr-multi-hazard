@@ -422,7 +422,6 @@ Applications of CHAZ, read for how its output is corrected and evaluated:
 | CMIP6 | climate-model forcing: daily 250 and 850 hPa winds, monthly winds, temperature, humidity, column water vapour, sea-level pressure and surface temperature; historical and SSP5-8.5 so far | [CMIP6 on AWS](https://registry.opendata.aws/cmip6/) (`s3://cmip6-pds`) |
 | RAFT synthetic tracks | reproducing John et al.'s scores in north-atlantic.ipynb | [Zenodo 18879988](https://doi.org/10.5281/zenodo.18879988) |
 | CHAZ wind hazard maps | comparison target | [Dryad](https://doi.org/10.5061/dryad.qfttdz0vz); code: [Zenodo 16058513](https://doi.org/10.5281/zenodo.16058513) |
-| Natural Earth 1:10m land and countries | landfall statistics in the checks | [naturalearthdata.com](https://www.naturalearthdata.com/) |
 
 Our inputs and outputs are in `s3://carbonplan-ocr/input/hurricane/chaz/`, which needs AWS
 credentials for the bucket. `manifest.json` there lists each file's source and checksum.
