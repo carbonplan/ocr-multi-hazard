@@ -258,33 +258,40 @@ Open:
   half of 1981–2019 and score on the other.
 - **Genesis calibration.** Refit the regional map on the public settings (section 2).
 - **SSP3-7.0 winds.** Another source for the daily winds (section 4).
-- **Questions for the CHAZ team:**
-  - What produced the ERA5 set they shared with us: the code version, the intensity coefficients
-    and normalization file, the land term, the steering covariance and the seeding ratio. Their
-    tracks cross the US coast as often as ours, but more of their intensity members have lost
-    their wind before the crossing ([tracks.ipynb](tracks.ipynb)). Meiler et al. (2026) describe the
-    genesis index fitted to ERA5 and cite Lee et al. (2016) for intensity, so we expect the shipped
-    intensity model.
-  - Whether the shipped coefficient files (`result_w.nc` over water, `result_l.nc` near land) are
-    the fit of Lee et al. (2016), and why they differ from their Table 2: slightly over water (PI
-    terms 0.326, 0.211 and −0.454 against 0.31, 0.18 and −0.41), more near land.
-  - What sample built the shipped `coefficient_meanstd.nc`. Its PI-minus-wind predictor has a mean
-    of 30 kt and a standard deviation of 70 kt; along the tutorial's observed tracks, where a refit
-    gives back the shipped coefficients, it has 85 and 44. Does the file include near-land or
-    weak-PI points, or tropical means, as Fosu et al. (2024) describe for climate models?
-  - Which land term production runs use: Lee et al. (2016) fit on a 0.5° land mask averaged over
-    300 km, while the public code reads the 2° cell the storm is in.
-  - Whether the random error is drawn by starting wind only, as Lee et al. (2016) describe.
-    `--intensity refit-pi` also conditions it on PI, and `refit-basin` on PI and basin.
-  - How they handle intensity between the 12-hourly nodes near landfall when they build wind
-    fields.
-  - How each climate model's normalization file is built, and whether the genesis bias correction
-    uses the ensemble-mean climatology, as Camargo et al. (2025) define the bias, or one member's.
-  - Whether the 273.3 offset (section 2) is what the TCGI coefficients were fitted with.
-  - Whether the seeding ratio should count only the storms in the track file that reach 34 kt.
-  - How the per-track frequency parameter that John et al. (2026) describe is computed, and
-    whether they can share it. It adjusts tracks to observed landfall statistics and is applied to
-    return-period analysis only; the ERA5 files they shared with us do not have it.
+- **Unphysical values after the bias correction.** We clip a corrected field at its physical bound.
+  The public TCGI code (`cal_TCGI_v2_part2.ipynb`, step 3) replaces negative shear, PI and CRH with
+  ERA5's monthly minimum and positive SD with its monthly maximum. In UKESM, corrected shear is
+  negative in cells holding 3.6–5.6% of TCGI-CRH ([cmip.ipynb](cmip.ipynb), section 1), so the
+  choice can move the index; follow the public code.
+- **Questions for the CHAZ team.** The ERA5 tracks they shared are dated June 2024 and differ from
+  the run behind Meiler et al.'s published wind fields.
+  - What produced the June 2024 ERA5 set: the code version, the TCGI (coefficients, CRH or SD,
+    shear level), the intensity coefficients and normalization file, the land term, the steering
+    covariance and the seeding ratio. Its tracks cross the US coast as often as ours, but more of
+    its intensity members have lost their wind before the crossing ([tracks.ipynb](tracks.ipynb)).
+  - Which normalization the intensity model should read for ERA5. The code fits on, and ships, a
+    training normalization (`observed_data.nc`, PI-minus-wind mean 85 kt, standard deviation 44 kt,
+    which a 1981–1999 refit on the tutorial's tracks reproduces) but reads it without using it; it
+    applies `coefficient_meanstd.nc` from the forcing's pre-processing folder, as `getMeanStd.py`
+    builds it from the forcing along the observed tracks. The tutorial's copy has 30 and 70; our
+    port of `getMeanStd.py` on ERA5 gives 76 and 44. Which is intended, and what made 30 and 70?
+  - Whether Lee et al. (2016)'s Table 2 near-land row is misprinted. A 1981–1999 refit on the
+    tutorial's tracks reproduces `result_l.nc`, which matches the row's first six coefficients but
+    not its last four.
+  - Which shear level the TCGI coefficients were fit with: Camargo et al. (2025, supplement) give
+    850–250 hPa, and Fosu et al. (2024) print 200–850 hPa for the same coefficients.
+  - Which land term production runs use. Lee et al. (2016) fit on a 0.5° land mask averaged over
+    300 km; the public code overwrites that mean with the 2° cell the storm is in.
+  - How the per-track frequency parameter of John et al. (2026) is computed, and whether we can
+    use it. It adjusts tracks to observed landfall statistics; we count landfalls on land and in
+    four US coastal regions, not on gates ([landfall.ipynb](landfall.ipynb)).
+  - How each climate model's normalization is built (Fosu et al. describe each model's tropical
+    mean; the public code uses the observed tracks), and whether the genesis bias correction uses
+    the ensemble-mean climatology, as Camargo et al. (2025) do, or the downscaled member's.
+  - Whether the fit used the 273.3 offset, and whether keeping the coefficients after the March 2026
+    change to 273.15 was intended.
+  - Whether the 0.78 survival rate is meant to go with counting every storm in the track file, when
+    the coefficients were fit to storms reaching tropical-storm strength.
 
 ## References
 
