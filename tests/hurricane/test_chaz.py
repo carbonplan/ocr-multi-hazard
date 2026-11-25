@@ -154,3 +154,52 @@ def test_land_mean_shares_the_centre_cell_array_only_by_default(monkeypatch, lan
         }
     )
     assert (bt.landmask is bt.landmaskMean) is shared
+
+
+def test_training_normalization_is_the_tutorial_observed_data():
+    assert chaz.meanstd_for(chaz.ERA5, 'training') == f'{store.TUTORIAL}/observed_data.nc'
+    with pytest.raises(ValueError):
+        chaz.meanstd_for('cmip6/UKESM1-0-LL/r1i1p1f2/historical', 'training')
+
+
+def _write_normalization(path, suffix, y_shape):
+    import netCDF4 as nc
+
+    with nc.Dataset(path, 'w') as f:
+        f.createDimension('w', 3)
+        f.createDimension('l', 4)
+        f.createDimension('one', 1)
+        for k, (tag, dim) in enumerate((('w', 'w'), ('l', 'l'))):
+            for j, name in enumerate(('meanX', 'stdX')):
+                f.createVariable(f'{name}_{tag}{suffix}', 'f8', (dim,))[:] = (
+                    10 * k + j + np.arange(len(f.dimensions[dim]))
+                )
+            for j, name in enumerate(('meanY', 'stdY')):
+                v = f.createVariable(f'{name}_{tag}{suffix}', 'f8', y_shape)
+                v[:] = 100 * k + j
+
+
+@pytest.mark.parametrize('suffix, y_shape', [('', ()), ('_obs', ('one',))])
+def test_read_normalization_reads_both_layouts(tmp_path, suffix, y_shape):
+    import netCDF4 as nc
+
+    path = tmp_path / 'n.nc'
+    _write_normalization(path, suffix, y_shape)
+    with nc.Dataset(path) as f:
+        mx_w, sx_w, my_w, sy_w, mx_l, sx_l, my_l, sy_l = chaz.read_normalization(f)
+    np.testing.assert_array_equal(mx_w, [0, 1, 2])
+    np.testing.assert_array_equal(sx_l, [11, 12, 13, 14])
+    assert my_w.shape == () and float(my_w) == 0 and float(sy_w) == 1
+    assert float(my_l) == 100 and float(sy_l) == 101
+
+
+def test_forward_speed_runs_from_each_point_to_the_next_and_leaves_the_last_two():
+    from ocr.risks.hurricane import meanstd
+
+    lat = np.array([[0.0], [0.0], [0.0], [0.0], [np.nan]])
+    lon = np.array([[100.0], [101.0], [103.0], [104.0], [np.nan]])
+    days = np.arange(5.0).reshape(-1, 1) * 0.25
+    got = meanstd.forward_speed(lon, lat, days)[:, 0]
+    km_per_degree = 2 * np.pi * 6371.0 / 360
+    np.testing.assert_allclose(got[:2], np.array([1, 2]) * km_per_degree * 1000 / 21600)
+    assert np.isnan(got[2:]).all()

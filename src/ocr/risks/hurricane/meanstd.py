@@ -142,6 +142,22 @@ def samples(
     return X, Y, np.isfinite(X).all(axis=1) & np.isfinite(Y)
 
 
+def forward_speed(lon: np.ndarray, lat: np.ndarray, days: np.ndarray) -> np.ndarray:
+    """Translation speed (m/s) as getMeanStd.py recomputes it (getStormTranslation): from each
+    point to the next, over each storm's records from its first to its last. The last two points
+    are left without one; neither starts a 12-hour step. (node, storm) arrays, time in days."""
+    out = np.full(lon.shape, np.nan)
+    for s in range(lon.shape[1]):
+        valid = np.flatnonzero(np.isfinite(lat[:, s]))
+        if len(valid) < 3:
+            continue
+        first, last = valid[0], valid[-1]
+        lo, la, t = lon[first:last, s], lat[first:last, s], days[first:last, s]
+        dx = 2 * np.pi * 6371.0 * np.cos(la[:-1] / 180 * np.pi) / 360 * np.diff(lo)
+        out[first : last - 1, s] = np.hypot(dx, 110 * np.diff(la)) * 1000 / (np.diff(t) * 86400)
+    return out
+
+
 SETS = (('w', WATER, True, ('d2', 'd3')), ('l', LAND, False, ('d7', 'd8')))
 TRACK_ONLY = {'StormMwspd', 'dVdt', 'trSpeed', 'dVdt2'}
 

@@ -76,6 +76,19 @@ def normalization() -> Path:
     return store.path(gv.meanstd) if gv.meanstd else static('coefficient_meanstd.nc')
 
 
+def read_normalization(f: nc.Dataset) -> tuple[np.ndarray, ...]:
+    """meanX_w, stdX_w, meanY_w, stdY_w and the same for land from a coefficient_meanstd.nc, or
+    from observed_data.nc, which names them with an _obs suffix and keeps each Y in a length-1
+    array."""
+    suffix = '_obs' if 'meanX_w_obs' in f.variables else ''
+    out = []
+    for tag in ('w', 'l'):
+        for name in ('meanX', 'stdX', 'meanY', 'stdY'):
+            values = ma.getdata(f[f'{name}_{tag}{suffix}'][:])
+            out.append(values.reshape(()) if name.endswith('Y') else values)
+    return tuple(out)
+
+
 def ratio_source(source: str) -> str:
     """Where the seeding ratio comes from: a model's historical run, for any of its experiments."""
     if source == ERA5:
@@ -88,7 +101,9 @@ def meanstd_for(
 ) -> str | None:
     """Key of a source's predictor normalization; None means the tutorial's. 'model' is the
     tutorial's for ERA5 and the model's own for a model; for ERA5, 'port' is meanstd's port of
-    getMeanStd and 'env' the tutorial's with the port's environment entries. The refit
+    getMeanStd, 'env' the tutorial's with the port's environment entries, and 'training' the
+    tutorial's observed_data.nc, the normalization of the sample the shipped coefficients were
+    fit on. The refit
     regressions (intensity 'refit') carry their own normalization, that of their fit years."""
     if intensity != 'tutorial':
         if source != ERA5 or normalization != 'model':
@@ -97,12 +112,14 @@ def meanstd_for(
 
         return refit.key(refit.name(fit), 'coefficient_meanstd.nc')
     if source == ERA5:
-        return {'port': 'validation/meanstd/era5.nc', 'env': 'validation/meanstd/era5_env.nc'}.get(
-            normalization
-        )
+        return {
+            'port': 'validation/meanstd/era5.nc',
+            'env': 'validation/meanstd/era5_env.nc',
+            'training': f'{store.TUTORIAL}/observed_data.nc',
+        }.get(normalization)
     if normalization == 'tutorial':
         return None
-    if normalization in ('port', 'env'):
+    if normalization in ('port', 'env', 'training'):
         raise ValueError(f'normalization={normalization!r} is only defined for ERA5')
     _, model, member, _ = source.split('/')
     return f'forcing/cmip6/{model}/{member}/coefficient_meanstd.nc'
@@ -126,7 +143,7 @@ def steering_factor(a: xr.DataArray) -> xr.DataArray:
 OPTIONS = {
     'steering': ('lower', 'diagonal'),
     'land': ('shared', 'separate', 'fine'),
-    'normalization': ('model', 'tutorial', 'port', 'env'),
+    'normalization': ('model', 'tutorial', 'port', 'env', 'training'),
     'genesis': ('tcgi', 'calibrated'),
     'intensity': ('tutorial', 'refit', 'refit-pi', 'refit-basin'),
     'fit': ('1981-2012', '1981-1999'),
@@ -1051,14 +1068,7 @@ def calIntensity(n_members: int):
         pool_pi = error_pool_pi(f, basins) if gv.intensity in ('refit-pi', 'refit-basin') else None
 
     with nc.Dataset(normalization(), 'r') as f:
-        meanX_w = ma.getdata(f['meanX_w'][:])
-        stdX_w = ma.getdata(f['stdX_w'][:])
-        meanY_w = ma.getdata(f['meanY_w'][:])
-        stdY_w = ma.getdata(f['stdY_w'][:])
-        meanX_l = ma.getdata(f['meanX_l'][:])
-        stdX_l = ma.getdata(f['stdX_l'][:])
-        meanY_l = ma.getdata(f['meanY_l'][:])
-        stdY_l = ma.getdata(f['stdY_l'][:])
+        meanX_w, stdX_w, meanY_w, stdY_w, meanX_l, stdX_l, meanY_l, stdY_l = read_normalization(f)
 
     shape = bt.StormLon.shape
     bt.stochastic = np.zeros([shape[0], shape[1], n_members]) * np.nan
